@@ -348,6 +348,12 @@ export function publishTopic(courseId, nodeId) {
   });
 }
 
+// Prerequisite DAG for one topic (one derived path per lesson file). Read-only;
+// used by the debug screen.
+export function fetchTopicLearningPath(nodeId) {
+  return request(`/learning-path/topics/${nodeId}/`);
+}
+
 // ---------------------------------------------------------------------------
 // Course review section (teacher): inspect the packaged lesson content + see
 // each enrolled student's progress. Playback is mobile-only.

@@ -2638,9 +2638,17 @@ export default function TopicDetailPage() {
 
       <main className="topic-detail-page">
         <section className="card topic-detail-overview-card">
-          <Link to={`/courses/${courseId}`} style={{ color: "var(--muted)" }}>
-            Back to hierarchy
-          </Link>
+          <div style={{ display: "flex", gap: 16 }}>
+            <Link to={`/courses/${courseId}`} style={{ color: "var(--muted)" }}>
+              Back to hierarchy
+            </Link>
+            <Link
+              to={`/courses/${courseId}/topics/${topicId}/path`}
+              style={{ color: "var(--muted)" }}
+            >
+              Prerequisite DAG (debug)
+            </Link>
+          </div>
           <div className="topic-detail-header">
             <div>
               <h2>{topic.title}</h2>
