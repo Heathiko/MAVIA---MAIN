@@ -36,6 +36,12 @@ from learning_path.services.concepts import resolve_concepts
 MANY_PREREQUISITES = 6
 
 
+def _ascii(text):
+    """PDF text carries curly quotes and dashes the Windows console (cp1252)
+    cannot encode. Keep the command usable there."""
+    return str(text).encode("ascii", "replace").decode("ascii")
+
+
 class Command(BaseCommand):
     help = "Report prerequisite-graph diagnostics for one or all materials."
 
@@ -117,7 +123,7 @@ class Command(BaseCommand):
 
         if not flag_only:
             self.stdout.write(self.style.MIGRATE_HEADING(
-                f"\nmaterial {material.id}: {material.title}"
+                _ascii(f"\nmaterial {material.id}: {material.title}")
             ))
             self.stdout.write(
                 f"  objects {len(objects)}  |  no concept resolved: "
@@ -136,13 +142,13 @@ class Command(BaseCommand):
             if detail and concept_none:
                 self.stdout.write("  objects that own no concept (cannot be a prerequisite):")
                 for obj in concept_none[:20]:
-                    self.stdout.write(f"    #{obj.order:<3} {obj.title[:70]}")
+                    self.stdout.write(_ascii(f"    #{obj.order:<3} {obj.title[:70]}"))
 
             suspicious = self._suspicious(objects, edges, ctx)
             if suspicious:
                 self.stdout.write("  worth a look:")
                 for line in suspicious:
-                    self.stdout.write(f"    {line}")
+                    self.stdout.write(_ascii(f"    {line}"))
 
         for kind, rows in flagged.items():
             if not rows:
@@ -151,9 +157,9 @@ class Command(BaseCommand):
                 f"  flagged [{kind}] ({len(rows)}) - is each a real prerequisite?"
             ))
             for prereq_title, dep_title, sentence in rows:
-                self.stdout.write(f"    {prereq_title[:34]:<34} -> {dep_title[:34]}")
+                self.stdout.write(_ascii(f"    {prereq_title[:34]:<34} -> {dep_title[:34]}"))
                 if sentence:
-                    self.stdout.write(f"        “{sentence[:150]}”")
+                    self.stdout.write(_ascii(f'        "{sentence[:150]}"'))
 
     # ------------------------------------------------------------------ #
 
