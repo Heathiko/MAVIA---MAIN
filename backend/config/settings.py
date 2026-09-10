@@ -159,6 +159,16 @@ ADAPTIVE_VARIANT_GENERATION_ENABLED = os.getenv(
 ).lower() in ("1", "true", "yes")
 ADAPTIVE_VARIANT_LLM_MODEL = os.getenv("ADAPTIVE_VARIANT_LLM_MODEL", OLLAMA_MODEL)
 ADAPTIVE_VARIANT_TIMEOUT = int(os.getenv("ADAPTIVE_VARIANT_TIMEOUT", str(OLLAMA_TIMEOUT)))
+# Decode budget for one simplified+elaborated pair. A learning object is
+# 15-60 words and the elaborated cap is 2x source words, so ~200 words of JSON
+# is the real ceiling; 1024 just meant every call ran the decoder long past the
+# grounding limit. Raise it only if long source objects start truncating.
+ADAPTIVE_VARIANT_NUM_PREDICT = int(os.getenv("ADAPTIVE_VARIANT_NUM_PREDICT", "512"))
+# How many Ollama generation calls to keep in flight. The bottleneck in a
+# publish run is N sequential calls to a local model; Ollama serves concurrent
+# requests, so this is close to an N-times speed-up until it hits the server's
+# own OLLAMA_NUM_PARALLEL (set that to at least this value).
+ADAPTIVE_VARIANT_CONCURRENCY = int(os.getenv("ADAPTIVE_VARIANT_CONCURRENCY", "3"))
 
 # Model for question generation (separate from the content generation model)
 QUESTION_LLM_MODEL = os.getenv("QUESTION_LLM_MODEL", "llama3.2:3b")

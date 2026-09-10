@@ -184,6 +184,44 @@ class ExplicitDependencyTests(MaterialFixture):
 
         self.assertIn("explicit_dependency", {e.type for e in strong})
 
+    def test_oblique_back_reference_is_explicit_evidence(self):
+        """Advanced chunks name a dependency without a "before you can" clause:
+        "changes to the <concept>". S1 should still fire when the sentence names
+        a concept another chunk owns."""
+        from .services.evidence import build_context, gather
+
+        equation = self._object(
+            0, "Accounting Equation",
+            "The accounting equation is assets equals liabilities plus equity.",
+        )
+        recording = self._object(
+            1, "Recording Transactions",
+            "Every transaction produces changes to the accounting equation.",
+        )
+        ctx = build_context(self.material, [equation, recording])
+
+        strong, _, _ = gather(equation, recording, ctx)
+
+        self.assertIn("explicit_dependency", {e.type for e in strong})
+
+    def test_oblique_cue_without_a_named_concept_stays_quiet(self):
+        """The cue alone is not evidence: "changes in the weather" must not link
+        to an unrelated concept. It needs the concept name in the sentence."""
+        from .services.evidence import build_context, gather
+
+        equation = self._object(
+            0, "Accounting Equation",
+            "The accounting equation is assets equals liabilities plus equity.",
+        )
+        seasons = self._object(
+            1, "Seasons", "Changes in the weather happen through the year.",
+        )
+        ctx = build_context(self.material, [equation, seasons])
+
+        strong, _, _ = gather(equation, seasons, ctx)
+
+        self.assertNotIn("explicit_dependency", {e.type for e in strong})
+
 
 class WeakEvidenceTests(MaterialFixture):
     def test_a_plain_mention_never_reaches_acceptance(self):
@@ -199,3 +237,89 @@ class WeakEvidenceTests(MaterialFixture):
 
         self.assertFalse(accept(strong, medium))
         self.assertIn("mention", {e.type for e in weak})
+
+
+class ReferenceAsymmetryTests(MaterialFixture):
+    """M2 -- the RefD principle, restored as a directional medium signal.
+
+    B reaches back for A's concept in its body and A never reaches for B's:
+    the asymmetry fixes the direction on its own. Medium, so it still needs a
+    second, different medium to create an edge -- a bare mention stays inert.
+    """
+
+    def _arrangement(self, section_title=""):
+        return self._object(
+            0, "Particle Arrangement",
+            "Particle arrangement is how tightly the particles sit together.",
+            section_title=section_title,
+        )
+
+    def _density(self, section_title=""):
+        return self._object(
+            1, "Density",
+            "Density is mass divided by volume. When the particle arrangement "
+            "is looser, density falls.",
+            section_title=section_title,
+        )
+
+    def test_a_body_reference_outside_the_opening_is_medium_evidence(self):
+        from .services.evidence import build_context, gather
+
+        arrangement, density = self._arrangement(), self._density()
+        ctx = build_context(self.material, [arrangement, density])
+
+        _, medium, _ = gather(arrangement, density, ctx)
+
+        self.assertIn("reference_asymmetry", {e.type for e in medium})
+
+    def test_reference_asymmetry_alone_does_not_accept(self):
+        from .services.evidence import build_context, gather
+
+        arrangement, density = self._arrangement(), self._density()
+        ctx = build_context(self.material, [arrangement, density])
+
+        strong, medium, _ = gather(arrangement, density, ctx)
+
+        self.assertFalse(accept(strong, medium))
+
+    def test_reference_asymmetry_plus_a_second_medium_accepts(self):
+        from .services.evidence import build_context, gather
+
+        arrangement = self._arrangement(section_title="Explaining Density")
+        density = self._density(section_title="Explaining Density")
+        ctx = build_context(self.material, [arrangement, density])
+
+        strong, medium, _ = gather(arrangement, density, ctx)
+
+        self.assertTrue(accept(strong, medium))
+        self.assertGreaterEqual(len({e.type for e in medium}), 2)
+
+    def test_a_mutual_mention_yields_no_asymmetry(self):
+        from .services.evidence import build_context, gather
+
+        mass = self._object(
+            0, "Mass",
+            "Mass measures the amount of matter. Density and mass rise together "
+            "in a solid.",
+        )
+        density = self._object(
+            1, "Density",
+            "Density is mass divided by volume. A larger mass in the same "
+            "volume means higher density.",
+        )
+        ctx = build_context(self.material, [mass, density])
+
+        _, medium, _ = gather(mass, density, ctx)
+
+        self.assertNotIn("reference_asymmetry", {e.type for e in medium})
+
+    def test_a_reference_only_in_the_opening_line_is_left_to_m1(self):
+        from .services.evidence import build_context, gather
+
+        matter = self._object(0, "Matter", "Matter is anything that has mass.")
+        solid = self._object(1, "Solid", "A solid is matter with a definite shape.")
+        ctx = build_context(self.material, [matter, solid])
+
+        _, medium, _ = gather(matter, solid, ctx)
+
+        self.assertNotIn("reference_asymmetry", {e.type for e in medium})

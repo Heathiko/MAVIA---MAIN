@@ -45,6 +45,13 @@ WEAK = "weak"
 # chunks in 67 across the sample material -- but it outranks everything else,
 # including the suppressors, because it is a pedagogical judgement rather than
 # an inference of ours.
+#
+# The second block is the oblique register advanced chunks use instead of
+# "before you can understand X": a passage on "Changes of State" says "changes
+# to the <concept>", a later section says "recall the <concept>" or "as we saw,
+# <concept> ...". These are the author pointing back at a concept, not us
+# inferring a link. Blast radius stays small because S1 only fires when the
+# same sentence also names a concept another chunk in this material owns.
 _EXPLICIT = re.compile(
     r"\b(should come first"
     r"|before (you |we )?(can )?(understand|learn)"
@@ -52,7 +59,17 @@ _EXPLICIT = re.compile(
     r"|you (should|must) (know|understand)"
     r"|after (learning|understanding)"
     r"|builds? on"
-    r"|based on)\b",
+    r"|based on"
+    r"|depends? on"
+    r"|relies on"
+    r"|requires? (an? )?(prior )?(understanding|knowledge)"
+    r"|assumes? (familiarity|knowledge|you (know|understand))"
+    r"|prior knowledge of"
+    r"|recall(ing)?"
+    r"|as (we|you) (saw|learned|discussed|noted|covered)"
+    r"|(seen|shown|discussed|introduced|defined|covered|explained) (earlier|previously|above|before)"
+    r"|changes? (in|to|of)"
+    r"|review of)\b",
     re.I,
 )
 
@@ -224,6 +241,25 @@ def _mention_records(a, b, ctx):
     return records
 
 
+def _reaches_back(concept, content):
+    """True when ``concept`` is named, outside a contrastive clause, in some
+    sentence of ``content`` after the first.
+
+    The opening sentence is left to M1 (definitional): a passage that names the
+    concept only in its own defining line is *being defined*, not reaching back
+    to depend on something. A reference anywhere later in the body is.
+    """
+    if not concept:
+        return False
+    sentences = re.split(r"(?<=[.!?])\s+", (content or "").strip())
+    for sentence in sentences[1:]:
+        marker = _CONTRAST.search(sentence)
+        asserted = sentence if marker is None else sentence[:marker.start()]
+        if mentions(normalize(asserted), concept):
+            return True
+    return False
+
+
 def gather(a, b, ctx):
     """Evidence that ``a`` is a prerequisite of ``b``, split by tier."""
     strong, medium, weak = [], [], []
@@ -279,6 +315,26 @@ def gather(a, b, ctx):
             medium.append(Evidence("definitional", MEDIUM, a_concept))
 
     records = _mention_records(a, b, ctx)
+    reverse_records = _mention_records(b, a, ctx)
+
+    # --- M2 reference asymmetry (RefD principle) --------------------------
+    # B's body reaches back for A's concept, in a sentence other than its own
+    # opening, and A's body never reaches for B's. The asymmetry *is* the
+    # direction -- the passage that needs the other's concept to make sense is
+    # the dependent one -- and it holds whichever way the document runs, so
+    # nothing here is gated on position. A mutual mention resolves no direction
+    # and stays weak (and is suppressed downstream).
+    #
+    # The opening sentence is excluded on purpose: a dependent that names A only
+    # in its own defining line is the M1 (definitional) case, and counting the
+    # same sentence as two mediums would let "B defines something and mentions
+    # A" create an edge -- which is the density the redesign removed. MEDIUM,
+    # not strong: a bare asymmetric mention produced 88% of the previous graph,
+    # so this still needs a second, different medium to accept.
+    if (a_concept
+            and not reverse_records
+            and _reaches_back(a_concept, b.content)):
+        medium.append(Evidence("reference_asymmetry", MEDIUM, {"concept": a_concept}))
 
     # --- S4 aggregation dependency -----------------------------------------
     # A chunk whose author-assigned heading declares it a comparison or summary
