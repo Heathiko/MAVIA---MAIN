@@ -22,6 +22,7 @@ from course.version_assignment import (
     assign_group_versions,
     assign_source_as_representative,
     assign_source_to_slot,
+    release_from_group,
 )
 
 from .models import (
@@ -77,6 +78,12 @@ from .services.learning_resource_linker import (
     record_teacher_match_decision,
     refresh_material_learning_relationships,
     refresh_question_learning_object_links,
+)
+from .services.regrouping import (
+    RegroupingUnavailable,
+    apply_regrouping,
+    changed_learning_objects,
+    propose_regrouping,
 )
 from .services.question_workflow import (
     duplicate_for_topic,
@@ -332,6 +339,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                 if (material.generated_json or {}).get("grouping_warning")
             ],
             "outline_node": OutlineNodeSerializer(node, context={"request": request}).data,
+            # A database comparison only -- no model runs here -- so the page
+            # knows whether "Review grouping changes" is worth enabling.
+            "regrouping": {"changed_count": len(changed_learning_objects(node))},
             "learning_object_groups": groups,
             "matching_debug": learning_object_match_debug_configuration(),
             "question_pairing_debug": question_pairing_debug_configuration(),
@@ -472,7 +482,21 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             for item in learning_objects
             if item.group_id and item.group_id != target_group.id
         }
+        # An object pulled out of another group leaves its companions there;
+        # undo its version links with them before it moves.
+        for item in learning_objects:
+            if item.group_id and item.group_id != target_group.id:
+                staying = [
+                    member for member in item.group.learning_objects.all()
+                    if member.id not in object_ids
+                ]
+                release_from_group(item, staying)
         LearningObject.objects.filter(id__in=object_ids).update(group=target_group)
+        # The teacher grouped these as they read now, so later edits are
+        # measured from this point rather than from their original text.
+        for item in learning_objects:
+            item.mark_grouping_current()
+        LearningObject.objects.bulk_update(learning_objects, ["grouping_content_hash"])
         if old_group_ids:
             LearningObjectGroup.objects.filter(
                 id__in=old_group_ids,
@@ -538,12 +562,16 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         if old_group and old_group.learning_objects.count() == 1:
             return Response(self._learning_resources_payload(node, request))
 
+        # Undo the old group's version links first, or the object stays "taught
+        # through" an original it no longer shares a concept with.
+        release_from_group(learning_object, old_group_members)
         new_group = LearningObjectGroup.objects.create(
             outline_node=node,
             label=learning_object.title[:255],
         )
         learning_object.group = new_group
-        learning_object.save(update_fields=["group"])
+        learning_object.mark_grouping_current()
+        learning_object.save(update_fields=["group", "grouping_content_hash"])
         if old_group and not old_group.learning_objects.exists():
             old_group.delete()
 
@@ -558,6 +586,68 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             recompute=False,
         )
         return Response(self._learning_resources_payload(node, request))
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path=r"outline-nodes/(?P<node_id>[^/.]+)/regrouping",
+    )
+    def regrouping_preview(self, request, pk=None, node_id=None):
+        """Where each edited object now belongs. Proposes only; changes nothing."""
+        course = self.get_object()
+        try:
+            node = course.nodes.get(pk=node_id)
+        except OutlineNode.DoesNotExist:
+            return Response({"detail": "Outline node not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            proposals = propose_regrouping(node)
+        except RegroupingUnavailable as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({"proposals": proposals, "published": node.published})
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"outline-nodes/(?P<node_id>[^/.]+)/regrouping/apply",
+    )
+    def regrouping_apply(self, request, pk=None, node_id=None):
+        """Carry out the proposals the teacher ticked."""
+        course = self.get_object()
+        try:
+            node = course.nodes.get(pk=node_id)
+        except OutlineNode.DoesNotExist:
+            return Response({"detail": "Outline node not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        raw_ids = request.data.get("learning_object_ids", [])
+        if not isinstance(raw_ids, list):
+            return Response(
+                {"detail": "learning_object_ids must be a list."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            chosen = [int(value) for value in raw_ids]
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "Every learning_object_id must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            summary = apply_regrouping(node, chosen)
+        except RegroupingUnavailable as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        if summary["affected_material_ids"]:
+            # Recompute, unlike Connect: a separated object may now have a
+            # pairing worth suggesting, and question links follow the groups.
+            self._refresh_relationship_snapshots(
+                set(LearningMaterial.objects.filter(pk__in=summary["affected_material_ids"]))
+            )
+        node.refresh_from_db()
+        return Response({
+            "summary": summary,
+            "resources": self._learning_resources_payload(node, request),
+        })
 
     def _get_node_match_suggestion(self, course, node, suggestion_id):
         try:
@@ -613,8 +703,16 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             label=source.title[:255],
         )
         old_group = candidate.group
+        if old_group and old_group.id != target_group.id:
+            release_from_group(
+                candidate,
+                list(old_group.learning_objects.exclude(pk=candidate.pk)),
+            )
         candidate.group = target_group
-        candidate.save(update_fields=["group"])
+        candidate.mark_grouping_current()
+        candidate.save(update_fields=["group", "grouping_content_hash"])
+        source.mark_grouping_current()
+        source.save(update_fields=["grouping_content_hash"])
         if old_group and old_group.id != target_group.id and not old_group.learning_objects.exists():
             old_group.delete()
 
@@ -1865,7 +1963,11 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             )
 
         if request.method == "DELETE":
+            group = learning_object.group
             learning_object.delete()
+            # A group whose only member was deleted is not a concept any more.
+            if group is not None and not group.learning_objects.exists():
+                group.delete()
             self._set_learning_objects_confirmed(material, False)
             return self._serialize_course_detail(course, request)
 

@@ -480,6 +480,102 @@ def settle_group(group):
     }
 
 
+def group_original_id(group, members):
+    """Which member supplies the group's Normal version, if one was decided.
+
+    Mirrors how ``assign_group_versions`` finds the durable original: a member
+    holding placed source text or a teacher's assignment, then whatever the
+    others are represented by, then the stored selection.
+    """
+    ids = [item.id for item in members]
+    owner = (
+        LessonVariant.objects.filter(learning_object_id__in=ids)
+        .filter(
+            models.Q(source_learning_object__isnull=False)
+            | models.Q(assigned_by=LessonVariant.AssignedBy.TEACHER)
+        )
+        .order_by("-assigned_by", "id")
+        .values_list("learning_object_id", flat=True)
+        .first()
+    )
+    if owner is not None:
+        return owner
+    for item in members:
+        if item.represented_by_id:
+            return item.represented_by_id
+    return ((group.version_selection or {}) if group is not None else {}).get("representative_id")
+
+
+def release_from_group(learning_object, companions):
+    """Undo version links before an object leaves the members staying behind.
+
+    Call this **before** the object's group changes. ``companions`` are the
+    members that stay in the old group.
+
+    Without it an object carries its old group's bookkeeping into its new one:
+    it stays marked "taught through" an original it no longer shares a concept
+    with -- so version generation refuses it -- and its text keeps serving as
+    that original's Simplified or Extra version, for a concept it no longer
+    teaches.
+
+    Only links between the leaving object and its companions are undone:
+
+    * text it **supplied** to the group's original is removed, and it is no
+      longer represented by that original;
+    * if it **was** the original, text its companions supplied to it is
+      removed, their representation is cleared, and the group's stored
+      selection is reset so a new original is chosen from those who remain.
+
+    Generated versions are never deleted here, including ones a teacher edited.
+    That is the difference from ``release_learning_object``, which drops every
+    generated row on the original.
+    """
+    companions = [item for item in companions if item.pk != learning_object.pk]
+    if not companions:
+        return {"was_original": False, "removed_version_slots": []}
+    companion_ids = [item.id for item in companions]
+    group = learning_object.group
+    original_id = group_original_id(group, [learning_object, *companions])
+
+    removed = []
+    if original_id == learning_object.id:
+        rows = LessonVariant.objects.filter(
+            learning_object=learning_object,
+            source_learning_object_id__in=companion_ids,
+        )
+        removed = list(rows.values_list("variant", flat=True))
+        rows.delete()
+        type(learning_object).objects.filter(
+            pk__in=companion_ids,
+            represented_by=learning_object,
+        ).update(represented_by=None)
+        if group is not None:
+            group.version_selection = {}
+            group.save(update_fields=["version_selection"])
+        was_original = True
+    else:
+        was_original = False
+        holder_ids = {original_id} if original_id is not None else set()
+        if learning_object.represented_by_id in companion_ids:
+            holder_ids.add(learning_object.represented_by_id)
+        if holder_ids:
+            rows = LessonVariant.objects.filter(
+                learning_object_id__in=holder_ids,
+                source_learning_object=learning_object,
+            )
+            removed = list(rows.values_list("variant", flat=True))
+            rows.delete()
+
+    if learning_object.represented_by_id in companion_ids:
+        learning_object.represented_by = None
+        type(learning_object).objects.filter(pk=learning_object.pk).update(represented_by=None)
+
+    return {
+        "was_original": was_original,
+        "removed_version_slots": sorted({slot.lower() for slot in removed}),
+    }
+
+
 def release_learning_object(learning_object):
     """Undo representation for one object after a teacher ungroups it.
 

@@ -272,6 +272,23 @@ export function separateLearningObject(courseId, nodeId, learningObjectId) {
   );
 }
 
+// Where each edited learning object now belongs. Proposes only; changes nothing.
+export function fetchRegroupingPreview(courseId, nodeId) {
+  return request(`/courses/${courseId}/outline-nodes/${nodeId}/regrouping/`);
+}
+
+// Carries out the ticked proposals. Every reviewed object is settled, ticked or not.
+export function applyRegrouping(courseId, nodeId, learningObjectIds) {
+  return request(
+    `/courses/${courseId}/outline-nodes/${nodeId}/regrouping/apply/`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ learning_object_ids: learningObjectIds }),
+    }
+  );
+}
+
 export function acceptLearningObjectMatchSuggestion(courseId, nodeId, suggestionId) {
   return request(
     `/courses/${courseId}/outline-nodes/${nodeId}/match-suggestions/${suggestionId}/accept/`,

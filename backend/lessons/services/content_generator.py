@@ -2720,6 +2720,8 @@ def json_dumps_for_prompt(value) -> str:
 
 def _sync_learning_objects(material: LearningMaterial, generated_json: dict):
     from .learning_resource_linker import (
+        normalize_learning_object_title,
+        prior_grouping_fingerprints,
         prior_learning_object_groups,
         question_snapshots,
         refresh_question_learning_object_links,
@@ -2734,6 +2736,7 @@ def _sync_learning_objects(material: LearningMaterial, generated_json: dict):
             f"Learning material {material.pk} was deleted before learning objects were saved."
         )
     prior_groups = prior_learning_object_groups(material)
+    prior_fingerprints = prior_grouping_fingerprints(material)
     material.learning_objects.all().delete()
     synced_learning_objects = []
     for index, item in enumerate(generated_json.get("learning_objects", [])):
@@ -2757,9 +2760,14 @@ def _sync_learning_objects(material: LearningMaterial, generated_json: dict):
             section_title=item.get("section_title") or "",
             prior_groups=prior_groups,
         )
+        prior_key = (normalize_learning_object_title(title), index)
+        restored = group is not None and prior_groups.get(prior_key) == group.id
         learning_object = LearningObject.objects.create(
             material=material,
             group=group,
+            # Blank lets the model fingerprint the new text; a restored grouping
+            # keeps the text it was actually decided against.
+            grouping_content_hash=prior_fingerprints.get(prior_key, "") if restored else "",
             kind=kind,
             section_title=(item.get("section_title") or "")[:255],
             title=title,

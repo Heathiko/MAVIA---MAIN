@@ -3,6 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { uploadedMaterialFromResponse } from "../uploadNavigation";
 import {
   acceptLearningObjectMatchSuggestion,
+  applyRegrouping,
   confirmLearningObjects,
   connectLearningObjects,
   createLearningObject,
@@ -14,6 +15,7 @@ import {
   fetchCourse,
   fetchLearningResources,
   fetchQuestionGenerationTrace,
+  fetchRegroupingPreview,
   fetchTopicLearningPath,
   generateAudioPlaylist,
   generateAllObjectVersions,
@@ -1777,6 +1779,154 @@ ${question.prompt}`,
   );
 }
 
+const REGROUPING_ACTION_LABELS = {
+  stay: "Stays",
+  move: "Move",
+  separate: "Stand alone",
+  unscored: "Check manually",
+};
+
+// Teacher-facing names for the stored version slots.
+const VERSION_SLOT_LABELS = { simplified: "Simplified", elaborated: "Elaborated", extra: "Extra" };
+
+// A blocking wait for work with no steps to report: scoring a handful of edited
+// objects, or applying the chosen changes. Same look as the pipeline progress.
+function RegroupingBusy({ title, detail }) {
+  return (
+    <div className="run-progress-backdrop" role="presentation">
+      <div className="run-progress-modal" role="dialog" aria-modal="true" aria-live="polite" aria-label={title}>
+        <div className="run-progress-head">
+          <h3>{title}</h3>
+        </div>
+        <div className="publish-trace-bar is-indeterminate" aria-hidden="true"><span /></div>
+        <p className="run-progress-current">{detail}</p>
+      </div>
+    </div>
+  );
+}
+
+function RegroupingReview({ preview, selectedIds, busy, onToggle, onCancel, onApply }) {
+  const proposals = preview.proposals || [];
+  const selectable = proposals.filter((proposal) => proposal.selectable);
+  const chosenCount = selectable.filter((proposal) => selectedIds.includes(proposal.learning_object_id)).length;
+
+  return (
+    <div className="run-progress-backdrop" role="presentation">
+      <div
+        className="run-progress-modal regrouping-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="regrouping-review-title"
+      >
+        <div className="run-progress-head">
+          <div>
+            <span className="connection-eyebrow">Edited learning objects</span>
+            <h3 id="regrouping-review-title">Review grouping changes</h3>
+          </div>
+          <span className="run-progress-count">
+            {proposals.length} edited · {selectable.length} with a proposed change
+          </span>
+        </div>
+
+        {preview.published && (
+          <p className="regrouping-warning" role="alert">
+            This topic is published. Applying any change unpublishes it until you publish again,
+            so students never see a half-updated lesson.
+          </p>
+        )}
+
+        {proposals.length === 0 ? (
+          <p className="run-progress-current">Nothing has been edited since it was grouped.</p>
+        ) : (
+          <ul className="regrouping-list">
+            {proposals.map((proposal) => {
+              const checked = selectedIds.includes(proposal.learning_object_id);
+              const impact = proposal.impact || {};
+              const removedSlots = (impact.removed_version_slots || [])
+                .map((slot) => VERSION_SLOT_LABELS[slot] || slot);
+              return (
+                <li
+                  key={proposal.learning_object_id}
+                  className={`regrouping-row is-${proposal.action} ${checked ? "is-chosen" : ""}`.trim()}
+                >
+                  <label className="regrouping-choice">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={!proposal.selectable || busy}
+                      onChange={() => onToggle(proposal.learning_object_id)}
+                    />
+                    <span className="sr-only">Apply the change for {proposal.title}</span>
+                  </label>
+                  <div className="regrouping-body">
+                    <div className="regrouping-title-row">
+                      <strong>{proposal.title}</strong>
+                      <span className={`regrouping-pill is-${proposal.action}`}>
+                        {REGROUPING_ACTION_LABELS[proposal.action] || proposal.action}
+                      </span>
+                    </div>
+                    <small className="regrouping-source">{proposal.material_title}</small>
+                    <p className="regrouping-reason">{proposal.reason}</p>
+                    {proposal.selectable && (
+                      <p className="regrouping-route">
+                        <span>{proposal.current_group?.label || "Current concept"}</span>
+                        <span aria-hidden="true"> → </span>
+                        <span>
+                          {proposal.action === "move"
+                            ? proposal.destination_group?.label || "Matched concept"
+                            : "its own concept"}
+                        </span>
+                      </p>
+                    )}
+                    {proposal.selectable && (
+                      <ul className="regrouping-impact">
+                        {proposal.teacher_made && (
+                          <li className="is-teacher">
+                            You grouped this yourself, so the change is not ticked. Tick it to overrule
+                            your earlier decision.
+                          </li>
+                        )}
+                        {impact.was_original && (
+                          <li>
+                            This is the Normal version of “{proposal.current_group?.label}”. That concept
+                            will need a new original, and its versions reviewed again.
+                          </li>
+                        )}
+                        {removedSlots.length > 0 && (
+                          <li>
+                            Removes the {removedSlots.join(" and ")} text it supplied to that concept.
+                          </li>
+                        )}
+                        {impact.question_count > 0 && (
+                          <li>
+                            {impact.question_count} linked question{impact.question_count === 1 ? "" : "s"} move
+                            with it.
+                          </li>
+                        )}
+                      </ul>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        <div className="modal-actions">
+          <button type="button" className="btn btn-secondary" disabled={busy} onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={onApply}>
+            {chosenCount === 0
+              ? "Keep everything as it is"
+              : `Apply ${chosenCount} change${chosenCount === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LearningObjectConnections({
   courseId,
   topicId,
@@ -1800,6 +1950,9 @@ function LearningObjectConnections({
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
   const [groupLabel, setGroupLabel] = useState("");
+  // The open grouping review, and which of its proposals the teacher ticked.
+  const [regroupPreview, setRegroupPreview] = useState(null);
+  const [regroupSelectedIds, setRegroupSelectedIds] = useState([]);
   const automaticClassificationRef = useRef("");
 
   const materialSignature = useMemo(
@@ -1888,6 +2041,71 @@ function LearningObjectConnections({
     return searchableText.includes(query);
   });
   const selectedGroupCount = new Set(selectedIds.map((id) => groupByObjectId.get(id))).size;
+  // Grouped objects edited since their grouping was decided. Counted by the
+  // server without running any model, so it is cheap to show on every load.
+  const regroupChangedCount = resources?.regrouping?.changed_count || 0;
+
+  async function openRegroupingReview() {
+    if (reviewStep !== "objects" || !regroupChangedCount) return;
+    setBusyAction("regroup-preview");
+    onError("");
+    onMessage("");
+    try {
+      const preview = await fetchRegroupingPreview(courseId, topicId);
+      setRegroupPreview(preview);
+      setRegroupSelectedIds(
+        (preview.proposals || [])
+          .filter((proposal) => proposal.default_selected)
+          .map((proposal) => proposal.learning_object_id),
+      );
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  function toggleRegroupSelection(objectId) {
+    setRegroupSelectedIds((current) => (
+      current.includes(objectId)
+        ? current.filter((id) => id !== objectId)
+        : [...current, objectId]
+    ));
+  }
+
+  async function applyRegroupingReview() {
+    if (!regroupPreview) return;
+    const chosen = regroupSelectedIds.filter((id) => (
+      regroupPreview.proposals.some((proposal) => proposal.selectable && proposal.learning_object_id === id)
+    ));
+    setBusyAction("regroup-apply");
+    onError("");
+    onMessage("");
+    try {
+      const data = await applyRegrouping(courseId, topicId, chosen);
+      setResources(data.resources);
+      setRegroupPreview(null);
+      setRegroupSelectedIds([]);
+      setSelectedIds([]);
+      const { applied = [], unpublished } = data.summary || {};
+      if (unpublished || applied.length) {
+        // Publication state and group membership live on the course the page
+        // holds, so it has to be reloaded for the rest of the review to agree.
+        onCourseChange(await fetchCourse(courseId));
+      }
+      onMessage(
+        applied.length === 0
+          ? "Grouping kept as it is. The edited learning objects are marked as reviewed."
+          : `${applied.length} learning object${applied.length === 1 ? "" : "s"} regrouped.${
+            unpublished ? " The topic is unpublished until you publish it again." : ""
+          } Review the content versions of the affected concepts.`,
+      );
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setBusyAction("");
+    }
+  }
 
   useEffect(() => {
     if (reviewStep === "questions") setSelectedIds([]);
@@ -2078,6 +2296,9 @@ function LearningObjectConnections({
     onMessage(`Generating ${totalMissing} missing version${totalMissing === 1 ? "" : "s"}.`);
     let generatedCount = 0;
     const failures = [];
+    // One request per concept, and a concept can fail on both of its slots, so
+    // failures are reported per concept rather than as a count of errors.
+    const failedConcepts = new Set();
     let latest = null;
     try {
       for (let position = 0; position < targets.length; position += 1) {
@@ -2099,9 +2320,13 @@ function LearningObjectConnections({
           latest = data;
           const result = data.version_generation || {};
           generatedCount += result.generated?.length || 0;
-          failures.push(...(result.errors || []));
+          if (result.errors?.length) {
+            failures.push(...result.errors);
+            failedConcepts.add(target.label);
+          }
         } catch (err) {
           failures.push({ detail: err.message });
+          failedConcepts.add(target.label);
         }
       }
       if (latest) setResources(latest);
@@ -2109,8 +2334,9 @@ function LearningObjectConnections({
         `Generated ${generatedCount} missing version${generatedCount === 1 ? "" : "s"}.`,
       );
       if (failures.length) {
+        const count = failedConcepts.size;
         onError(
-          `${failures.length} version${failures.length === 1 ? "" : "s"} could not be generated. ${failures[0].detail || ""}`.trim(),
+          `${count} concept${count === 1 ? "" : "s"} could not get ${count === 1 ? "its" : "their"} missing versions (${[...failedConcepts].join(", ")}). ${failures[0].detail || ""}`.trim(),
         );
       }
     } finally {
@@ -2288,6 +2514,27 @@ function LearningObjectConnections({
           {confirmedSourceCount} confirmed source{confirmedSourceCount === 1 ? "" : "s"}
         </span>
       </div>
+
+      {!loading && (
+        <div className={`regrouping-notice ${regroupChangedCount ? "has-changes" : ""}`.trim()}>
+          <p>
+            {regroupChangedCount
+              ? `${regroupChangedCount} edited learning object${regroupChangedCount === 1 ? "" : "s"} may belong to a different concept now.`
+              : "No grouped learning object has been edited since it was grouped."}
+          </p>
+          {/* Visible but disabled when there is nothing to review, so the action is
+              discoverable without inviting a click that would do nothing. */}
+          <button
+            type="button"
+            className={`btn btn-small ${regroupChangedCount ? "btn-primary" : "btn-secondary"}`}
+            disabled={!regroupChangedCount || Boolean(busyAction)}
+            title={regroupChangedCount ? undefined : "Enabled after you edit a grouped learning object and confirm its file again."}
+            onClick={openRegroupingReview}
+          >
+            Review grouping changes
+          </button>
+        </div>
+      )}
 
       {loading ? (
         <div className="connection-empty">Checking learning-object connections…</div>
@@ -2510,6 +2757,28 @@ function LearningObjectConnections({
         </aside>
       )}
       </section>
+      )}
+      {busyAction === "regroup-preview" && (
+        <RegroupingBusy
+          title="Checking edited learning objects"
+          detail={`Comparing ${regroupChangedCount} edited learning object${regroupChangedCount === 1 ? "" : "s"} against every concept in this topic…`}
+        />
+      )}
+      {busyAction === "regroup-apply" && (
+        <RegroupingBusy title="Applying grouping changes" detail="Updating concepts and the questions linked to them…" />
+      )}
+      {regroupPreview && busyAction !== "regroup-apply" && (
+        <RegroupingReview
+          preview={regroupPreview}
+          selectedIds={regroupSelectedIds}
+          busy={Boolean(busyAction)}
+          onToggle={toggleRegroupSelection}
+          onCancel={() => {
+            setRegroupPreview(null);
+            setRegroupSelectedIds([]);
+          }}
+          onApply={applyRegroupingReview}
+        />
       )}
       {reviewStep === "objects" && (
         <ObjectPairsPanel

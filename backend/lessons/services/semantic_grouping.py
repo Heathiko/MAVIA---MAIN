@@ -573,15 +573,28 @@ def _label_corroborated_decision(
     return {**match, "evidence": evidence, "confidence": "high"}
 
 
-def semantic_decision(material, title, content, kind, order, section_title="", source_object_id=None):
+def semantic_decision(
+    material, title, content, kind, order, section_title="", source_object_id=None,
+    *, allow_grouped_source=False,
+):
+    """The best group for this content, with the confidence to act on it.
+
+    ``allow_grouped_source`` exists for one caller: the teacher-triggered review
+    of edited objects. Background matching must never take a member away from
+    its companions, so by default a grouped source is refused outright. When a
+    teacher has asked where an edited object now belongs, the source's *current*
+    group is left out of the candidates instead -- the question is whether it
+    fits somewhere else, and its old group is judged separately.
+    """
     from lessons.models import LearningObject, LearningObjectMatchSuggestion
-    # Automatic matching may add a standalone object to a group, but must never
-    # take an existing member away from its companions (including teacher groups).
+    current_group_id = None
     if source_object_id:
         source = LearningObject.objects.filter(pk=source_object_id).first()
         if source and source.group_id and LearningObject.objects.filter(
                 group_id=source.group_id).exclude(pk=source_object_id).exists():
-            return None
+            if not allow_grouped_source:
+                return None
+            current_group_id = source.group_id
     start = perf_counter()
     config = policy()
     all_objects = list(LearningObject.objects.filter(
@@ -605,6 +618,7 @@ def semantic_decision(material, title, content, kind, order, section_title="", s
         ).values_list("source_learning_object_id", "candidate_learning_object_id"):
             rejected_ids.add(right if left == source_object_id else left)
     eligible_groups -= {group_id for group_id, rows in members.items() if any(row.id in rejected_ids for row in rows)}
+    eligible_groups.discard(current_group_id)
     candidates = [row for row in all_objects if row.group_id in eligible_groups and row.id != source_object_id]
     ranked = rank_groups(content, candidates, members, thresholds=config)
     normal_decision = None

@@ -1,7 +1,19 @@
+import hashlib
 import uuid
 
 from django.core.exceptions import ValidationError
 from django.db import models
+
+
+def grouping_fingerprint(title, content):
+    """What a learning object said when its grouping was last decided.
+
+    Whitespace is collapsed first, so re-flowing a paragraph is not an edit --
+    only a change in wording is. Kept here rather than in the semantic grouping
+    service so saving a model never has to import the language-model runtime.
+    """
+    text = " ".join(f"{title or ''}\n{content or ''}".split())
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class CourseGroup(models.Model):
@@ -197,12 +209,37 @@ class LearningObject(models.Model):
     source_block_id = models.PositiveIntegerField(null=True, blank=True)
     source_excerpt = models.TextField(blank=True)
     order = models.PositiveIntegerField(default=0)
+    # The fingerprint of this object's text when its group membership was last
+    # decided. Group membership is deliberately sticky -- a background refresh
+    # never takes a member away from its companions -- so without this an edit
+    # to a grouped object could never be noticed. A mismatch is what enables
+    # the teacher's "Review grouping changes" action.
+    grouping_content_hash = models.CharField(max_length=64, blank=True, default="")
 
     class Meta:
         ordering = ["order", "id"]
 
     def __str__(self):
         return self.title
+
+    @property
+    def current_grouping_fingerprint(self):
+        return grouping_fingerprint(self.title, self.content)
+
+    def mark_grouping_current(self):
+        """Record that grouping has now been decided against this exact text."""
+        self.grouping_content_hash = self.current_grouping_fingerprint
+
+    def save(self, *args, **kwargs):
+        # A new object is grouped against the text it arrives with. Callers that
+        # restore an earlier grouping set the earlier fingerprint explicitly, so
+        # a changed passage slipping back into its old group is still noticed.
+        if not self.grouping_content_hash:
+            self.mark_grouping_current()
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None and "grouping_content_hash" not in update_fields:
+                kwargs["update_fields"] = [*update_fields, "grouping_content_hash"]
+        super().save(*args, **kwargs)
 
 
 class LearningObjectMatchSuggestion(models.Model):

@@ -6013,3 +6013,153 @@ button {
   .question-generation-board-heading .btn { width: 100%; }
   .saved-question-actions { justify-content: flex-end; }
 }
+
+/* Review grouping changes. The notice sits under the step-1 heading; it is
+   quiet when nothing was edited and draws the eye when something was. */
+.regrouping-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin: 0.6rem 0 0.2rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid #e3e8ef;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.regrouping-notice p {
+  margin: 0;
+  color: #5f6f7f;
+  font-size: 0.86rem;
+}
+
+.regrouping-notice.has-changes {
+  border-color: #f0d9a8;
+  background: #fff8e8;
+}
+
+.regrouping-notice.has-changes p {
+  color: #7a5412;
+  font-weight: 650;
+}
+
+.regrouping-modal {
+  width: clamp(22rem, 60vw, 52rem);
+}
+
+.regrouping-warning {
+  margin: 0;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid #f0c7c7;
+  background: #fdf1f1;
+  color: #8a3d3d;
+  font-size: 0.86rem;
+}
+
+.regrouping-list {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.regrouping-row {
+  display: flex;
+  gap: 0.7rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid #e3e8ef;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.regrouping-row.is-chosen {
+  border-color: #9fc3ea;
+  background: #f4f9ff;
+}
+
+.regrouping-row.is-stay {
+  opacity: 0.8;
+}
+
+.regrouping-choice {
+  flex: none;
+  padding-top: 0.15rem;
+}
+
+.regrouping-body {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.regrouping-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.regrouping-source {
+  color: #6b7280;
+}
+
+.regrouping-pill {
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  background: #eef2f7;
+  color: #4b5563;
+}
+
+.regrouping-pill.is-move {
+  background: #e3effc;
+  color: #1e5fa8;
+}
+
+.regrouping-pill.is-separate {
+  background: #fff1dc;
+  color: #8a5a12;
+}
+
+.regrouping-pill.is-stay {
+  background: #e6f6ef;
+  color: #0b6b4f;
+}
+
+.regrouping-pill.is-unscored {
+  background: #fdecec;
+  color: #8a3d3d;
+}
+
+.regrouping-reason,
+.regrouping-route {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #1f2937;
+}
+
+.regrouping-route {
+  font-weight: 650;
+}
+
+.regrouping-impact {
+  margin: 0.1rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.82rem;
+  color: #5f6f7f;
+}
+
+.regrouping-impact .is-teacher {
+  color: #7a5412;
+}
+
+@media (max-width: 640px) {
+  .regrouping-notice {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

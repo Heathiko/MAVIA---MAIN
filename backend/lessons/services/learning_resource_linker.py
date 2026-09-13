@@ -582,6 +582,21 @@ def prior_learning_object_groups(material: LearningMaterial) -> dict[tuple[str, 
     }
 
 
+def prior_grouping_fingerprints(material: LearningMaterial) -> dict[tuple[str, int], str]:
+    """The text each object was grouped against, keyed like the prior groups.
+
+    Regeneration recreates every object and restores its old group by title and
+    position. Carrying the old fingerprint across means a passage whose wording
+    changed on re-extraction is still noticed as edited, rather than slipping
+    back into its old group as if nothing had happened.
+    """
+    return {
+        (normalize_learning_object_title(item.title), item.order): item.grouping_content_hash
+        for item in material.learning_objects.exclude(group__isnull=True)
+        if item.grouping_content_hash
+    }
+
+
 def resolve_learning_object_group(
     material: LearningMaterial,
     title: str,
@@ -848,7 +863,8 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
         ):
             old_group_id = source_object.group_id
             source_object.group_id = candidate_object.group_id
-            source_object.save(update_fields=["group"])
+            source_object.mark_grouping_current()
+            source_object.save(update_fields=["group", "grouping_content_hash"])
             if old_group_id:
                 LearningObjectGroup.objects.filter(
                     pk=old_group_id,
