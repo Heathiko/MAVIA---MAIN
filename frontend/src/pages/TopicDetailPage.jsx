@@ -14,6 +14,7 @@ import {
   fetchCourse,
   fetchLearningResources,
   fetchQuestionGenerationTrace,
+  fetchTopicLearningPath,
   generateAudioPlaylist,
   generateAllObjectVersions,
   fetchGenerationRunEvents,
@@ -30,6 +31,9 @@ import {
   updateTopicQuestion,
   uploadLearningMaterial,
 } from "../api";
+// The same path display the standalone page uses, so review step 5 and that
+// page cannot drift apart.
+import { MaterialPath } from "./LearningPathPage";
 
 function flattenNodes(nodes = []) {
   return nodes.flatMap((node) => [node, ...flattenNodes(node.children || [])]);
@@ -296,7 +300,7 @@ function ObjectPairsPanel({
         </div>
         <span>{suggestions.length} to review</span>
       </div>
-      <div className="review-step-indicator has-four-steps" aria-label="Review progress">
+      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
         <span className="is-active">1</span>
         <div aria-hidden="true" />
         <span>2</span>
@@ -304,6 +308,8 @@ function ObjectPairsPanel({
         <span>3</span>
         <div aria-hidden="true" />
         <span>4</span>
+        <div aria-hidden="true" />
+        <span>5</span>
         <strong>Object pairs</strong>
       </div>
 
@@ -433,7 +439,7 @@ function ReviewQueuePanel({
         </div>
         <span className="connection-source-count">{questionPairings.length} question{questionPairings.length === 1 ? "" : "s"}</span>
       </div>
-      <div className="review-step-indicator has-four-steps" aria-label="Review progress">
+      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
         <span className="is-complete">1</span>
         <div aria-hidden="true" />
         <span className="is-complete">2</span>
@@ -441,6 +447,8 @@ function ReviewQueuePanel({
         <span className="is-active">3</span>
         <div aria-hidden="true" />
         <span>4</span>
+        <div aria-hidden="true" />
+        <span>5</span>
         <strong>Question pairs</strong>
       </div>
 
@@ -645,6 +653,9 @@ function VersionReviewPanel({
   onGenerate,
   onGenerateAll,
   generationEvents,
+  // Owned by the parent, because the loop that writes the missing versions
+  // runs there. This panel only displays it.
+  missingProgress,
   onEditVersion,
 }) {
   const [chunkIndex, setChunkIndex] = useState(0);
@@ -663,14 +674,6 @@ function VersionReviewPanel({
   useEffect(() => { setEditingSlot(null); }, [chunk?.id]);
 
   const versions = chunk?.versions;
-  const extraCount = chunks.reduce(
-    (count, item) => count + (item.versions?.extras?.length || 0),
-    0,
-  );
-  const pdfVariantCount = chunks.reduce(
-    (count, item) => count + (item.learning_objects?.length || 0),
-    0,
-  );
   const classificationComplete = chunks.every(
     (item) => item.versions?.classification_complete !== false,
   );
@@ -682,8 +685,6 @@ function VersionReviewPanel({
     const slots = item.versions?.slots || {};
     return count + (slots.simplified ? 0 : 1) + (slots.elaborated ? 0 : 1);
   }, 0);
-  const latestGenerationEvent = generationEvents[generationEvents.length - 1];
-  const generationProgress = [...generationEvents].reverse().find((event) => event.data?.total);
   const representative = chunk?.learning_objects?.find(
     (item) => Number(item.id) === Number(versions?.representative_id),
   );
@@ -712,7 +713,6 @@ function VersionReviewPanel({
         </div>
         <div className="version-review-heading-actions">
           <span className="connection-source-count">
-            {chunks.length} concepts · {pdfVariantCount} PDF variants · {extraCount} extra{extraCount === 1 ? "" : "s"}
           </span>
           {!classificationComplete ? (
             <span className="connection-source-count">
@@ -738,15 +738,31 @@ function VersionReviewPanel({
         </div>
       </div>
       {(busyAction === "version-generate-all" || generationEvents.length > 0) && (
-        <div className="version-generation-progress" role="status" aria-live="polite">
-          <strong>{busyAction === "version-generate-all" ? "Classifying existing PDF variants" : "Classification finished"}</strong>
-          {generationProgress?.data?.index && (
-            <span>{generationProgress.data.index} of {generationProgress.data.total} concepts</span>
-          )}
-          {latestGenerationEvent && <p>{latestGenerationEvent.message}</p>}
-        </div>
+        <RunProgress
+          events={generationEvents}
+          running={busyAction === "version-generate-all"}
+          runningLabel="Classifying existing PDF variants"
+          doneLabel="Classification finished"
+          unit="concept"
+        />
       )}
-      <div className="review-step-indicator has-four-steps" aria-label="Review progress">
+      {missingProgress && (
+        <RunProgress
+          events={[]}
+          running
+          runningLabel="Writing missing versions"
+          doneLabel="Versions written"
+          unit="concept"
+          index={missingProgress.index}
+          total={missingProgress.total}
+          current={
+            missingProgress.label
+              ? `Writing the simplified and elaborated versions of “${missingProgress.label}”`
+              : "Starting…"
+          }
+        />
+      )}
+      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
         <span className="is-complete">1</span>
         <div aria-hidden="true" />
         <span className="is-active">2</span>
@@ -754,6 +770,8 @@ function VersionReviewPanel({
         <span>3</span>
         <div aria-hidden="true" />
         <span>4</span>
+        <div aria-hidden="true" />
+        <span>5</span>
         <strong>Content versions</strong>
       </div>
 
@@ -950,7 +968,13 @@ function QuestionGenerationTool({
   onMessage,
 }) {
   const [generatingKey, setGeneratingKey] = useState("");
-  const [generationProgress, setGenerationProgress] = useState("");
+  // Structured rather than a formatted string, because the progress dialog
+  // needs the position to draw a bar and the name to say what it is working on.
+  const [outerProgress, setOuterProgress] = useState(null);
+  // The run currently being polled. "Generate all" walks the concepts one at a
+  // time, so these events describe work inside one concept, while
+  // outerProgress tracks the walk across all of them.
+  const [runEvents, setRunEvents] = useState([]);
   const learningObjects = useMemo(
     () => (groups || []).flatMap((group) => {
       const representative = (group.learning_objects || []).find(
@@ -960,6 +984,10 @@ function QuestionGenerationTool({
       return [{
         ...representative,
         conceptLabel: group.label || representative.title || "Untitled concept",
+        // Carried through so each concept can show what was generated from it.
+        // Spreading the representative alone dropped these, which is why the
+        // board could only ever say "generating" and never "here is the result".
+        questions: group.questions || [],
         canGenerate: Boolean(
           representative.content?.trim()
           && group.versions?.classification_complete !== false,
@@ -974,6 +1002,9 @@ function QuestionGenerationTool({
     for (let attempt = 0; attempt < 300; attempt += 1) {
       await new Promise((resolve) => window.setTimeout(resolve, 1000));
       result = await fetchQuestionGenerationTrace(runId);
+      // The endpoint returns the run's whole event list each poll, so this is
+      // a replace rather than an append.
+      setRunEvents(result.events || []);
       if (["finished", "failed"].includes(result.run.status)) break;
     }
     if (!result || result.run.status === "running") {
@@ -988,7 +1019,10 @@ function QuestionGenerationTool({
   async function handleGenerateObject(item) {
     if (!item.canGenerate) return;
     setGeneratingKey(`object-${item.id}`);
-    setGenerationProgress("");
+    // Named but uncounted. There is one concept, so a percentage would only be
+    // theatre -- and the run's own events report "1 of 1", which reads as
+    // finished from the first moment.
+    setOuterProgress({ index: null, total: null, label: item.conceptLabel });
     onError("");
     onMessage(`Generating and classifying questions for “${item.title}”.`);
     try {
@@ -1012,7 +1046,11 @@ function QuestionGenerationTool({
     try {
       for (let index = 0; index < eligibleObjects.length; index += 1) {
         const item = eligibleObjects[index];
-        setGenerationProgress(`${index + 1} of ${eligibleObjects.length}: ${item.conceptLabel}`);
+        setOuterProgress({
+          index: index + 1,
+          total: eligibleObjects.length,
+          label: item.conceptLabel,
+        });
         const started = await startQuestionGeneration(item.material, item.id);
         await waitForGeneration(started.run_id);
       }
@@ -1022,7 +1060,7 @@ function QuestionGenerationTool({
       onError(err.message);
     } finally {
       setGeneratingKey("");
-      setGenerationProgress("");
+      setOuterProgress(null);
     }
   }
 
@@ -1038,25 +1076,88 @@ function QuestionGenerationTool({
           {generatingKey === "all" ? "Generating all…" : "Generate all questions"}
         </button>
       </div>
-      {generationProgress && <div className="question-generation-progress" role="status">Processing {generationProgress}</div>}
+      {outerProgress && (
+        <div className="question-generation-progress" role="status">
+          Processing {outerProgress.index} of {outerProgress.total}: {outerProgress.label}
+        </div>
+      )}
+      {(generatingKey || runEvents.length > 0) && (
+        <RunProgress
+          events={runEvents}
+          running={Boolean(generatingKey)}
+          runningLabel="Generating questions"
+          doneLabel="Generation finished"
+          unit="concept"
+          // The run in flight covers one concept and always reports "1 of 1".
+          // What the teacher is waiting on is the walk across every concept.
+          index={outerProgress?.index ?? null}
+          total={outerProgress?.total ?? null}
+          current={
+            outerProgress?.label
+              ? `Generating questions for “${outerProgress.label}”`
+              : ""
+          }
+        />
+      )}
       {!learningObjects.length ? <div className="review-queue-empty">No confirmed learning objects are available yet.</div> : (
         <div className="question-learning-object-list">
           {learningObjects.map((item) => {
             const material = materialById.get(Number(item.material));
             const isGenerating = generatingKey === `object-${item.id}`;
+            // Questions that came out of this concept. PDF-extracted ones are
+            // the sidebar's business; these belong with what produced them.
+            const produced = (item.questions || []).filter(
+              (question) => (question.source_type || "pdf") !== "pdf",
+            );
             return (
               <article className="question-learning-object-card" key={item.id}>
-                <div className="question-learning-object-copy">
-                  <div className="question-learning-object-title">
-                    <span aria-hidden="true">LO</span>
-                    <div><small>{item.conceptLabel}</small><strong>{item.title}</strong></div>
+                <div className="question-learning-object-main">
+                  <div className="question-learning-object-copy">
+                    <div className="question-learning-object-title">
+                      <div><small>{item.conceptLabel}</small><strong>{item.title}</strong></div>
+                    </div>
+                    <FormattedLearningObjectContent content={item.content} className="question-learning-object-preview" />
+                    <small>Normal source: {material?.filename || material?.title || `PDF ${item.material}`}</small>
                   </div>
-                  <FormattedLearningObjectContent content={item.content} className="question-learning-object-preview" />
-                  <small>Normal source: {material?.filename || material?.title || `PDF ${item.material}`}</small>
+                  <button type="button" className="btn btn-secondary" disabled={Boolean(generatingKey) || !item.canGenerate} onClick={() => handleGenerateObject(item)}>
+                    {isGenerating ? "Generating…" : item.canGenerate ? "Generate questions" : "Normal classification required"}
+                  </button>
                 </div>
-                <button type="button" className="btn btn-secondary" disabled={Boolean(generatingKey) || !item.canGenerate} onClick={() => handleGenerateObject(item)}>
-                  {isGenerating ? "Generating…" : item.canGenerate ? "Generate questions" : "Normal classification required"}
-                </button>
+                <div className="question-learning-object-questions">
+                  <h5>
+                    {produced.length} generated question{produced.length === 1 ? "" : "s"}
+                  </h5>
+                  {!produced.length ? (
+                    <p className="question-learning-object-empty">
+                      Nothing generated from this concept yet.
+                    </p>
+                  ) : (
+                    <ol>
+                      {produced.map((question) => (
+                        <li key={question.id}>
+                          <div className="generated-question-row">
+                            {question.thinking_order && (
+                              <span className="question-thinking-pill">{question.thinking_order}</span>
+                            )}
+                            <strong>{question.prompt}</strong>
+                          </div>
+                          {Boolean(question.choices?.length) && (
+                            <ul className="generated-question-choices">
+                              {question.choices.map((choice, choiceIndex) => (
+                                <li
+                                  className={choice === question.correct_answer ? "is-correct" : ""}
+                                  key={`${question.id}-${choiceIndex}`}
+                                >
+                                  {choice}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
               </article>
             );
           })}
@@ -1152,20 +1253,27 @@ function ManualQuestionPanel({
     }
   }
 
+  // This panel is the PDF question bank and nothing else. Generated and manual
+  // questions are shown with the concept they belong to, on the generation
+  // board, where they can be judged against the content that produced them.
+  const pdfQuestions = questionPairings.filter(
+    (question) => (question.source_type || "pdf") === "pdf",
+  );
+
   return (
     <aside className="match-suggestion-panel panel-aside question-tools-panel" aria-labelledby="manual-question-panel-title">
       <section className="saved-question-sidebar" aria-labelledby="saved-question-title">
         <div className="match-suggestion-heading">
           <div>
             <span className="connection-eyebrow">Question bank</span>
-            <h4 id="saved-question-title">Saved questions</h4>
+            <h4 id="saved-question-title">Questions from PDFs</h4>
           </div>
-          <span>{questionPairings.length}</span>
+          <span>{pdfQuestions.length}</span>
         </div>
-        <p className="question-source-prompt">PDF, manual, and generated questions appear together.</p>
-        {!questionPairings.length ? <div className="review-queue-empty">No saved questions yet.</div> : (
+        <p className="question-source-prompt">Extracted from uploaded question papers. Generated questions appear under their concept.</p>
+        {!pdfQuestions.length ? <div className="review-queue-empty">No questions were extracted from an uploaded PDF.</div> : (
           <div className="saved-question-list is-sidebar">
-            {questionPairings.map((question) => {
+            {pdfQuestions.map((question) => {
               const link = question.learning_object_links?.[0];
               const group = groups.find((item) => Number(item.id) === Number(link?.learning_object_group_id));
               const material = materialById.get(Number(question.material));
@@ -1332,41 +1440,125 @@ function ManualQuestionPanel({
   );
 }
 
-// Publishing can run for many minutes. Showing which stage is working, and
-// how far through it is, is the difference between "slow" and "hung".
-function PublishTrace({ events, running }) {
+// Every pipeline here can run for minutes, and a long run looks exactly like a
+// hung one. Showing which stage is working, how far through it is, and what
+// failed is the difference between "slow" and "stuck" -- so all of them report
+// through this one component instead of each inventing its own.
+function RunProgress({
+  events,
+  running,
+  runningLabel,
+  doneLabel,
+  unit = "step",
+  // When a caller drives several runs in sequence, the events belong to the
+  // run in flight and describe only that one -- "1 of 1", finished, 100%, over
+  // and over. These let the caller report the loop it is actually working
+  // through, and name the thing being worked on rather than echoing whatever
+  // the pipeline last happened to emit.
+  index: indexOverride = null,
+  total: totalOverride = null,
+  current: currentOverride = "",
+}) {
+  // Callers keep rendering this while events exist, so a finished run would
+  // otherwise leave a full-screen dialog with no way past it. Dismissal lives
+  // here rather than in a prop because one caller only receives the event list,
+  // not the setter that would clear it.
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => {
+    // A new run re-opens the dialog even if the last one was dismissed.
+    if (running) setDismissed(false);
+  }, [running]);
+
   const latest = events[events.length - 1];
-  const progress = [...events].reverse().find((e) => e.data?.total);
+  const progress = [...events].reverse().find((event) => event.data?.total);
+  // Matched by shape rather than by a list of names: every pipeline reports a
+  // dedicated *_failed event or the pipeline-wide "error", so a new one's
+  // failures appear here without having to be registered first.
   const failures = events.filter(
-    (e) => e.event_type === "audio_failed" || e.event_type === "publish_failed",
+    (event) =>
+      event.event_type === "error" || (event.event_type || "").endsWith("_failed"),
   );
+  // A caller-supplied position describes the loop the teacher is waiting on;
+  // the events describe only the run in flight. Prefer the caller's -- and when
+  // a caller names what it is working on without counting it, respect that
+  // silence rather than falling back to the run's "1 of 1", which shows a
+  // finished bar for the whole of a single-item job.
+  const callerReports = Boolean(currentOverride) || indexOverride !== null;
+  const index = callerReports ? indexOverride : progress?.data?.index;
+  const total = callerReports ? totalOverride : progress?.data?.total;
+  // Indeterminate until the first counter arrives -- a bar pinned at zero
+  // reads as "nothing is happening", which is the opposite of the truth.
+  const percent = total ? Math.round((index / total) * 100) : null;
+  const currentLine = currentOverride || latest?.message || "Starting…";
+
+  if (dismissed && !running) return null;
 
   return (
-    <div className="publish-trace" role="status" aria-live="polite">
-      <div className="publish-trace-head">
-        <strong>{running ? "Publishing" : "Publish finished"}</strong>
-        {progress?.data && (
-          <span className="publish-trace-count">
-            step {progress.data.index} of {progress.data.total}
-          </span>
+    <div className="run-progress-backdrop" role="presentation">
+      <div
+        className="run-progress-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-live="polite"
+        aria-label={running ? runningLabel : doneLabel}
+      >
+        <div className="run-progress-head">
+          <div>
+            <span className="connection-eyebrow">{running ? "Working" : "Finished"}</span>
+            <h3>{running ? runningLabel : doneLabel}</h3>
+          </div>
+          <div className="run-progress-head-side">
+            {total ? (
+              <span className="run-progress-count">
+                {unit} {index} of {total}
+              </span>
+            ) : null}
+            {/* Only once it is safe to walk away -- closing mid-run would hide
+                a process the teacher cannot otherwise follow. */}
+            {running ? null : (
+              <button
+                type="button"
+                className="btn btn-secondary btn-small"
+                onClick={() => setDismissed(true)}
+              >
+                Close
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div
+          className={`publish-trace-bar${percent === null ? " is-indeterminate" : ""}`}
+          role="progressbar"
+          aria-valuenow={percent === null ? undefined : percent}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <span style={percent === null ? undefined : { width: `${percent}%` }} />
+        </div>
+
+        {/* The step being worked on right now -- the one thing worth reading
+            while waiting. Everything else is available in the trace below. */}
+        <p className="run-progress-current">{currentLine}</p>
+        {percent === null ? null : <span className="run-progress-percent">{percent}%</span>}
+
+        {failures.length > 0 && (
+          <ul className="publish-trace-failures">
+            {failures.map((event) => (
+              <li key={event.seq}>{event.message}</li>
+            ))}
+          </ul>
         )}
+
+        <details className="publish-trace-log">
+          <summary>Full trace ({events.length})</summary>
+          <ol>
+            {events.map((event) => (
+              <li key={event.seq}>{event.message}</li>
+            ))}
+          </ol>
+        </details>
       </div>
-      {latest && <p className="publish-trace-current">{latest.message}</p>}
-      {failures.length > 0 && (
-        <ul className="publish-trace-failures">
-          {failures.map((e) => (
-            <li key={e.seq}>{e.message}</li>
-          ))}
-        </ul>
-      )}
-      <details className="publish-trace-log">
-        <summary>Full trace ({events.length})</summary>
-        <ol>
-          {events.map((e) => (
-            <li key={e.seq}>{e.message}</li>
-          ))}
-        </ol>
-      </details>
     </div>
   );
 }
@@ -1384,8 +1576,6 @@ function PublishPanel({
   onError,
   onMessage,
 }) {
-  const [publishing, setPublishing] = useState(false);
-  const [publishEvents, setPublishEvents] = useState([]);
   const [deletingKey, setDeletingKey] = useState("");
 
   async function runDeletion(key, confirmText, successText, action) {
@@ -1424,88 +1614,22 @@ ${question.prompt}`,
     );
   }
 
-  // Publishing narrates images, settles versions and synthesises audio, each
-  // of which calls a local model. The request only starts the run; progress
-  // arrives by polling the run's event stream so the teacher can see which
-  // stage is working rather than watching a spinner for several minutes.
-  async function handlePublish() {
-    setPublishing(true);
-    setPublishEvents([]);
-    onError("");
-    onMessage("");
-    try {
-      const started = await publishTopic(courseId, topicId);
-      await followPublishRun(started.run_id);
-    } catch (err) {
-      onError(err.message);
-      setPublishing(false);
-    }
-  }
-
-  async function followPublishRun(runId) {
-    let after = 0;
-    while (true) {
-      let payload;
-      try {
-        payload = await fetchGenerationRunEvents(runId, after);
-      } catch (err) {
-        onError(`Lost contact with the publish run: ${err.message}`);
-        setPublishing(false);
-        return;
-      }
-
-      const incoming = payload.events || [];
-      if (incoming.length) {
-        after = incoming[incoming.length - 1].seq;
-        setPublishEvents((current) => [...current, ...incoming]);
-      }
-
-      const status = payload.run?.status;
-      if (status === "finished" || status === "failed") {
-        setPublishing(false);
-        const summary = incoming.find((e) => e.event_type === "publish_finished")?.data?.summary;
-        if (status === "failed") {
-          onError("Publishing did not complete. Resolve the content or audio errors in the trace below, then retry.");
-        } else if (summary) {
-          const audio = summary.audio_generated_count || 0;
-          const materials = summary.materials_processed || 0;
-          const incomplete = (summary.incomplete_versions || []).length;
-          onMessage(
-            `Published. ${audio} audio file${audio === 1 ? "" : "s"} across `
-            + `${materials} lesson file${materials === 1 ? "" : "s"}.`
-            + (incomplete ? ` ${incomplete} concept${incomplete === 1 ? "" : "s"} still missing a version.` : ""),
-          );
-        } else {
-          onMessage("Published.");
-        }
-        try {
-          const refreshed = await fetchLearningResources(courseId, topicId);
-          onResourcesChange(refreshed);
-        } catch {
-          // The run is what matters; a stale panel is recoverable by reloading.
-        }
-        return;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
-  }
-
   return (
     <section className="connection-review-panel" aria-labelledby="publish-panel-title">
       <div className="connection-review-heading">
         <div>
           <span className="connection-eyebrow">Final review</span>
-          <h3 id="publish-panel-title">Learning objects overview</h3>
+          <h3 id="publish-panel-title">Content and questions</h3>
           <p>
-            Review every confirmed learning object for this topic, then publish to generate lesson audio.
+            Check every concept's three versions and the questions generated from it.
+            The learning path is reviewed next, and publishing happens after that.
           </p>
         </div>
         <span className="connection-source-count">
           {groups.length} concept{groups.length === 1 ? "" : "s"}
         </span>
       </div>
-      <div className="review-step-indicator has-four-steps" aria-label="Review progress">
+      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
         <span className="is-complete">1</span>
         <div aria-hidden="true" />
         <span className="is-complete">2</span>
@@ -1513,7 +1637,9 @@ ${question.prompt}`,
         <span className="is-complete">3</span>
         <div aria-hidden="true" />
         <span className="is-active">4</span>
-        <strong>Publish</strong>
+        <div aria-hidden="true" />
+        <span>5</span>
+        <strong>Content &amp; questions</strong>
       </div>
 
       {!groups.length ? (
@@ -1537,25 +1663,51 @@ ${question.prompt}`,
                   </span>
                 </header>
                 <div className="publish-object-list">
-                  {group.learning_objects.map((item) => (
-                    <div className="publish-object-item" key={item.id}>
-                      <div className="publish-item-heading">
-                        <strong>{item.title}</strong>
-                        <button
-                          type="button"
-                          className="btn btn-danger btn-small"
-                          disabled={publishing || Boolean(busyAction) || Boolean(deletingKey)}
-                          onClick={() => handleDeleteObject(item)}
-                        >
-                          {deletingKey === `object-${item.id}` ? "Deleting..." : "Delete"}
-                        </button>
+                  {group.learning_objects.map((item) => {
+                    const isRepresentative =
+                      Number(item.id) === Number(group.versions?.representative_id);
+                    const slots = group.versions?.slots || {};
+                    // "Normal" is the representative's own text -- unlike the
+                    // other two it is not a stored slot, so it is read from the
+                    // object rather than from `slots`.
+                    const versions = isRepresentative
+                      ? [
+                        { key: "normal", label: "Normal", text: item.content },
+                        { key: "simplified", label: "Simplified", text: slots.simplified?.text },
+                        { key: "elaborated", label: "Elaborated", text: slots.elaborated?.text },
+                      ]
+                      : [{ key: "normal", label: "Other variation", text: item.content }];
+                    return (
+                      <div className="publish-object-item" key={item.id}>
+                        <div className="publish-item-heading">
+                          <strong>{item.title}</strong>
+                          <button
+                            type="button"
+                            className="btn btn-danger btn-small"
+                            disabled={Boolean(busyAction) || Boolean(deletingKey)}
+                            onClick={() => handleDeleteObject(item)}
+                          >
+                            {deletingKey === `object-${item.id}` ? "Deleting..." : "Delete"}
+                          </button>
+                        </div>
+                        <div className="publish-version-set">
+                          {versions.map((version) => (
+                            <section className={`publish-version is-${version.key}`} key={version.key}>
+                              <h6>{version.label}</h6>
+                              {version.text ? (
+                                <FormattedLearningObjectContent
+                                  content={version.text}
+                                  className="learning-object-content-text"
+                                />
+                              ) : (
+                                <p className="publish-version-missing">Not generated yet.</p>
+                              )}
+                            </section>
+                          ))}
+                        </div>
                       </div>
-                      <FormattedLearningObjectContent
-                        content={item.content}
-                        className="learning-object-content-text"
-                      />
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
                 <div className="publish-question-list">
                   <h5>
@@ -1575,7 +1727,7 @@ ${question.prompt}`,
                           <button
                             type="button"
                             className="btn btn-danger btn-small"
-                            disabled={publishing || Boolean(busyAction) || Boolean(deletingKey)}
+                            disabled={Boolean(busyAction) || Boolean(deletingKey)}
                             onClick={() => handleDeleteQuestion(question)}
                           >
                             {deletingKey === `question-${question.id}` ? "Deleting..." : "Delete"}
@@ -1607,27 +1759,19 @@ ${question.prompt}`,
         <button
           type="button"
           className="btn btn-secondary"
-          disabled={publishing || Boolean(busyAction)}
+          disabled={Boolean(busyAction) || Boolean(deletingKey)}
           onClick={() => onReviewStepChange("questions")}
         >
           Back to question pairs
         </button>
-        {(publishing || publishEvents.length > 0) && (
-          <PublishTrace events={publishEvents} running={publishing} />
-        )}
-        <div className="publish-status">
-          {topic?.published_at && (
-            <small>Last published {new Date(topic.published_at).toLocaleString()}</small>
-          )}
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={publishing || Boolean(busyAction) || confirmedSourceCount === 0}
-            onClick={handlePublish}
-          >
-            {publishing ? "Publishing..." : topic?.published ? "Republish course" : "Publish course"}
-          </button>
-        </div>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={Boolean(busyAction) || Boolean(deletingKey)}
+          onClick={() => onReviewStepChange("path")}
+        >
+          Next: review learning path
+        </button>
       </div>
     </section>
   );
@@ -1648,6 +1792,10 @@ function LearningObjectConnections({
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState("");
   const [versionGenerationEvents, setVersionGenerationEvents] = useState([]);
+  // Writing the missing versions is a series of local-model calls with nothing
+  // to watch. This is the position within that walk, so the dialog can say
+  // which concept is being written rather than only that something is running.
+  const [missingProgress, setMissingProgress] = useState(null);
   const [filter, setFilter] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -1910,26 +2058,45 @@ function LearningObjectConnections({
       const slots = group.versions?.slots || {};
       const missingCount = (slots.simplified ? 0 : 1) + (slots.elaborated ? 0 : 1);
       return missingCount
-        ? [{ id: group.versions.representative_id, missingCount }]
+        ? [{
+          id: group.versions.representative_id,
+          missingCount,
+          // Named so the progress dialog can report the concept rather than an
+          // anonymous position in a queue.
+          label: group.label
+            || group.learning_objects?.[0]?.title
+            || "Untitled concept",
+        }]
         : [];
     });
     if (!targets.length) return;
     const totalMissing = targets.reduce((count, target) => count + target.missingCount, 0);
 
     setBusyAction("version-generate-missing-all");
+    setMissingProgress({ index: 0, total: targets.length, label: "" });
     onError("");
     onMessage(`Generating ${totalMissing} missing version${totalMissing === 1 ? "" : "s"}.`);
     let generatedCount = 0;
     const failures = [];
+    let latest = null;
     try {
-      for (const target of targets) {
+      for (let position = 0; position < targets.length; position += 1) {
+        const target = targets[position];
+        setMissingProgress({
+          index: position + 1,
+          total: targets.length,
+          label: target.label || "this concept",
+        });
         try {
           const data = await generateObjectVersions(
             courseId,
             topicId,
             target.id,
           );
-          setResources(data);
+          // Held until the loop ends. Publishing resources per iteration made
+          // the whole page re-render on every concept, which is what kept
+          // throwing the teacher back to the uploaded file view.
+          latest = data;
           const result = data.version_generation || {};
           generatedCount += result.generated?.length || 0;
           failures.push(...(result.errors || []));
@@ -1937,6 +2104,7 @@ function LearningObjectConnections({
           failures.push({ detail: err.message });
         }
       }
+      if (latest) setResources(latest);
       onMessage(
         `Generated ${generatedCount} missing version${generatedCount === 1 ? "" : "s"}.`,
       );
@@ -1947,6 +2115,7 @@ function LearningObjectConnections({
       }
     } finally {
       setBusyAction("");
+      setMissingProgress(null);
     }
   }
 
@@ -2097,7 +2266,7 @@ function LearningObjectConnections({
   }
 
   return (
-    <div className={`connection-review-layout ${reviewStep === "publish" ? "" : "has-recommendations"}`.trim()}>
+    <div className={`connection-review-layout ${["publish", "path"].includes(reviewStep) ? "" : "has-recommendations"}`.trim()}>
       {reviewStep === "objects" && (
       <section
         className="connection-review-panel"
@@ -2362,6 +2531,7 @@ function LearningObjectConnections({
           onGenerate={generateVersions}
           onGenerateAll={generateAllMissingVersions}
           generationEvents={versionGenerationEvents}
+          missingProgress={missingProgress}
           onEditVersion={saveVersionText}
         />
       )}
@@ -2418,7 +2588,216 @@ function LearningObjectConnections({
           onMessage={onMessage}
         />
       )}
+      {reviewStep === "path" && (
+        <LearningPathReviewPanel
+          courseId={courseId}
+          topicId={topicId}
+          topic={topic}
+          confirmedSourceCount={confirmedSourceCount}
+          busyAction={busyAction}
+          onReviewStepChange={onReviewStepChange}
+          onResourcesChange={setResources}
+          onError={onError}
+          onMessage={onMessage}
+        />
+      )}
     </div>
+  );
+}
+
+// Step 5. The path is derived from the content, so it cannot be reviewed until
+// the content is settled -- and publishing is what turns the *reviewed* path
+// into audio, which is why the publish button lives here and not a step
+// earlier.
+function LearningPathReviewPanel({
+  courseId,
+  topicId,
+  topic,
+  confirmedSourceCount,
+  busyAction,
+  onReviewStepChange,
+  onResourcesChange,
+  onError,
+  onMessage,
+}) {
+  const [pathData, setPathData] = useState(null);
+  const [loadingPath, setLoadingPath] = useState(true);
+  const [publishing, setPublishing] = useState(false);
+  const [publishEvents, setPublishEvents] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPath() {
+      setLoadingPath(true);
+      try {
+        const data = await fetchTopicLearningPath(topicId);
+        if (!cancelled) setPathData(data);
+      } catch (err) {
+        if (!cancelled) onError(err.message);
+      } finally {
+        if (!cancelled) setLoadingPath(false);
+      }
+    }
+
+    loadPath();
+    return () => {
+      cancelled = true;
+    };
+  }, [topicId]);
+
+  // Publishing narrates images, settles versions and synthesises audio, each of
+  // which calls a local model. The request only starts the run; progress
+  // arrives by polling the run's events, so the teacher sees which stage is
+  // working rather than a spinner for several minutes.
+  async function handlePublish() {
+    setPublishing(true);
+    setPublishEvents([]);
+    onError("");
+    onMessage("");
+    try {
+      const started = await publishTopic(courseId, topicId);
+      await followPublishRun(started.run_id);
+    } catch (err) {
+      onError(err.message);
+      setPublishing(false);
+    }
+  }
+
+  async function followPublishRun(runId) {
+    let after = 0;
+    while (true) {
+      let payload;
+      try {
+        payload = await fetchGenerationRunEvents(runId, after);
+      } catch (err) {
+        onError(`Lost contact with the publish run: ${err.message}`);
+        setPublishing(false);
+        return;
+      }
+
+      const incoming = payload.events || [];
+      if (incoming.length) {
+        after = incoming[incoming.length - 1].seq;
+        setPublishEvents((current) => [...current, ...incoming]);
+      }
+
+      const status = payload.run?.status;
+      if (status === "finished" || status === "failed") {
+        setPublishing(false);
+        const summary = incoming.find((event) => event.event_type === "publish_finished")?.data?.summary;
+        if (status === "failed") {
+          onError("Publishing did not complete. Resolve the reported errors in the trace, then retry.");
+        } else if (summary) {
+          const audio = summary.audio_generated_count || 0;
+          const materials = summary.materials_processed || 0;
+          const incomplete = (summary.incomplete_versions || []).length;
+          onMessage(
+            `Published. ${audio} audio file${audio === 1 ? "" : "s"} across `
+            + `${materials} lesson file${materials === 1 ? "" : "s"}.`
+            + (incomplete ? ` ${incomplete} concept${incomplete === 1 ? "" : "s"} still missing a version.` : ""),
+          );
+        } else {
+          onMessage("Published.");
+        }
+        try {
+          onResourcesChange(await fetchLearningResources(courseId, topicId));
+        } catch {
+          // The run is what matters; a stale panel is recoverable by reloading.
+        }
+        return;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+
+  const paths = pathData?.paths || [];
+
+  return (
+    <section className="connection-review-panel" aria-labelledby="path-review-panel-title">
+      <div className="connection-review-heading">
+        <div>
+          <span className="connection-eyebrow">Final review</span>
+          <h3 id="path-review-panel-title">Learning path</h3>
+          <p>
+            The order this topic would be taught in, derived from the content. Review it,
+            then publish to generate the lesson audio.
+          </p>
+        </div>
+        <span className="connection-source-count">
+          {paths.length} lesson file{paths.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
+        <span className="is-complete">1</span>
+        <div aria-hidden="true" />
+        <span className="is-complete">2</span>
+        <div aria-hidden="true" />
+        <span className="is-complete">3</span>
+        <div aria-hidden="true" />
+        <span className="is-complete">4</span>
+        <div aria-hidden="true" />
+        <span className="is-active">5</span>
+        <strong>Learning path</strong>
+      </div>
+
+      {loadingPath && !pathData && <p className="muted-text">Deriving the path…</p>}
+
+      {pathData?.problems?.length > 0 && (
+        <div className="error-banner">
+          <strong>Some lesson files have no usable order.</strong>
+          <ul>
+            {pathData.problems.map((problem) => (
+              <li key={problem.material_id}>
+                {problem.material_title}: {problem.detail}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {!loadingPath && !paths.length && (
+        <div className="review-queue-empty">No completed lesson files in this topic yet.</div>
+      )}
+
+      {paths.map((path) => (
+        <MaterialPath key={path.material_id} path={path} />
+      ))}
+
+      <div className="review-step-actions-row">
+        <button
+          type="button"
+          className="btn btn-secondary"
+          disabled={publishing || Boolean(busyAction)}
+          onClick={() => onReviewStepChange("publish")}
+        >
+          Back to content and questions
+        </button>
+        <div className="publish-status">
+          {topic?.published_at && (
+            <small>Last published {new Date(topic.published_at).toLocaleString()}</small>
+          )}
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={publishing || Boolean(busyAction) || confirmedSourceCount === 0}
+            onClick={handlePublish}
+          >
+            {publishing ? "Publishing..." : topic?.published ? "Republish course" : "Publish course"}
+          </button>
+        </div>
+      </div>
+
+      {(publishing || publishEvents.length > 0) && (
+        <RunProgress
+          events={publishEvents}
+          running={publishing}
+          runningLabel="Publishing"
+          doneLabel="Publish finished"
+        />
+      )}
+    </section>
   );
 }
 
@@ -3184,9 +3563,17 @@ export default function TopicDetailPage() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [connectionReviewStep, setConnectionReviewStep] = useState("objects");
 
+  // Only a genuine change of URL should move the teacher. This used to run on
+  // every re-render caused by refreshed resources, so generating versions --
+  // which refreshes once per concept -- kept throwing the teacher out of the
+  // review flow and back onto the uploaded file named in `?material=`.
+  const navigationTarget = `${courseId}:${topicId}:${uploadedMaterialId || ""}`;
+  const lastNavigationTarget = useRef(navigationTarget);
   useEffect(() => {
+    if (lastNavigationTarget.current === navigationTarget) return;
+    lastNavigationTarget.current = navigationTarget;
     setActiveSource(uploadedMaterialId || "connections");
-  }, [courseId, topicId, uploadedMaterialId]);
+  }, [navigationTarget, uploadedMaterialId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3468,9 +3855,6 @@ export default function TopicDetailPage() {
               <p className="muted-text">
                 Selected module/topic: {selectedModule?.title || topic.title} / {topic.title}
               </p>
-              <Link className="topic-path-link" to={`/courses/${courseId}/topics/${topic.id}/path`}>
-                View learning path
-              </Link>
             </div>
             {!(activeSource === "connections" && ["versions", "questions"].includes(connectionReviewStep)) && (
               <label className="btn btn-primary">

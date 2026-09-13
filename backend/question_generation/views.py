@@ -254,8 +254,14 @@ class StartGenerationView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # one run at a time; unstick runs orphaned by a server restart
-        for run in GenerationRun.objects.filter(status="running"):
+        # One question run at a time; unstick runs orphaned by a server restart.
+        # Scoped to this kind deliberately: an extraction or publish run is
+        # unrelated work, and refusing to generate questions because a PDF is
+        # still being read would be a conflict the teacher cannot act on.
+        for run in GenerationRun.objects.filter(
+            status="running",
+            kind=GenerationRun.Kind.QUESTIONS,
+        ):
             last_event = run.events.order_by("-seq").first()
             last_activity = last_event.created_at if last_event else run.started_at
             if (timezone.now() - last_activity).total_seconds() > STALE_RUN_SECONDS:
@@ -268,7 +274,9 @@ class StartGenerationView(APIView):
                     status=status.HTTP_409_CONFLICT,
                 )
 
-        run = GenerationRun.objects.create(material=material, node=node)
+        run = GenerationRun.objects.create(
+            material=material, node=node, kind=GenerationRun.Kind.QUESTIONS,
+        )
         threading.Thread(
             target=_run_pipeline,
             args=(run.id, material.id, [node.id] if node else normal_ids),
@@ -454,6 +462,9 @@ class GenerationTraceView(APIView):
         return Response({
             "run": {
                 "id": run.id,
+                # Lets one progress dialog label itself for every pipeline.
+                "kind": run.kind,
+                "kind_label": run.get_kind_display(),
                 "material_id": run.material_id,
                 # A publish run covers a topic and has no material.
                 "material_title": run.material.title if run.material_id else None,

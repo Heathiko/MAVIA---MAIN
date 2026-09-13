@@ -153,7 +153,9 @@ function PathStep({ step, titleById, floating, showText }) {
   );
 }
 
-function MaterialPath({ path }) {
+// Exported so the topic review flow can show the same path display inline as
+// its own step, rather than keeping a second copy in sync with this one.
+export function MaterialPath({ path }) {
   const [view, setView] = useState("list");
   const [showText, setShowText] = useState(false);
   const steps = path.steps || [];

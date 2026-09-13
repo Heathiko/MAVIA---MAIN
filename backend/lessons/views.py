@@ -1034,7 +1034,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        run = GenerationRun.objects.create(outline_node=node)
+        run = GenerationRun.objects.create(
+            outline_node=node, kind=GenerationRun.Kind.PUBLISH,
+        )
         threading.Thread(
             target=_run_topic_publish_in_background,
             # The confirmation helper lives on the viewset and does not touch
@@ -1137,7 +1139,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        run = GenerationRun.objects.create(outline_node=node)
+        run = GenerationRun.objects.create(
+            outline_node=node, kind=GenerationRun.Kind.VERSIONS,
+        )
         threading.Thread(
             target=_run_all_versions_in_background,
             args=(run.id, node.id),
