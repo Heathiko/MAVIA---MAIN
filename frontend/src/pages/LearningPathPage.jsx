@@ -146,7 +146,14 @@ function PathStep({ step, titleById, floating, showText }) {
           ) : (
             <span className="muted-text">No prerequisites</span>
           )}
-          <span className="muted-text">confidence {step.support_confidence}</span>
+          {step.support_confidence != null && (
+            <span className="muted-text">confidence {step.support_confidence}</span>
+          )}
+          {step.source_count > 1 && (
+            <span className="muted-text" title="Uploaded files that teach this concept">
+              from {step.source_count} sources
+            </span>
+          )}
         </div>
       </div>
     </li>
@@ -164,28 +171,48 @@ export function MaterialPath({ path }) {
     [steps],
   );
   const layers = useMemo(() => groupStepsByDepth(steps), [steps]);
-  const floating = useMemo(() => new Set(findFloatingSteps(steps)), [steps]);
   const edges = path.edges || [];
+  // No prerequisites have been derived, so the sequence is the one the teacher's
+  // own materials present. Every dependency-flavoured signal below would be a
+  // falsehood in this mode: with no edges, *every* step reads as "not
+  // connected", every position looks unmoved by a graph that never ran, and
+  // confidence describes support that does not exist.
+  const documentOrder = path.diagnostics?.ordering === "document_order";
+  const floating = useMemo(
+    () => (documentOrder ? new Set() : new Set(findFloatingSteps(steps))),
+    [steps, documentOrder],
+  );
 
   return (
     <section className="path-material">
       <header className="path-material-head">
-        <h3>{path.material_title || "Untitled lesson file"}</h3>
+        <h3>{path.material_title || path.topic_title || "Untitled lesson file"}</h3>
         <div className="path-material-stats">
-          <span>{steps.length} steps</span>
-          <span>{edges.length} edges</span>
-          <span>{layers.length} layers</span>
-          {floating.size > 0 && (
-            <span className="is-warning">{floating.size} not connected</span>
-          )}
-          {path.diagnostics && (
-            <span
-              title="The graph decides what must precede what; the author breaks the ties it leaves open."
-            >
-              {path.diagnostics.displaced_object_count === 0
-                ? "matches the PDF order"
-                : `${path.diagnostics.displaced_object_count} moved by the graph`}
-            </span>
+          <span>{steps.length} {documentOrder ? "concepts" : "steps"}</span>
+          {documentOrder ? (
+            <>
+              <span>{path.diagnostics?.material_count ?? 0} lesson files</span>
+              <span title="Concepts taught by more than one of the uploaded files.">
+                {path.diagnostics?.multi_source_concept_count ?? 0} shared across files
+              </span>
+            </>
+          ) : (
+            <>
+              <span>{edges.length} edges</span>
+              <span>{layers.length} layers</span>
+              {floating.size > 0 && (
+                <span className="is-warning">{floating.size} not connected</span>
+              )}
+              {path.diagnostics && (
+                <span
+                  title="The graph decides what must precede what; the author breaks the ties it leaves open."
+                >
+                  {path.diagnostics.displaced_object_count === 0
+                    ? "matches the PDF order"
+                    : `${path.diagnostics.displaced_object_count} moved by the graph`}
+                </span>
+              )}
+            </>
           )}
         </div>
         <div className="path-view-toggle" role="group" aria-label="View">
@@ -203,9 +230,17 @@ export function MaterialPath({ path }) {
           >
             List
           </button>
+          {/* Kept visible but disabled while there is nothing to draw. Hiding it
+              reads as broken; saying why does not. */}
           <button
             type="button"
             className={`btn btn-small ${view === "graph" ? "btn-primary" : "btn-secondary"}`}
+            disabled={documentOrder}
+            title={
+              documentOrder
+                ? `The graph draws prerequisite arrows. None are derived yet, so it would be ${steps.length} unconnected boxes.`
+                : undefined
+            }
             onClick={() => setView("graph")}
           >
             Graph
@@ -213,10 +248,17 @@ export function MaterialPath({ path }) {
         </div>
       </header>
 
+      {documentOrder && (
+        <p className="muted-text path-ordering-note">
+          Ordered as your lesson files present it. Prerequisites are not derived yet,
+          so no step is shown as depending on another.
+        </p>
+      )}
+
       {view === "graph" && <PathGraph steps={steps} edges={edges} />}
 
       {view === "list" && !steps.length ? (
-        <p className="muted-text">This lesson file has no teaching steps yet.</p>
+        <p className="muted-text">This topic has no teaching steps yet.</p>
       ) : view === "list" ? (
         layers.map(({ depth, steps: layerSteps }) => (
           <div className="path-layer" key={depth}>
@@ -297,8 +339,8 @@ export default function LearningPathPage() {
           <span className="connection-eyebrow">Learning path</span>
           <h2>{data?.topic?.title || "Learning path"}</h2>
           <p className="muted-text">
-            The order the system would teach this topic in, grouped by how many levels of
-            prerequisites each step sits behind. Each lesson file is ordered on its own.
+            One path for the whole topic. Each step is a concept, assembled from every
+            uploaded file that teaches it.
           </p>
         </div>
         <div className="learning-path-actions">
@@ -329,7 +371,10 @@ export default function LearningPathPage() {
       )}
 
       {data?.paths?.length === 0 && !loading && (
-        <p className="muted-text">No completed lesson files in this topic yet.</p>
+        <p className="muted-text">
+          No path yet. Each step is a concept, so confirm the learning objects in
+          your lesson files first — grouping is what turns them into concepts.
+        </p>
       )}
 
       {(data?.paths || []).map((path) => (

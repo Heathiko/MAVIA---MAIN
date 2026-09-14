@@ -3123,7 +3123,13 @@ function LearningPathReviewPanel({
           </p>
         </div>
         <span className="connection-source-count">
-          {paths.length} lesson file{paths.length === 1 ? "" : "s"}
+          {/* One path now covers every file, so counting paths would always
+              say "1". What the teacher wants is how much it covers. */}
+          {paths[0]?.diagnostics?.concept_count ?? 0} concept
+          {(paths[0]?.diagnostics?.concept_count ?? 0) === 1 ? "" : "s"}
+          {" from "}
+          {paths[0]?.diagnostics?.material_count ?? 0} lesson file
+          {(paths[0]?.diagnostics?.material_count ?? 0) === 1 ? "" : "s"}
         </span>
       </div>
       <div className="review-step-indicator has-five-steps" aria-label="Review progress">
@@ -3155,7 +3161,10 @@ function LearningPathReviewPanel({
       )}
 
       {!loadingPath && !paths.length && (
-        <div className="review-queue-empty">No completed lesson files in this topic yet.</div>
+        <div className="review-queue-empty">
+          No path yet. Each step is a concept, so confirm the learning objects in
+          your lesson files first — grouping is what turns them into concepts.
+        </div>
       )}
 
       {paths.map((path) => (

@@ -1,83 +1,118 @@
-from django.core.exceptions import ValidationError
 from django.db import models
 
-from lessons.models import LearningObject
+from lessons.models import LearningObjectGroup, OutlineNode
 
 
-class PrerequisiteEdge(models.Model):
-    """A directed dependency between two learning objects.
+class ConceptPrerequisite(models.Model):
+    """"Learn ``prerequisite`` before ``dependent``", between two concepts of a topic.
 
-    ``prerequisite`` must be taught before ``dependent``. Edges are *derived*
-    from textual signals rather than authored, so each row records which signal
-    produced it and the evidence behind it. That keeps the graph inspectable
-    and, later, correctable by a teacher.
+    A concept is a ``LearningObjectGroup``: the same idea taught across a
+    topic's PDFs. Rows are proposed by the v3 criteria or decided by a teacher,
+    and ``status`` says which -- only ``accepted`` and ``approved`` rows shape
+    the learning path.
 
-    The same pair can be supported by more than one signal; the graph layer
-    collapses those into a single edge, so the uniqueness constraint is on
-    ``(prerequisite, dependent, signal)`` rather than on the pair alone.
+    Teacher decisions outlive re-derivation: publishing again recomputes the
+    derived rows but never touches an ``approved`` or ``rejected`` one, so a
+    pair a teacher turned down is not proposed again.
     """
 
-    class Signal(models.TextChoices):
-        # Individual criteria (reference asymmetry, section reference,
-        # co-occurrence) are no longer signals of their own. They are votes,
-        # and one pair yields one edge whose ``evidence`` records which
-        # criteria fired in which direction.
-        VOTED = "voted", "Carried a majority of the derivation criteria"
-        CHUNK_CONTINUATION = "chunk_continuation", "Next part of a passage the chunker split"
-        TEACHER_AUTHORED = "teacher_authored", "Added by a teacher during review"
+    class Status(models.TextChoices):
+        ACCEPTED = "accepted", "Accepted by the criteria"
+        # Stored but hidden from teachers by default: measured on a blind
+        # hand-check, most pending proposals were wrong.
+        PENDING = "pending", "Proposed, awaiting a teacher"
+        APPROVED = "approved", "Approved by a teacher"
+        REJECTED = "rejected", "Rejected by a teacher"
 
     class Source(models.TextChoices):
-        DERIVED = "derived", "Derived from text signals"
-        TEACHER = "teacher", "Added by a teacher"
+        DERIVED = "derived", "Derived by the criteria"
+        TEACHER = "teacher", "Decided by a teacher"
 
+    SHAPES_PATH = (Status.ACCEPTED, Status.APPROVED)
+    TEACHER_DECIDED = (Status.APPROVED, Status.REJECTED)
+
+    outline_node = models.ForeignKey(
+        OutlineNode,
+        related_name="concept_prerequisites",
+        on_delete=models.CASCADE,
+    )
     prerequisite = models.ForeignKey(
-        LearningObject,
-        related_name="dependent_edges",
+        LearningObjectGroup,
+        related_name="dependent_links",
         on_delete=models.CASCADE,
     )
     dependent = models.ForeignKey(
-        LearningObject,
-        related_name="prerequisite_edges",
+        LearningObjectGroup,
+        related_name="prerequisite_links",
         on_delete=models.CASCADE,
     )
-    signal = models.CharField(max_length=30, choices=Signal.choices)
-    # Teacher-added edges survive re-derivation; derived ones are replaced.
-    source = models.CharField(
-        max_length=10,
-        choices=Source.choices,
-        default=Source.DERIVED,
-        db_index=True,
-    )
-    # How much confidence this edge carries. Consumed by the topological sort:
-    # within one dependency layer, better-evidenced nodes are taught first.
-    weight = models.FloatField(default=1.0)
+    status = models.CharField(max_length=10, choices=Status.choices, db_index=True)
+    source = models.CharField(max_length=10, choices=Source.choices, default=Source.DERIVED)
+    # Both concepts sit under lesson headings that share nothing. Such an edge
+    # is never accepted automatically; see learning_path/CRITERIA.md.
+    cross_section = models.BooleanField(default=False)
+    # The votes and scores behind a derived row, kept so a decision can be
+    # explained and a later scoring change needs no re-derivation to compare.
     evidence = models.JSONField(default=dict, blank=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["dependent_id", "-weight", "id"]
-        indexes = [
-            models.Index(fields=["dependent"]),
-            models.Index(fields=["prerequisite"]),
-        ]
+        ordering = ["outline_node_id", "prerequisite_id", "dependent_id"]
         constraints = [
             models.UniqueConstraint(
-                fields=["prerequisite", "dependent", "signal"],
-                name="unique_prerequisite_edge_per_signal",
+                fields=["prerequisite", "dependent"],
+                name="unique_concept_prerequisite_pair",
             ),
             models.CheckConstraint(
                 condition=~models.Q(prerequisite=models.F("dependent")),
-                name="prerequisite_edge_must_not_be_self_loop",
+                name="concept_prerequisite_must_not_be_self_loop",
             ),
         ]
 
-    def clean(self):
-        if self.prerequisite_id == self.dependent_id:
-            raise ValidationError({"dependent": "A learning object cannot be its own prerequisite."})
-        if self.prerequisite.material_id != self.dependent.material_id:
-            raise ValidationError({
-                "dependent": "Prerequisite edges are derived within a single learning material."
-            })
+    def __str__(self):
+        return f"{self.prerequisite_id} -> {self.dependent_id} ({self.status})"
+
+
+class LearningPathStep(models.Model):
+    """One step of a topic's published learning path.
+
+    Saved when a topic publishes successfully and replaced wholesale on the
+    next successful publish, so students always follow the path that matches
+    the content they can see. Everything a step teaches hangs off its concept:
+    the Normal, Simplified and Elaborated versions and the generated questions
+    all belong to the concept's representative learning object.
+    """
+
+    outline_node = models.ForeignKey(
+        OutlineNode,
+        related_name="learning_path_steps",
+        on_delete=models.CASCADE,
+    )
+    concept = models.ForeignKey(
+        LearningObjectGroup,
+        related_name="path_steps",
+        on_delete=models.CASCADE,
+    )
+    position = models.PositiveIntegerField()
+    # How many prerequisite links lead to this step at most. Steps sharing a
+    # depth do not depend on one another.
+    depth = models.PositiveSmallIntegerField(default=0)
+    published_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ["outline_node_id", "position"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["outline_node", "position"],
+                name="unique_learning_path_position",
+            ),
+            models.UniqueConstraint(
+                fields=["outline_node", "concept"],
+                name="unique_learning_path_concept",
+            ),
+        ]
 
     def __str__(self):
-        return f"{self.prerequisite_id} -> {self.dependent_id} ({self.signal})"
+        return f"{self.outline_node_id} #{self.position}: {self.concept_id}"
