@@ -472,3 +472,25 @@ export function fetchGenerationRunEvents(runId, after = 0) {
 export function fetchTopicLearningPath(nodeId) {
   return request(`/learning-path/topics/${nodeId}/`);
 }
+
+// A teacher says a concept needs another first. Returns the updated preview.
+// Students' saved path changes only at the next publish.
+export function addPathLink(nodeId, prerequisiteConceptId, dependentConceptId) {
+  return request(`/learning-path/topics/${nodeId}/links/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prerequisite_concept_id: prerequisiteConceptId,
+      dependent_concept_id: dependentConceptId,
+    }),
+  });
+}
+
+// "approved" accepts a suggestion; "rejected" removes a link for good.
+export function decidePathLink(nodeId, linkId, status) {
+  return request(`/learning-path/topics/${nodeId}/links/${linkId}/decision/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+}

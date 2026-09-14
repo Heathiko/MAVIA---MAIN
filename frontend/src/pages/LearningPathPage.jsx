@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { Background, Controls, ReactFlow } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import { fetchTopicLearningPath } from "../api";
+import { addPathLink, decidePathLink, fetchTopicLearningPath } from "../api";
 
 // Everything in one depth layer is a peer: nothing in it depends on anything
 // else in it, so the layer is what the ordering actually asserts. Exported so
@@ -107,10 +107,88 @@ function PathGraph({ steps, edges }) {
   );
 }
 
-function PathStep({ step, titleById, floating, showText }) {
-  const prerequisites = (step.prerequisite_ids || [])
-    .map((id) => titleById.get(id))
-    .filter(Boolean);
+// A teacher's controls for one step's prerequisites. Changes are saved at once
+// and the preview re-orders, but students keep the published path until the
+// topic is published again.
+function PrerequisiteEditor({ step, concepts, busy, onAdd, onDecide }) {
+  const current = step.prerequisites || [];
+  const suggestions = step.suggestions || [];
+  const taken = new Set([step.concept_id, ...current.map((link) => link.concept_id)]);
+  const choices = concepts.filter((concept) => !taken.has(concept.concept_id));
+
+  return (
+    <div className="path-link-editor">
+      <div className="path-link-row">
+        <span className="path-link-label">Needs first:</span>
+        {current.length === 0 && <span className="muted-text">nothing</span>}
+        {current.map((link) => (
+          <span className="path-link-chip" key={link.link_id}>
+            {link.title}
+            <button
+              type="button"
+              disabled={busy}
+              aria-label={`Remove ${link.title} as a prerequisite of ${step.title}`}
+              title="Remove. It won't be suggested again."
+              onClick={() => {
+                if (window.confirm(`Remove “${link.title}” as a prerequisite of “${step.title}”? It won't be suggested again.`)) {
+                  onDecide(link.link_id, "rejected");
+                }
+              }}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        <label className="path-link-add">
+          <span className="sr-only">Add a prerequisite for {step.title}</span>
+          <select
+            id={`add-prerequisite-${step.concept_id}`}
+            value=""
+            disabled={busy || choices.length === 0}
+            onChange={(event) => {
+              if (event.target.value) onAdd(Number(event.target.value), step.concept_id);
+            }}
+          >
+            <option value="">+ Add a prerequisite…</option>
+            {choices.map((concept) => (
+              <option key={concept.concept_id} value={concept.concept_id}>
+                {concept.position}. {concept.title}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {suggestions.length > 0 && (
+        <details className="path-link-suggestions">
+          <summary>Suggestions ({suggestions.length})</summary>
+          <ul>
+            {suggestions.map((link) => (
+              <li key={link.link_id}>
+                <span>
+                  {link.title}
+                  {link.cross_section && <small className="muted-text"> · different section</small>}
+                </span>
+                <span className="path-link-actions">
+                  <button type="button" className="btn btn-small btn-primary" disabled={busy} onClick={() => onDecide(link.link_id, "approved")}>
+                    Approve
+                  </button>
+                  <button type="button" className="btn btn-small btn-secondary" disabled={busy} onClick={() => onDecide(link.link_id, "rejected")}>
+                    Reject
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function PathStep({ step, titleById, floating, showText, editor }) {
+  const prerequisites = step.prerequisites
+    ? step.prerequisites.map((link) => link.title)
+    : (step.prerequisite_ids || []).map((id) => titleById.get(id)).filter(Boolean);
   const moved = step.position - 1 !== step.source_order;
 
   return (
@@ -138,8 +216,9 @@ function PathStep({ step, titleById, floating, showText }) {
             <p>{step.content}</p>
           </details>
         )}
+        {editor}
         <div className="path-step-meta">
-          {prerequisites.length > 0 ? (
+          {editor ? null : prerequisites.length > 0 ? (
             <span>
               After: <em>{prerequisites.join(", ")}</em>
             </span>
@@ -162,9 +241,40 @@ function PathStep({ step, titleById, floating, showText }) {
 
 // Exported so the topic review flow can show the same path display inline as
 // its own step, rather than keeping a second copy in sync with this one.
-export function MaterialPath({ path }) {
+export function MaterialPath({ path, topicId = null, editable = false, onPathData = null }) {
   const [view, setView] = useState("list");
   const [showText, setShowText] = useState(false);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkError, setLinkError] = useState("");
+  const conceptChoices = useMemo(
+    () => (path.steps || []).map((step) => ({
+      concept_id: step.concept_id, title: step.title, position: step.position,
+    })),
+    [path.steps],
+  );
+
+  async function changeLinks(action) {
+    setLinkBusy(true);
+    setLinkError("");
+    try {
+      const data = await action();
+      if (onPathData) onPathData(data);
+    } catch (error) {
+      setLinkError(error.message);
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
+  const editorFor = (step) => (editable && topicId ? (
+    <PrerequisiteEditor
+      step={step}
+      concepts={conceptChoices}
+      busy={linkBusy}
+      onAdd={(prerequisiteId, dependentId) => changeLinks(() => addPathLink(topicId, prerequisiteId, dependentId))}
+      onDecide={(linkId, status) => changeLinks(() => decidePathLink(topicId, linkId, status))}
+    />
+  ) : null);
   const steps = path.steps || [];
   const titleById = useMemo(
     () => new Map(steps.map((step) => [step.learning_object_id, step.title])),
@@ -250,10 +360,19 @@ export function MaterialPath({ path }) {
 
       {documentOrder && (
         <p className="muted-text path-ordering-note">
-          Ordered as your lesson files present it. Prerequisites are not derived yet,
-          so no step is shown as depending on another.
+          Ordered as your lesson files present it. No prerequisites are set yet, so no
+          step depends on another{editable ? " — add one on any step below" : ""}.
         </p>
       )}
+
+      {editable && path.diagnostics?.changed_since_publish && (
+        <p className="path-changed-note" role="status">
+          You changed prerequisites after the last publish. Students still follow the
+          published path until you publish again.
+        </p>
+      )}
+
+      {linkError && <p className="path-link-error" role="alert">{linkError}</p>}
 
       {view === "graph" && <PathGraph steps={steps} edges={edges} />}
 
@@ -278,6 +397,7 @@ export function MaterialPath({ path }) {
                   titleById={titleById}
                   floating={floating.has(step.learning_object_id)}
                   showText={showText}
+                  editor={editorFor(step)}
                 />
               ))}
             </ol>

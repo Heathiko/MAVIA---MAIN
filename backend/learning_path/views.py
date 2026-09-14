@@ -4,8 +4,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from lessons.models import OutlineNode
+from user.permissions import IsTeacherOrAdmin
 
 from .services import build_topic_path, get_published_path
+from .services.teacher_links import LinkError, add_link, decide_link
 
 # The review preview has no permission classes, deliberately: it is a
 # teacher-authoring endpoint beside `lessons` and `question_generation`, which
@@ -29,12 +31,53 @@ def topic_learning_path(request, node_id):
     except OutlineNode.DoesNotExist:
         return Response({"detail": "Topic not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    return Response(_preview(topic))
+
+
+def _preview(topic):
     path = build_topic_path(topic.id)
-    return Response({
+    return {
         "topic": {"id": topic.id, "title": topic.title},
         "paths": [path] if path["steps"] else [],
         "problems": [],
-    })
+    }
+
+
+@api_view(["POST"])
+@permission_classes([IsTeacherOrAdmin])
+def add_path_link(request, node_id):
+    """A teacher says one concept needs another first.
+
+    Body: ``{"prerequisite_concept_id": <group>, "dependent_concept_id": <group>}``.
+    Returns the updated preview. Reaches students at the next publish.
+    """
+    topic = OutlineNode.objects.filter(pk=node_id).first()
+    if topic is None:
+        return Response({"detail": "Topic not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        add_link(
+            topic,
+            int(request.data.get("prerequisite_concept_id")),
+            int(request.data.get("dependent_concept_id")),
+        )
+    except (TypeError, ValueError) as exc:
+        detail = str(exc) if isinstance(exc, LinkError) else "Choose both concepts."
+        return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(_preview(topic), status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([IsTeacherOrAdmin])
+def decide_path_link(request, node_id, link_id):
+    """Approve a suggestion, or reject (remove) a link. Body: ``{"status": "approved"|"rejected"}``."""
+    topic = OutlineNode.objects.filter(pk=node_id).first()
+    if topic is None:
+        return Response({"detail": "Topic not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        decide_link(topic, link_id, request.data.get("status"))
+    except LinkError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(_preview(topic))
 
 
 @api_view(["GET"])

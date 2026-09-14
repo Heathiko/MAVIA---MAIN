@@ -10,9 +10,10 @@ slow for a page load and happens at publish instead.
 
 from lessons.models import OutlineNode
 
-from ..models import ConceptPrerequisite
+from ..models import ConceptPrerequisite, LearningPathStep
 from .concept_units import concepts_for_topic
 from .publishing import order_with_links, path_links
+from .teacher_links import changed_since_publish
 
 
 def build_topic_path(node_id):
@@ -29,9 +30,33 @@ def build_topic_path(node_id):
     for before, after in links:
         prerequisites[after].append(before)
 
+    # Every stored link between live concepts, split by what the teacher sees:
+    # links shaping the order are shown on the step; pending ones are offered as
+    # suggestions, collapsed; rejected ones are not shown at all.
+    link_rows = list(ConceptPrerequisite.objects.filter(
+        outline_node=node, prerequisite_id__in=concept_ids, dependent_id__in=concept_ids,
+    ))
+    shown = {concept.id: [] for concept in concepts}
+    suggested = {concept.id: [] for concept in concepts}
+    order_index = {concept.id: index for index, concept in enumerate(ordered)}
+    for row in sorted(link_rows, key=lambda r: order_index[r.prerequisite_id]):
+        entry = {
+            "link_id": row.id,
+            "concept_id": row.prerequisite_id,
+            "title": title[row.prerequisite_id],
+            "status": row.status,
+            "cross_section": row.cross_section,
+        }
+        if row.status in ConceptPrerequisite.SHAPES_PATH:
+            shown[row.dependent_id].append(entry)
+        elif row.status == ConceptPrerequisite.Status.PENDING:
+            suggested[row.dependent_id].append(entry)
+
     steps = []
     for position, concept in enumerate(ordered, start=1):
         steps.append({
+            "prerequisites": shown[concept.id],
+            "suggestions": suggested[concept.id],
             "position": position,
             "concept_id": concept.id,
             # The representative's id: the review screen keys steps and
@@ -92,5 +117,12 @@ def build_topic_path(node_id):
                 1 for index, concept in enumerate(ordered) if concepts[index].id != concept.id
             ),
             "ignored_links": [[title[a], title[b]] for a, b in ignored],
+            "published_at": (
+                LearningPathStep.objects.filter(outline_node=node)
+                .order_by("-published_at").values_list("published_at", flat=True).first()
+            ),
+            # A teacher changed links after the path was last saved: students
+            # still follow the old one until the topic is published again.
+            "changed_since_publish": changed_since_publish(node),
         },
     }

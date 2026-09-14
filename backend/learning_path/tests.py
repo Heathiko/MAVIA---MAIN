@@ -173,3 +173,100 @@ class PublishedPathTests(TopicFixture):
             [step["concept_id"] for step in body["steps"]],
             [step["concept_id"] for step in get_published_path(self.topic)["steps"]],
         )
+
+
+class TeacherLinkTests(TopicFixture):
+    def setUp(self):
+        super().setUp()
+        self.teacher = self._client("TEACHER")
+        self.base = f"/api/learning-path/topics/{self.topic.id}"
+
+    def _add(self, before, after, client=None):
+        return (client or self.teacher).post(
+            f"{self.base}/links/",
+            {"prerequisite_concept_id": self.groups[before].id, "dependent_concept_id": self.groups[after].id},
+            format="json",
+        )
+
+    def _steps(self, response):
+        return {step["title"]: step for step in response.json()["paths"][0]["steps"]}
+
+    def test_a_teacher_can_add_a_link_and_the_preview_follows_it(self):
+        response = self._add("Liquid", "Solid")
+
+        self.assertEqual(response.status_code, 201, response.json())
+        steps = self._steps(response)
+        self.assertEqual([t for t in steps], ["Matter", "Liquid", "Solid"])
+        self.assertEqual([p["title"] for p in steps["Solid"]["prerequisites"]], ["Liquid"])
+        self.assertEqual(steps["Solid"]["prerequisites"][0]["status"], "approved")
+
+    def test_students_cannot_change_links(self):
+        response = self._add("Liquid", "Solid", client=self._client("STUDENT"))
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(ConceptPrerequisite.objects.exists())
+
+    def test_a_link_that_would_loop_is_refused_and_named(self):
+        self._add("Matter", "Solid")
+        self._add("Solid", "Liquid")
+
+        response = self._add("Liquid", "Matter")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("loop", response.json()["detail"])
+        self.assertIn("Matter", response.json()["detail"])
+        self.assertFalse(ConceptPrerequisite.objects.filter(prerequisite=self.groups["Liquid"]).exists())
+
+    def test_a_concept_cannot_need_itself(self):
+        response = self._add("Solid", "Solid")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_approving_a_suggestion_makes_it_shape_the_order(self):
+        link = self._link("Liquid", "Solid", "pending")
+        before = self._steps(self.teacher.get(f"{self.base}/"))
+        self.assertEqual([s["title"] for s in before["Solid"]["suggestions"]], ["Liquid"])
+
+        response = self.teacher.post(f"{self.base}/links/{link.id}/decision/", {"status": "approved"}, format="json")
+
+        steps = self._steps(response)
+        self.assertEqual(list(steps), ["Matter", "Liquid", "Solid"])
+        self.assertEqual(steps["Solid"]["suggestions"], [])
+
+    def test_removing_a_link_rejects_it_so_publishing_never_brings_it_back(self):
+        from unittest.mock import patch
+
+        from .services import publishing
+
+        link = self._link("Matter", "Solid", "accepted")
+        response = self.teacher.post(f"{self.base}/links/{link.id}/decision/", {"status": "rejected"}, format="json")
+        self.assertEqual(self._steps(response)["Solid"]["prerequisites"], [])
+
+        concepts = {c.title: c for c in publishing.concepts_for_topic(self.topic)}
+        rerun = [{
+            "prerequisite": concepts["Matter"], "dependent": concepts["Solid"], "verdict": "accepted",
+            "votes": {}, "cross_section": False,
+        }]
+        with patch.object(publishing.criteria, "decide_pairs", return_value=rerun):
+            publishing.publish_learning_path(self.topic)
+
+        link.refresh_from_db()
+        self.assertEqual(link.status, "rejected")
+
+    def test_changes_after_a_publish_are_flagged_until_the_next_one(self):
+        from unittest.mock import patch
+
+        from .services import publishing
+
+        with patch.object(publishing.criteria, "decide_pairs", return_value=[]):
+            publishing.publish_learning_path(self.topic)
+        self.assertFalse(self.teacher.get(f"{self.base}/").json()["paths"][0]["diagnostics"]["changed_since_publish"])
+
+        response = self._add("Liquid", "Solid")
+        self.assertTrue(response.json()["paths"][0]["diagnostics"]["changed_since_publish"])
+        saved = list(LearningPathStep.objects.filter(outline_node=self.topic).values_list("concept__label", flat=True))
+        self.assertEqual(saved, ["Matter", "Solid", "Liquid"])
+
+        with patch.object(publishing.criteria, "decide_pairs", return_value=[]):
+            publishing.publish_learning_path(self.topic)
+        self.assertFalse(self.teacher.get(f"{self.base}/").json()["paths"][0]["diagnostics"]["changed_since_publish"])

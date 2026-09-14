@@ -4,9 +4,10 @@
 `services/criteria.py` and `services/concept_units.py`. On a successful publish,
 `services/publishing.py` stores the links (`ConceptPrerequisite`) and the step
 order (`LearningPathStep`); only `accepted` and teacher-`approved` links shape
-the order, `pending` ones are stored but hidden. Not yet done: an API for the
-adaptive rules, showing links on the review screen, and removing the
-per-material strong/medium/weak scheme in `README.md`.
+the order, `pending` ones are stored but hidden. The adaptive rules read the
+saved path through `services/published.py` (see `HANDOFF.md`), and teachers
+adjust links on the review screen (see "Teacher control" below). The earlier
+per-material scheme has been removed.
 Full design record: `docs/superpowers/specs/2026-09-13-prerequisite-criteria-v3-design.md`
 
 **Scope:** one path per **topic**, whose steps are **concept groups**.
@@ -188,15 +189,42 @@ second topic before the figure is quoted as general.
 
 ## Edge status
 
-| status | meaning |
-|---|---|
-| `accepted` | scored 3/3, or added by a teacher |
-| `pending` | scored 2/3, awaiting teacher review |
-| `rejected` | a teacher said no |
+Stored in `ConceptPrerequisite`, between concepts (groups) of one topic.
 
-`rejected` is stored rather than deleted, so re-processing the material does not
-propose the same rejected pair again. Teacher-authored and teacher-rejected
-pairs survive re-derivation; derived rows are replaced.
+| status | set by | shapes the order? | shown to the teacher |
+|---|---|---|---|
+| `accepted` | criteria: 3/3 votes, not cross-section | yes | on the step, under *Needs first* |
+| `pending` | criteria: 2/3, or 3/3 but cross-section | no | collapsed under *Suggestions* |
+| `approved` | a teacher added it, or approved a suggestion | yes | on the step, under *Needs first* |
+| `rejected` | a teacher removed it, or rejected a suggestion | no | not shown |
+
+`rejected` is stored rather than deleted, so re-deriving at the next publish does
+not propose the same pair again. `approved` and `rejected` rows are never
+overwritten by the criteria; only `accepted` and `pending` rows are replaced.
+
+---
+
+## Teacher control
+
+On review step 5, each concept shows its prerequisites and lets a teacher:
+
+- **Add** a prerequisite from a list of the topic's other concepts -> `approved`.
+- **Remove** one (with confirmation) -> `rejected`; it is never suggested again,
+  though a teacher can add it back by hand.
+- **Approve or reject** the hidden suggestions for that concept.
+
+Rules applied to every change (`services/teacher_links.py`):
+
+- **Loops are refused.** A change that would let a chain of links return to
+  where it started is not saved, and the message names the concepts in the loop.
+- **Only teachers and admins** may change links.
+- **Students see a change only after the next successful publish.** The preview
+  re-orders at once; the saved path stays as it was, and the preview reports
+  `changed_since_publish` until the topic is published again.
+
+Concepts without a usable name (a sentence, a numbered heading, "Everyday
+Examples") never receive derived links, so a teacher adding one by hand is the
+only way to connect them.
 
 ---
 

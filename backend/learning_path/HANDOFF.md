@@ -24,6 +24,11 @@ The path is **saved when a teacher publishes the subtopic successfully**, and
 replaced on the next successful publish. You only ever read it; you never
 build it.
 
+**Teachers can change prerequisites** on the review screen (add, remove, approve
+suggestions). Those changes do **not** reach the saved path until the subtopic
+is published again, so what you read is always a complete, published snapshot —
+never a half-edited one.
+
 ---
 
 ## 2. How to get it
@@ -162,9 +167,10 @@ A sketch, not a requirement — the rules are yours:
 
 **Guaranteed**
 
-- Every prerequisite appears **before** the step that needs it.
-- Only prerequisites that passed the criteria **and** were not rejected by a
-  teacher, or that a teacher approved, are included. Rejected and unreviewed
+- Every prerequisite appears **before** the step that needs it, and there are no
+  loops — the review screen refuses a change that would create one.
+- Only prerequisites the criteria accepted and a teacher did not remove, or that
+  a teacher added or approved, are included. Removed links and unreviewed
   suggestions never reach you.
 - Content matches what was published: the path is saved only when the whole
   publish succeeded.
@@ -215,6 +221,7 @@ review screen (step 5 → Publish).
 | what | where |
 |---|---|
 | API view | `learning_path/views.py` → `published_learning_path` |
+| teacher link changes (not for the adaptive side) | `learning_path/services/teacher_links.py`, `POST topics/<id>/links/…` |
 | the contract function | `learning_path/services/published.py` → `get_published_path` |
 | saving at publish | `learning_path/services/publishing.py`, called from `lessons/services/topic_publish.py` |
 | ordering and criteria | `learning_path/services/concept_units.py`, `criteria.py` — rules in `CRITERIA.md` |

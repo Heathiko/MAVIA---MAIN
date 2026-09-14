@@ -3168,7 +3168,13 @@ function LearningPathReviewPanel({
       )}
 
       {paths.map((path) => (
-        <MaterialPath key={path.material_id} path={path} />
+        <MaterialPath
+          key={path.topic_id ?? path.material_id}
+          path={path}
+          topicId={topicId}
+          editable
+          onPathData={setPathData}
+        />
       ))}
 
       <div className="review-step-actions-row">

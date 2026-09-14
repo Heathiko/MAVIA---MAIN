@@ -33,6 +33,11 @@ it never runs the criteria itself, because that calls the sentence encoder.
 |---|---|---|---|
 | GET | `/api/learning-path/topics/<id>/` | teacher review screen | preview of the path |
 | GET | `/api/learning-path/topics/<id>/published/` | signed-in users | the saved path; answers for teachers/admins only |
+| POST | `/api/learning-path/topics/<id>/links/` | teachers/admins | add "needs first" link (approved); refuses loops; returns the preview |
+| POST | `/api/learning-path/topics/<id>/links/<link_id>/decision/` | teachers/admins | `{"status": "approved"\|"rejected"}`; reject = removed for good |
+
+Teacher link changes show in the preview at once but reach students only at
+the next successful publish; the preview flags `changed_since_publish` until then.
 
 ## Commands
 
