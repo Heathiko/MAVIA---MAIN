@@ -207,35 +207,61 @@ def generate_standalone_variants(outline_node):
     }
 
 
-def fill_missing_slots(learning_object, target_slots=None):
+STALE_VERSION_DETAIL = (
+    "The Normal text changed after this version was written. "
+    "Check it in Content versions: keep it as is, edit it, or regenerate it."
+)
+
+
+def stale_generated_versions(learning_object, slots=("SIMPLIFIED", "ELABORATED")):
+    """Generated versions written from different text than the object has now.
+
+    A generated version is a rewrite of the Normal text at the moment it was
+    written. Once the title or text changes, it may no longer match, so it must
+    be checked before students see it. Text taken from another PDF carries no
+    fingerprint and is never considered stale -- it was not derived from this
+    object's wording.
+    """
+    return learning_object.variants.filter(
+        variant__in=slots, origin=LessonVariant.Origin.GENERATED,
+    ).exclude(source_fingerprint="").exclude(source_fingerprint=_fingerprint(learning_object))
+
+
+def fill_missing_slots(learning_object, target_slots=None, *, replace_stale=False):
     """Generate only the primary slots real source text did not supply.
 
     Rows whose origin is ``source_pdf`` are never touched: a teacher wrote
     that text and it cannot be regenerated. A generation failure leaves the
     slot empty and is reported, so the review screen can show it as incomplete
     rather than the pipeline silently publishing two versions as three.
+
+    An out-of-date generated version blocks the slots it belongs to. With
+    ``replace_stale`` -- the teacher's explicit "Regenerate" -- those versions
+    are discarded and written again instead.
     """
     if not settings.ADAPTIVE_VARIANT_GENERATION_ENABLED:
         return {"generated": [], "skipped": [], "errors": []}
     if not (learning_object.content or "").strip():
         return {"generated": [], "skipped": [], "errors": []}
 
-    stale = learning_object.variants.filter(
-        variant__in=("SIMPLIFIED", "ELABORATED"), origin=LessonVariant.Origin.GENERATED,
-    ).exclude(source_fingerprint="").exclude(source_fingerprint=_fingerprint(learning_object))
+    requested = tuple(target_slots or ("SIMPLIFIED", "ELABORATED"))
+    if any(slot not in ("SIMPLIFIED", "ELABORATED") for slot in requested):
+        raise ValueError("Unknown adaptive version slot")
+
+    stale = stale_generated_versions(learning_object, requested)
     if stale.exists():
-        return {"generated": [], "skipped": [], "errors": [{
-            "learning_object_id": learning_object.id,
-            "detail": "The Normal text changed after versions were generated. Review and edit both versions before publishing.",
-        }]}
+        if not replace_stale:
+            return {"generated": [], "skipped": [], "errors": [{
+                "learning_object_id": learning_object.id,
+                "slots": sorted(stale.values_list("variant", flat=True)),
+                "detail": STALE_VERSION_DETAIL,
+            }]}
+        stale.delete()
     existing = set(
         learning_object.variants.filter(
             variant__in=("SIMPLIFIED", "ELABORATED"),
         ).values_list("variant", flat=True)
     )
-    requested = tuple(target_slots or ("SIMPLIFIED", "ELABORATED"))
-    if any(slot not in ("SIMPLIFIED", "ELABORATED") for slot in requested):
-        raise ValueError("Unknown adaptive version slot")
     missing = [slot for slot in requested if slot not in existing]
     if not missing:
         return {"generated": [], "skipped": sorted(existing), "errors": []}

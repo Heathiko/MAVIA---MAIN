@@ -6163,3 +6163,36 @@ button {
     align-items: stretch;
   }
 }
+
+/* A version written before its Normal text changed. Publishing waits on it,
+   so it is marked where the teacher is already looking. */
+.version-slot.is-stale {
+  border-color: #f0c987;
+  box-shadow: 0 0 0 1px #f0c987 inset;
+}
+
+.version-slot-stale {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0 0 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #f0d9a8;
+  border-radius: 8px;
+  background: #fff8e8;
+  color: #7a5412;
+}
+
+.version-slot-stale p {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.connection-eyebrow.is-problem {
+  color: #a23b3b;
+}
+
+.version-stale-jump {
+  border-color: #f0c987;
+  color: #7a5412;
+  background: #fff8e8;
+}

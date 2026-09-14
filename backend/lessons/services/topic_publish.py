@@ -90,6 +90,18 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
         outcome = settle_group(group)
         variant_generated.extend(outcome["generated"])
         variant_errors.extend(outcome["errors"])
+        # One named event per problem, so the teacher reads which concept needs
+        # attention instead of a generic "resolve the reported errors".
+        for error in outcome["errors"]:
+            concept = LearningObject.objects.filter(pk=error.get("learning_object_id")).first()
+            name = concept.title if concept else (group.label or f"Concept {index}")
+            emit(
+                "versions_failed",
+                f"“{name}”: {error.get('detail') or 'versions could not be settled.'}",
+                group_id=group.id,
+                learning_object_id=error.get("learning_object_id"),
+                slots=error.get("slots", []),
+            )
         emit(
             "versions_finished",
             f"Concept {index} of {len(groups)} settled",
@@ -110,9 +122,12 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
         if not (candidate.content or "").strip() or not {"SIMPLIFIED", "ELABORATED"}.issubset(slots):
             incomplete_versions.append(candidate.id)
     if incomplete_versions:
+        names = list(
+            LearningObject.objects.filter(pk__in=incomplete_versions).values_list("title", flat=True)
+        )
         emit(
-            "versions_incomplete",
-            f"{len(incomplete_versions)} concept(s) still missing a version",
+            "versions_incomplete_failed",
+            f"{len(incomplete_versions)} concept(s) still missing a version: {', '.join(names)}",
             learning_object_ids=incomplete_versions,
         )
 

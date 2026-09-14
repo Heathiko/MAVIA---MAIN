@@ -26,6 +26,7 @@ import {
   assignVersionSlot,
   editVersionText,
   generateObjectVersions,
+  keepVersionText,
   reviewQuestionPairing,
   separateLearningObject,
   startQuestionGeneration,
@@ -560,18 +561,43 @@ function VersionSlotCard({
   onCancelEdit,
   onSave,
   onGenerate,
+  // Written from Normal text that has since changed. Publishing waits until the
+  // teacher keeps, edits or regenerates it.
+  stale = false,
+  busyLabel = "",
+  onKeep,
+  onRegenerate,
   actions,
 }) {
   const [draft, setDraft] = useState(text || "");
   useEffect(() => { setDraft(text || ""); }, [text, isEditing]);
 
   return (
-    <article className={`version-slot is-${slotKey}`}>
+    <article className={`version-slot is-${slotKey} ${stale ? "is-stale" : ""}`.trim()}>
       <header className="version-slot-head">
         <span className={`version-slot-label is-${slotKey}`}>{heading}</span>
         {originLabel && <small className="version-slot-origin">{originLabel}</small>}
         {actions && <div className="version-slot-role-top">{actions}</div>}
       </header>
+
+      {stale && text && !isEditing && (
+        <div className="version-slot-stale" role="alert">
+          <strong>Check this version</strong>
+          <p>
+            The Normal text was changed after this was written, so it may no longer match.
+            Publishing waits until you decide.
+          </p>
+          <div className="version-slot-actions">
+            <button type="button" className="btn btn-primary btn-small" disabled={busy} onClick={onKeep}>
+              Keep as is
+            </button>
+            <button type="button" className="btn btn-secondary btn-small" disabled={busy} onClick={onRegenerate}>
+              Regenerate
+            </button>
+          </div>
+          {busy && busyLabel && <small className="muted-text">{busyLabel}</small>}
+        </div>
+      )}
 
       {text ? (
         isEditing ? (
@@ -659,6 +685,8 @@ function VersionReviewPanel({
   // runs there. This panel only displays it.
   missingProgress,
   onEditVersion,
+  onKeepVersion,
+  onRegenerateVersion,
 }) {
   const [chunkIndex, setChunkIndex] = useState(0);
   const [editingSlot, setEditingSlot] = useState(null);
@@ -667,6 +695,25 @@ function VersionReviewPanel({
     () => groups.filter((group) => group.versions?.representative_id),
     [groups],
   );
+  // Concepts holding a version written from Normal text that has since changed.
+  // Publishing refuses these, so they are counted and reachable in one click
+  // rather than left for the teacher to find by paging through every concept.
+  const staleChunkIndexes = chunks
+    .map((item, index) => (
+      ["simplified", "elaborated"].some((slot) => item.versions?.slots?.[slot]?.stale) ? index : -1
+    ))
+    .filter((index) => index >= 0);
+  const staleVersionCount = chunks.reduce(
+    (count, item) => count + ["simplified", "elaborated"]
+      .filter((slot) => item.versions?.slots?.[slot]?.stale).length,
+    0,
+  );
+
+  function goToNextStale() {
+    if (!staleChunkIndexes.length) return;
+    const next = staleChunkIndexes.find((index) => index > chunkIndex) ?? staleChunkIndexes[0];
+    setChunkIndex(next);
+  }
 
   useEffect(() => {
     setChunkIndex((current) => Math.max(0, Math.min(current, chunks.length - 1)));
@@ -714,8 +761,17 @@ function VersionReviewPanel({
           </p>
         </div>
         <div className="version-review-heading-actions">
-          <span className="connection-source-count">
-          </span>
+          {staleVersionCount > 0 && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-small version-stale-jump"
+              disabled={Boolean(busyAction)}
+              onClick={goToNextStale}
+              title="Versions written before their Normal text was changed. Publishing waits until each is checked."
+            >
+              {staleVersionCount} version{staleVersionCount === 1 ? "" : "s"} to check · Go to next
+            </button>
+          )}
           {!classificationComplete ? (
             <span className="connection-source-count">
               {busyAction === "version-generate-all"
@@ -872,9 +928,10 @@ function VersionReviewPanel({
             />
             {["simplified", "elaborated"].map((slotKey) => {
               const entry = versions?.slots?.[slotKey];
-              const busyKey = entry
-                ? `version-edit-${entry.id}`
-                : `version-generate-${versions?.representative_id}-${slotKey}`;
+              const generateKey = `version-generate-${versions?.representative_id}-${slotKey}`;
+              const busyKeys = entry
+                ? [`version-edit-${entry.id}`, `version-keep-${entry.id}`, generateKey]
+                : [generateKey];
               return (
                 <VersionSlotCard
                   key={slotKey}
@@ -883,7 +940,11 @@ function VersionReviewPanel({
                   entry={entry}
                   text={entry?.text}
                   originLabel={versionOriginLabel(entry, materialTitleFor(entry))}
-                  busy={busyAction === busyKey}
+                  busy={busyKeys.includes(busyAction)}
+                  stale={Boolean(entry?.stale)}
+                  busyLabel={busyAction === generateKey ? "Regenerating, this takes a few minutes…" : ""}
+                  onKeep={() => onKeepVersion(entry.id)}
+                  onRegenerate={() => onRegenerateVersion(versions.representative_id, slotKey.toUpperCase())}
                   isEditing={editingSlot === slotKey}
                   onBeginEdit={() => setEditingSlot(slotKey)}
                   onCancelEdit={() => setEditingSlot(null)}
@@ -1451,6 +1512,9 @@ function RunProgress({
   running,
   runningLabel,
   doneLabel,
+  // Shown instead of doneLabel when the run reported problems, so a run that
+  // ended without doing its job never reads as "finished".
+  failedLabel = "",
   unit = "step",
   // When a caller drives several runs in sequence, the events belong to the
   // run in flight and describe only that one -- "1 of 1", finished, 100%, over
@@ -1495,6 +1559,11 @@ function RunProgress({
 
   if (dismissed && !running) return null;
 
+  const endedWithProblems = !running && failures.length > 0;
+  const heading = running
+    ? runningLabel
+    : endedWithProblems && failedLabel ? failedLabel : doneLabel;
+
   return (
     <div className="run-progress-backdrop" role="presentation">
       <div
@@ -1502,12 +1571,14 @@ function RunProgress({
         role="dialog"
         aria-modal="true"
         aria-live="polite"
-        aria-label={running ? runningLabel : doneLabel}
+        aria-label={heading}
       >
         <div className="run-progress-head">
           <div>
-            <span className="connection-eyebrow">{running ? "Working" : "Finished"}</span>
-            <h3>{running ? runningLabel : doneLabel}</h3>
+            <span className={`connection-eyebrow ${endedWithProblems ? "is-problem" : ""}`.trim()}>
+              {running ? "Working" : endedWithProblems ? "Needs attention" : "Finished"}
+            </span>
+            <h3>{heading}</h3>
           </div>
           <div className="run-progress-head-side">
             {total ? (
@@ -2390,6 +2461,48 @@ function LearningObjectConnections({
     }
   }
 
+  async function keepVersion(variantId) {
+    setBusyAction(`version-keep-${variantId}`);
+    onError("");
+    onMessage("");
+    try {
+      setResources(await keepVersionText(courseId, topicId, variantId));
+      onMessage("Version kept. It is marked as checked against the current Normal text.");
+      return true;
+    } catch (err) {
+      onError(err.message);
+      return false;
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function regenerateVersion(learningObjectId, slot) {
+    const label = slot === "SIMPLIFIED" ? "Simplified" : "Elaborated";
+    if (!window.confirm(`Replace this ${label} version with a newly written one? The current wording will be discarded.`)) {
+      return false;
+    }
+    setBusyAction(`version-generate-${learningObjectId}-${slot.toLowerCase()}`);
+    onError("");
+    onMessage("");
+    try {
+      const data = await generateObjectVersions(courseId, topicId, learningObjectId, slot, { replaceStale: true });
+      setResources(data);
+      const result = data.version_generation || {};
+      if (result.errors?.length) {
+        onError(result.errors[0].detail || "Version generation failed.");
+        return false;
+      }
+      onMessage(`Wrote a new ${label} version from the current Normal text.`);
+      return true;
+    } catch (err) {
+      onError(err.message);
+      return false;
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   async function saveVersionText(variantId, narration) {
     setBusyAction(`version-edit-${variantId}`);
     onError("");
@@ -2802,6 +2915,8 @@ function LearningObjectConnections({
           generationEvents={versionGenerationEvents}
           missingProgress={missingProgress}
           onEditVersion={saveVersionText}
+          onKeepVersion={keepVersion}
+          onRegenerateVersion={regenerateVersion}
         />
       )}
       {reviewStep === "questions" && (
@@ -2935,6 +3050,9 @@ function LearningPathReviewPanel({
 
   async function followPublishRun(runId) {
     let after = 0;
+    // Every event seen so far. Problems are reported while the run works, so
+    // the last poll alone would miss most of them.
+    const seen = [];
     while (true) {
       let payload;
       try {
@@ -2948,15 +3066,25 @@ function LearningPathReviewPanel({
       const incoming = payload.events || [];
       if (incoming.length) {
         after = incoming[incoming.length - 1].seq;
+        seen.push(...incoming);
         setPublishEvents((current) => [...current, ...incoming]);
       }
 
       const status = payload.run?.status;
       if (status === "finished" || status === "failed") {
         setPublishing(false);
-        const summary = incoming.find((event) => event.event_type === "publish_finished")?.data?.summary;
-        if (status === "failed") {
-          onError("Publishing did not complete. Resolve the reported errors in the trace, then retry.");
+        const summary = seen.find((event) => event.event_type === "publish_finished")?.data?.summary;
+        // The run can end normally while the topic stays unpublished -- it did
+        // all its steps and some of them found problems. That outcome is its
+        // own event, and it must never be reported as "Published."
+        const unpublished = seen.some((event) => event.event_type === "publish_failed");
+        if (status === "failed" || unpublished) {
+          const staleConcepts = seen.filter((event) => event.event_type === "versions_failed").length;
+          onError(
+            staleConcepts
+              ? `Not published. ${staleConcepts} concept${staleConcepts === 1 ? " has" : "s have"} a Simplified or Elaborated version to check — the Normal text changed after it was written. Open Content versions (step 2) to keep, edit or regenerate ${staleConcepts === 1 ? "it" : "them"}, then publish again.`
+              : "Not published. The problems are listed in the publish window — resolve them, then publish again.",
+          );
         } else if (summary) {
           const audio = summary.audio_generated_count || 0;
           const materials = summary.materials_processed || 0;
@@ -3063,7 +3191,8 @@ function LearningPathReviewPanel({
           events={publishEvents}
           running={publishing}
           runningLabel="Publishing"
-          doneLabel="Publish finished"
+          doneLabel="Published"
+          failedLabel="Not published"
         />
       )}
     </section>

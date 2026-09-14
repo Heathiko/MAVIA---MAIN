@@ -425,15 +425,24 @@ export function assignVersionSlot(courseId, nodeId, learningObjectId, slot) {
 
 // One object at a time: a single Gemma call runs for minutes, so this request
 // is deliberately slow and the caller must show that it is working.
-export function generateObjectVersions(courseId, nodeId, learningObjectId, slot) {
+// replaceStale is the teacher's "Regenerate": an out-of-date version is
+// discarded and written again. Without it, generation refuses to overwrite one.
+export function generateObjectVersions(courseId, nodeId, learningObjectId, slot, { replaceStale = false } = {}) {
   return request(
     `/courses/${courseId}/outline-nodes/${nodeId}/learning-objects/${learningObjectId}/generate-versions/`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slot }),
+      body: JSON.stringify({ slot, ...(replaceStale ? { replace_stale: true } : {}) }),
     },
   );
+}
+
+// "Keep as is": the teacher checked an out-of-date version and it still fits.
+export function keepVersionText(courseId, nodeId, variantId) {
+  return request(`/courses/${courseId}/outline-nodes/${nodeId}/versions/${variantId}/keep/`, {
+    method: "POST",
+  });
 }
 
 export function generateAllObjectVersions(courseId, nodeId) {

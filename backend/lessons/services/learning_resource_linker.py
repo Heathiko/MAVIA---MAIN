@@ -1039,8 +1039,66 @@ def _pairing_score(
     )
 
 
+# The link a generated question is born with. It records which learning object
+# the question was written from, so it is a fact, not a pairing guess.
+GENERATED_PAIRING_METHOD = "generated_from_object"
+
+
+def _questions_open_to_pairing(material: LearningMaterial) -> list[Question]:
+    """The questions lexical pairing may re-decide, after settling generated ones.
+
+    Pairing exists to guess which object an *extracted* question belongs to, so
+    re-guessing is safe for those. A generated question is different: it was
+    written from one specific object. Re-pairing it by word overlap used to
+    throw that away -- most generated questions then scored below the
+    confirmation threshold, lost their approval, and had their learner-facing
+    copies deleted, for every concept in the file at once.
+
+    So a question holding a generated link is never re-paired, and a generated
+    question is never lexically paired at all. A generated question with no
+    links left was written from an object that has since been deleted; it has
+    no concept to belong to, so it is removed here -- and only it.
+    """
+    questions = list(material.questions.order_by("order", "id"))
+    protected_ids = set(
+        QuestionLearningObjectLink.objects.filter(
+            question__material=material,
+            method=GENERATED_PAIRING_METHOD,
+        ).values_list("question_id", flat=True)
+    )
+    linked_ids = set(
+        QuestionLearningObjectLink.objects.filter(
+            question__material=material,
+        ).values_list("question_id", flat=True)
+    )
+
+    open_questions, orphaned = [], []
+    for question in questions:
+        if question.id in protected_ids:
+            continue
+        if question.source_type == Question.SourceType.GENERATED:
+            if question.id not in linked_ids:
+                orphaned.append(question)
+            continue
+        open_questions.append(question)
+
+    if orphaned:
+        from question_generation.models import GeneratedQuestion
+
+        adaptive_ids = [item.adaptive_question_id for item in orphaned if item.adaptive_question_id]
+        Question.objects.filter(pk__in=[item.id for item in orphaned]).delete()
+        if adaptive_ids:
+            GeneratedQuestion.objects.filter(pk__in=adaptive_ids).delete()
+        logger.info(
+            "Removed %s generated question(s) whose source learning object was deleted: material=%s",
+            len(orphaned), material.id,
+        )
+    return open_questions
+
+
 def refresh_question_learning_object_links(material: LearningMaterial) -> None:
     """Auto-confirm strong pairs and preserve teacher decisions for uncertain ones."""
+    questions = _questions_open_to_pairing(material)
     learning_objects = (
         list(material.learning_objects.order_by("order", "id"))
         if learning_objects_are_confirmed(material)
@@ -1057,10 +1115,9 @@ def refresh_question_learning_object_links(material: LearningMaterial) -> None:
             .select_related("material", "group")
             .order_by("material_id", "order", "id")
         )
-    questions = list(material.questions.order_by("order", "id"))
     if not learning_objects:
         QuestionLearningObjectLink.objects.filter(
-            question__material=material,
+            question__in=questions,
         ).exclude(review_status__in=TEACHER_QUESTION_PAIRING_STATUSES).delete()
         return
 
@@ -1144,7 +1201,13 @@ def synchronize_detected_questions(material: LearningMaterial, classified_blocks
             question.order = order
             question.save(update_fields=[*payload.keys(), "order"])
         retained_ids.append(question.id)
-    material.questions.exclude(id__in=retained_ids).delete()
+    # Only questions this sync owns -- the ones extracted from the PDF -- can go
+    # stale here. Generated and manually written questions never appear in the
+    # PDF's blocks, so treating their absence as removal deleted every one of
+    # them whenever a block's classification was changed.
+    material.questions.filter(
+        source_type=Question.SourceType.PDF,
+    ).exclude(id__in=retained_ids).delete()
     refresh_question_learning_object_links(material)
 
 
