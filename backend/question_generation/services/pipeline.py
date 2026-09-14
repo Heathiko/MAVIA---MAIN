@@ -1,3 +1,4 @@
+import logging
 import re
 import sys
 from collections import Counter
@@ -9,10 +10,12 @@ from django.db import transaction
 from .bloom_classifier import BLOOM_TO_DIFFICULTY, BloomClassifier
 from .question_generator import generate_questions
 
+logger = logging.getLogger(__name__)
+
 # Windows consoles often default to a legacy codepage (e.g. cp1252) that
-# can't encode the ✓/✗/⊘/→/─/═ trace symbols below, which would otherwise
-# crash a run on the first print(). Force UTF-8 output so the trace is
-# reliable regardless of the terminal's codepage.
+# can't encode the ✓/✗/⊘/→/─/═ symbols this module emits, which would
+# otherwise crash a run the first time one is written. Force UTF-8 output so
+# the trace is reliable regardless of the terminal's codepage.
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -113,36 +116,35 @@ def _dedup_key(question_text):
 # ── Trace printing ──
 
 def _print_node_summary(node, kept, rejected):
+    """One line per node. The per-question detail sits at debug level.
+
+    This used to be an eight-line block framed by dividers, per node -- which
+    for a 33-node material buried the one thing a reader wants from a trace:
+    where it is now, and whether it is still moving.
+    """
     counts = Counter(q.thinking_order for q in kept)
     breakdown = ", ".join(f"{counts.get(order, 0)} {order}" for order in QUESTION_DISTRIBUTION)
-    divider = "─" * 40
-    print(divider)
-    print(f'Node: "{node.title}"')
-    print(f"Questions saved: {len(kept)} ({breakdown})")
-    print(f"Drafts discarded: {len(rejected)}")
-    for order, config in QUESTION_DISTRIBUTION.items():
-        have = counts.get(order, 0)
-        status = "OK" if have >= config["count"] else "SHORT (accepted)"
-        print(f"  {order + ':':<6}{have} / {config['count']} needed  → {status}")
-    print(divider)
-    print()
+    short = [
+        order for order, config in QUESTION_DISTRIBUTION.items()
+        if counts.get(order, 0) < config["count"]
+    ]
+    logger.info(
+        'node "%s": kept %s (%s), discarded %s%s',
+        node.title, len(kept), breakdown, len(rejected),
+        f" — short on {', '.join(short)}" if short else "",
+    )
 
 
 def _print_material_summary(material, node_count, all_questions, stats):
     counts = Counter(q.thinking_order for q in all_questions)
     distribution = ", ".join(f"{counts.get(order, 0)} {order}" for order in QUESTION_DISTRIBUTION)
-    divider = "═" * 40
-    print(divider)
-    print(f'Pipeline complete: "{material.title}"')
-    print(f"Nodes processed: {node_count}")
-    print(f"Total questions saved: {len(all_questions)}")
-    print(f"Distribution: {distribution}")
-    print(f"Drafts generated: {stats['total_drafted']}")
-    print(f"Create-level excluded: {stats['excluded_create']}")
-    print(f"Duplicates removed: {stats['duplicates']}")
-    print(f"Surplus trimmed: {stats['trimmed']}")
-    print(divider)
-    print()
+    logger.info(
+        'finished "%s": %s questions across %s nodes (%s) from %s drafts '
+        "[excluded %s, duplicates %s, trimmed %s]",
+        material.title, len(all_questions), node_count, distribution,
+        stats["total_drafted"], stats["excluded_create"],
+        stats["duplicates"], stats["trimmed"],
+    )
 
 
 # ── Phase 1: generation (LLM) ──
@@ -190,7 +192,7 @@ def _draft_questions_for_node(node, on_event=None):
         GeneratedQuestion.objects.bulk_create(batch)
         drafted += len(batch)
         for q in batch:
-            print(f'  Q: "{q.question_text}" [{q.question_format}, drafted]')
+            logger.debug('  Q: "%s" [%s, drafted]', q.question_text, q.question_format)
         _emit(
             on_event, "questions_drafted",
             f"Saved {len(batch)} {thinking_order} draft(s)",
@@ -198,7 +200,6 @@ def _draft_questions_for_node(node, on_event=None):
             requested=sum(padded.values()), thinking_order=thinking_order,
             formats=sorted(padded),
         )
-    print()
     return drafted
 
 
@@ -235,7 +236,7 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
         if key in seen:
             duplicates += 1
             reject_ids.append(draft.id)
-            print(f'  ⊘ Duplicate — "{draft.question_text}"')
+            logger.debug('  ⊘ duplicate — "%s"', draft.question_text)
             _emit(
                 on_event, "question_dropped", draft.question_text,
                 reason="duplicate of an earlier question", node_id=node.id,
@@ -250,7 +251,7 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
         if bloom_level in UNASSESSABLE_BLOOM_LEVELS or thinking_order is None:
             excluded_create += 1
             reject_ids.append(draft.id)
-            print(f'  ⊘ Excluded ({bloom_level}) — "{draft.question_text}"')
+            logger.debug('  ⊘ excluded (%s) — "%s"', bloom_level, draft.question_text)
             _emit(
                 on_event, "question_dropped", draft.question_text,
                 reason=f"{bloom_level}-level question cannot be assessed by MCQ/TF",
@@ -261,7 +262,7 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
         if counts[thinking_order] >= QUESTION_DISTRIBUTION[thinking_order]["count"]:
             trimmed += 1
             reject_ids.append(draft.id)
-            print(f'  ⊘ Surplus {thinking_order} — "{draft.question_text}"')
+            logger.debug('  ⊘ surplus %s — "%s"', thinking_order, draft.question_text)
             continue
 
         draft.bloom_level = bloom_level
@@ -276,9 +277,9 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
         draft.status = "final"
         counts[thinking_order] += 1
         keep.append(draft)
-        print(f'  ✓ {thinking_order} ({bloom_level}) — "{draft.question_text}"')
-
-    print()
+        logger.debug(
+            '  ✓ %s (%s) — "%s"', thinking_order, bloom_level, draft.question_text
+        )
 
     for thinking_order, config in QUESTION_DISTRIBUTION.items():
         short = config["count"] - counts.get(thinking_order, 0)
@@ -290,6 +291,22 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
             )
 
     with transaction.atomic():
+        # A concept owns one question bank, grounded in its Normal source.
+        # When that bank is regenerated, remove older generated banks attached
+        # to Simplified, Elaborated, or Extra source objects in the same group.
+        if node.group_id:
+            obsolete = GeneratedQuestion.objects.filter(
+                node__group_id=node.group_id,
+            ).exclude(node=node)
+            obsolete_ids = list(obsolete.values_list("id", flat=True))
+            if obsolete_ids:
+                from lessons.models import Question
+                Question.objects.filter(
+                    source_type=Question.SourceType.GENERATED,
+                    adaptive_question_id__in=obsolete_ids,
+                ).delete()
+                obsolete.delete()
+
         # the previous run's questions are replaced only now, once this run
         # actually has something to replace them with
         replaced, _ = GeneratedQuestion.objects.filter(node=node, status="final").delete()
@@ -313,8 +330,8 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
     mirror_generated_questions(node, keep)
 
     if replaced:
-        print(f"Replaced {replaced} existing rows for node {node.id}")
-    print(f"Saved {len(keep)} questions for node {node.id}")
+        logger.debug("replaced %s existing rows for node %s", replaced, node.id)
+    logger.debug("saved %s questions for node %s", len(keep), node.id)
 
     if stats is not None:
         stats["excluded_create"] = stats.get("excluded_create", 0) + excluded_create
@@ -366,7 +383,6 @@ def generate_questions_for_material(material, on_event=None, node_ids=None):
 
     nodes_qs = (
         material.learning_objects
-        .filter(kind="text")
         .exclude(content="")
         .order_by("order")
     )
@@ -388,11 +404,16 @@ def generate_questions_for_material(material, on_event=None, node_ids=None):
 
     all_questions = []
     stats = {"total_drafted": 0, "excluded_create": 0, "duplicates": 0, "trimmed": 0}
-    for node in nodes:
-        print(f"Generating questions for: {node.title}")
+    total_nodes = len(nodes)
+    for position, node in enumerate(nodes, start=1):
+        logger.info('(%s/%s) generating questions for "%s"', position, total_nodes, node.title)
+        # index/total are what let the teacher's dialog draw a real progress
+        # bar. Without them it can only spin, and a spinner cannot tell slow
+        # apart from stuck -- which is the whole complaint about this step.
         _emit(
             on_event, "node_started", f"Generating questions for: {node.title}",
             node_id=node.id, title=node.title,
+            index=position, total=total_nodes,
         )
         questions = generate_questions_for_node(
             node, classifier, on_event=on_event, stats=stats)
@@ -402,6 +423,7 @@ def generate_questions_for_material(material, on_event=None, node_ids=None):
             f"Finished node: saved {len(questions)} questions",
             node_id=node.id,
             count=len(questions),
+            index=position, total=total_nodes,
             by_thinking_order=dict(Counter(q.thinking_order for q in questions)),
         )
 

@@ -1,158 +1,103 @@
 from rest_framework import status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from lessons.models import LearningMaterial, LearningObject, OutlineNode
+from lessons.models import OutlineNode
+from user.permissions import IsTeacherOrAdmin
 
-from .models import PrerequisiteEdge
-from .services import GraphCycleError, build_learning_path
-from .services.edge_derivation import CERTAIN_EDGE_WEIGHT
+from .services import build_topic_path, get_published_path
+from .services.teacher_links import LinkError, add_link, decide_link
 
-# No permission classes, deliberately: these are teacher-authoring endpoints and
-# they sit alongside `lessons` and `question_generation`, which are also open.
-# Gating only this app made the review screen unreachable, since the rest of the
-# authoring flow never asks anyone to sign in. (`course` and `adaptive` ARE
-# gated — those are the learner-facing APIs.) Auth should be applied across all
-# teacher endpoints at once, not one app at a time.
+# The review preview has no permission classes, deliberately: it is a
+# teacher-authoring endpoint beside `lessons` and `question_generation`, which
+# are also open, and gating only this app made the review screen unreachable.
+# The published path is different -- students read it -- so it requires a
+# signed-in user.
 
-
-@api_view(["GET", "POST"])
-def material_learning_path(request, material_id):
-    """GET returns the material's generic learning path; POST re-derives it."""
-    try:
-        payload = build_learning_path(material_id, rebuild=request.method == "POST")
-    except LearningMaterial.DoesNotExist:
-        return Response({"detail": "Learning material not found."}, status=status.HTTP_404_NOT_FOUND)
-    except GraphCycleError as exc:
-        return Response(
-            {"detail": str(exc), "unresolved_learning_object_ids": exc.unresolved_nodes},
-            status=status.HTTP_409_CONFLICT,
-        )
-    return Response(payload)
+ANSWER_VIEWERS = {"TEACHER", "ADMIN"}
 
 
 @api_view(["GET"])
 def topic_learning_path(request, node_id):
-    """Every learning path under one outline topic, for teacher review.
+    """The topic's learning path as the review screen previews it.
 
-    A topic can hold several uploaded PDFs, and each is ordered independently
-    for now, so this returns one path per material rather than pretending they
-    are already a single sequence.
+    ``paths`` stays a list so the client renders one path the way it rendered
+    several, and a topic with no content is an empty list rather than a special
+    case.
     """
     try:
         topic = OutlineNode.objects.get(pk=node_id)
     except OutlineNode.DoesNotExist:
         return Response({"detail": "Topic not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    materials = LearningMaterial.objects.filter(
-        outline_node=topic, status="completed"
-    ).order_by("created_at", "id")
+    return Response(_preview(topic))
 
-    paths, problems = [], []
-    for material in materials:
-        try:
-            paths.append(build_learning_path(material.id))
-        except GraphCycleError as exc:
-            problems.append({
-                "material_id": material.id,
-                "material_title": material.title,
-                "detail": str(exc),
-                "unresolved_learning_object_ids": exc.unresolved_nodes,
-            })
 
-    return Response({
+def _preview(topic):
+    path = build_topic_path(topic.id)
+    return {
         "topic": {"id": topic.id, "title": topic.title},
-        "paths": paths,
-        "problems": problems,
-    })
+        "paths": [path] if path["steps"] else [],
+        "problems": [],
+    }
 
 
 @api_view(["POST"])
-def create_edge(request):
-    """Add a teacher-authored prerequisite.
+@permission_classes([IsTeacherOrAdmin])
+def add_path_link(request, node_id):
+    """A teacher says one concept needs another first.
 
-    Body: {"prerequisite_id": <learning object>, "dependent_id": <learning object>}
+    Body: ``{"prerequisite_concept_id": <group>, "dependent_concept_id": <group>}``.
+    Returns the updated preview. Reaches students at the next publish.
+    """
+    topic = OutlineNode.objects.filter(pk=node_id).first()
+    if topic is None:
+        return Response({"detail": "Topic not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        add_link(
+            topic,
+            int(request.data.get("prerequisite_concept_id")),
+            int(request.data.get("dependent_concept_id")),
+        )
+    except (TypeError, ValueError) as exc:
+        detail = str(exc) if isinstance(exc, LinkError) else "Choose both concepts."
+        return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(_preview(topic), status=status.HTTP_201_CREATED)
 
-    The edge is rejected if it would make the graph cyclic — the teacher is
-    told which objects are caught in the loop rather than being left with a
-    path that cannot be produced.
+
+@api_view(["POST"])
+@permission_classes([IsTeacherOrAdmin])
+def decide_path_link(request, node_id, link_id):
+    """Approve a suggestion, or reject (remove) a link. Body: ``{"status": "approved"|"rejected"}``."""
+    topic = OutlineNode.objects.filter(pk=node_id).first()
+    if topic is None:
+        return Response({"detail": "Topic not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        decide_link(topic, link_id, request.data.get("status"))
+    except LinkError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(_preview(topic))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def published_learning_path(request, node_id):
+    """The path saved at the topic's last successful publish.
+
+    Correct answers are included for teachers and admins only, so a student's
+    device never receives the answer key. See ``learning_path/HANDOFF.md``.
     """
     try:
-        prerequisite_id = int(request.data.get("prerequisite_id"))
-        dependent_id = int(request.data.get("dependent_id"))
-    except (TypeError, ValueError):
+        topic = OutlineNode.objects.get(pk=node_id)
+    except OutlineNode.DoesNotExist:
+        return Response({"detail": "Topic not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    include_answers = getattr(request.user, "role", None) in ANSWER_VIEWERS
+    path = get_published_path(topic, include_answers=include_answers)
+    if path is None:
         return Response(
-            {"detail": "prerequisite_id and dependent_id are required."},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"detail": "This topic has no published learning path yet. Publish it first."},
+            status=status.HTTP_404_NOT_FOUND,
         )
-
-    if prerequisite_id == dependent_id:
-        return Response(
-            {"detail": "A learning object cannot be its own prerequisite."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    objects = LearningObject.objects.filter(id__in=[prerequisite_id, dependent_id])
-    by_id = {obj.id: obj for obj in objects}
-    if len(by_id) != 2:
-        return Response({"detail": "Learning object not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    prerequisite, dependent = by_id[prerequisite_id], by_id[dependent_id]
-    if prerequisite.material_id != dependent.material_id:
-        return Response(
-            {"detail": "Both learning objects must belong to the same material."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    edge, created = PrerequisiteEdge.objects.get_or_create(
-        prerequisite=prerequisite,
-        dependent=dependent,
-        signal=PrerequisiteEdge.Signal.TEACHER_AUTHORED,
-        defaults={
-            "source": PrerequisiteEdge.Source.TEACHER,
-            "weight": CERTAIN_EDGE_WEIGHT,
-            "evidence": {"added_by": "teacher"},
-        },
-    )
-
-    try:
-        payload = build_learning_path(dependent.material_id)
-    except GraphCycleError as exc:
-        # Roll the edge back: keeping it would leave this material with no
-        # producible path at all.
-        if created:
-            edge.delete()
-        return Response(
-            {
-                "detail": (
-                    "That prerequisite would create a loop, so it was not saved. "
-                    + str(exc)
-                ),
-                "unresolved_learning_object_ids": exc.unresolved_nodes,
-            },
-            status=status.HTTP_409_CONFLICT,
-        )
-
-    return Response(
-        payload,
-        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
-    )
-
-
-@api_view(["DELETE"])
-def delete_edge(request, edge_id):
-    """Remove one prerequisite and return the material's re-ordered path.
-
-    Derived edges can be removed too — a teacher overruling the derivation is
-    the point of this screen. A later re-derivation will propose it again,
-    which is why removals are best paired with the review step rather than
-    treated as permanent.
-    """
-    try:
-        edge = PrerequisiteEdge.objects.select_related("dependent").get(pk=edge_id)
-    except PrerequisiteEdge.DoesNotExist:
-        return Response({"detail": "Prerequisite not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    material_id = edge.dependent.material_id
-    edge.delete()
-    return Response(build_learning_path(material_id))
+    return Response(path)

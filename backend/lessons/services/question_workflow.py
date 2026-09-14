@@ -4,7 +4,7 @@ from functools import lru_cache
 import hashlib
 import re
 
-from django.db import transaction
+from django.db import models, transaction
 
 from lessons.models import Question, QuestionLearningObjectLink
 
@@ -218,14 +218,61 @@ def sync_question_to_adaptive(question: Question):
     return adaptive
 
 
+def delete_generated_questions_for(learning_object):
+    """Delete the questions generated from this one learning object, and no others.
+
+    Call it before deleting the object. A generated question linked to another
+    surviving object as well -- the same text generated twice -- is kept, as is
+    any question a teacher re-paired to a different concept. Questions extracted
+    from a PDF are never deleted here; they only lose their link to this object.
+    """
+    from question_generation.models import GeneratedQuestion
+
+    generated_here = set(
+        QuestionLearningObjectLink.objects.filter(
+            learning_object=learning_object,
+            method="generated_from_object",
+        ).values_list("question_id", flat=True)
+    )
+    still_needed = set(
+        QuestionLearningObjectLink.objects.filter(question_id__in=generated_here)
+        .exclude(learning_object=learning_object)
+        .values_list("question_id", flat=True)
+    )
+    doomed = list(
+        Question.objects.filter(
+            pk__in=generated_here - still_needed,
+            source_type=Question.SourceType.GENERATED,
+        )
+    )
+    adaptive_ids = [item.adaptive_question_id for item in doomed if item.adaptive_question_id]
+    Question.objects.filter(pk__in=[item.id for item in doomed]).delete()
+    GeneratedQuestion.objects.filter(
+        models.Q(node=learning_object) | models.Q(pk__in=adaptive_ids)
+    ).delete()
+    return len(doomed)
+
+
 @transaction.atomic
 def mirror_generated_questions(node, generated_questions):
     """Expose generated adaptive questions in the same teacher review list."""
-    Question.objects.filter(
-        material=node.material,
-        source_type=Question.SourceType.GENERATED,
-        adaptive_question__isnull=True,
-    ).delete()
+    # Clear only this concept's stale generated rows (and ones with no concept
+    # at all). Clearing every generated row in the file without a learner-facing
+    # copy also removed other concepts' questions a teacher had sent back for
+    # review.
+    stale_ids = list(
+        Question.objects.filter(
+            material=node.material,
+            source_type=Question.SourceType.GENERATED,
+            adaptive_question__isnull=True,
+        )
+        .filter(
+            models.Q(learning_object_links__learning_object=node)
+            | models.Q(learning_object_links__isnull=True)
+        )
+        .values_list("id", flat=True)
+    )
+    Question.objects.filter(pk__in=stale_ids).delete()
     for generated in generated_questions:
         choice_map = generated.choices or {}
         choices = [choice_map[key] for key in sorted(choice_map)] if isinstance(choice_map, dict) else []

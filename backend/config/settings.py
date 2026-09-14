@@ -55,6 +55,16 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 IMAGE_DESCRIPTION_ENABLED = os.getenv("IMAGE_DESCRIPTION_ENABLED", "True").lower() in ("1", "true", "yes")
 IMAGE_DESCRIPTION_MODEL = os.getenv("IMAGE_DESCRIPTION_MODEL", "gemma3:4b")
 IMAGE_DESCRIPTION_TIMEOUT = int(os.getenv("IMAGE_DESCRIPTION_TIMEOUT", "300"))
+IMAGE_DESCRIPTION_REACHABILITY_TTL = int(
+    os.getenv("IMAGE_DESCRIPTION_REACHABILITY_TTL", "15")
+)
+IMAGE_DESCRIPTION_CACHE_ENABLED = os.getenv(
+    "IMAGE_DESCRIPTION_CACHE_ENABLED", "True"
+).lower() in ("1", "true", "yes")
+IMAGE_DESCRIPTION_CACHE_PATH = os.getenv(
+    "IMAGE_DESCRIPTION_CACHE_PATH",
+    str(BASE_DIR / "image_description_cache" / "descriptions.sqlite3"),
+)
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -170,6 +180,15 @@ ADAPTIVE_VARIANT_NUM_PREDICT = int(os.getenv("ADAPTIVE_VARIANT_NUM_PREDICT", "51
 # own OLLAMA_NUM_PARALLEL (set that to at least this value).
 ADAPTIVE_VARIANT_CONCURRENCY = int(os.getenv("ADAPTIVE_VARIANT_CONCURRENCY", "3"))
 
+CONTENT_VERSION_LLM_ENABLED = os.getenv(
+    "CONTENT_VERSION_LLM_ENABLED", "True"
+).lower() in ("1", "true", "yes")
+CONTENT_VERSION_LLM_MODEL = os.getenv("CONTENT_VERSION_LLM_MODEL", ADAPTIVE_VARIANT_LLM_MODEL)
+CONTENT_VERSION_LLM_TIMEOUT = int(os.getenv("CONTENT_VERSION_LLM_TIMEOUT", str(OLLAMA_TIMEOUT)))
+CONTENT_VERSION_LLM_AUTO_THRESHOLD = float(
+    os.getenv("CONTENT_VERSION_LLM_AUTO_THRESHOLD", "0.80")
+)
+
 # Model for question generation (separate from the content generation model)
 QUESTION_LLM_MODEL = os.getenv("QUESTION_LLM_MODEL", "llama3.2:3b")
 
@@ -178,12 +197,26 @@ QUESTION_LLM_MODEL = os.getenv("QUESTION_LLM_MODEL", "llama3.2:3b")
 # generation-trace polling floods it at 200 OK / INFO). 4xx/5xx still show
 # since runserver logs those at WARNING/ERROR; only successful requests are
 # silenced. Application diagnostics use the standard Python logging system.
+# INFO reports each step of every pipeline; DEBUG adds the per-item detail
+# (each drafted question, each duplicate or surplus dropped) that would
+# otherwise bury it.
+MAVIA_LOG_LEVEL = os.getenv("MAVIA_LOG_LEVEL", "INFO").upper()
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "formatters": {
+        # The pipelines already name themselves in the message, so a prefix
+        # here would only repeat it.
+        "trace": {"format": "%(message)s"},
+    },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
+        },
+        "trace": {
+            "class": "logging.StreamHandler",
+            "formatter": "trace",
         },
     },
     "loggers": {
@@ -195,6 +228,35 @@ LOGGING = {
         "lessons.views": {
             "handlers": ["console"],
             "level": "INFO",
+            "propagate": False,
+        },
+        # Progress reporting. These packages report each step through the
+        # logger rather than print(), so the terminal and the teacher's
+        # progress dialog are fed by the same call and cannot disagree.
+        #
+        # Configured explicitly because there is no root handler: without an
+        # entry here, INFO records propagate to a handler-less root and are
+        # dropped by Python's last-resort handler, which passes WARNING and
+        # above only. Extraction's own trace was invisible for exactly that
+        # reason.
+        "lessons": {
+            "handlers": ["trace"],
+            "level": MAVIA_LOG_LEVEL,
+            "propagate": False,
+        },
+        "question_generation": {
+            "handlers": ["trace"],
+            "level": MAVIA_LOG_LEVEL,
+            "propagate": False,
+        },
+        "learning_path": {
+            "handlers": ["trace"],
+            "level": MAVIA_LOG_LEVEL,
+            "propagate": False,
+        },
+        "course": {
+            "handlers": ["trace"],
+            "level": MAVIA_LOG_LEVEL,
             "propagate": False,
         },
     },

@@ -1,5 +1,10 @@
 # Prerequisite inference: redesign
 
+> **Superseded (2026-09-15).** This per-material strong/medium/weak design was
+> replaced by the topic-level v3 criteria and then removed from the code
+> (`PrerequisiteEdge`, `evidence.py`, `edge_derivation.py`). Kept as a design
+> record only. Current behaviour: `backend/learning_path/CRITERIA.md`.
+
 Design date: 2026-09-10. Replaces the four-criteria vote in
 `backend/learning_path/services/edge_derivation.py`.
 

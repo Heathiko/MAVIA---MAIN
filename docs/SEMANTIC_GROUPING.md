@@ -20,8 +20,16 @@ Semantic refresh only moves standalone objects; members of existing multi-object
 groups stay together. New objects may still join a group after every target member
 passes the policy. The **Separate** action records rejection before updating
 snapshots and does not run model inference. Subsequent matching respects that
-rejection. These protections apply to the existing object records; regeneration
-that replaces records is a separate workflow.
+rejection. Separate, Connect and accepting a suggestion also undo the leaving
+object's content-version links to its old group (`release_from_group`), so it is
+never left "taught through" a concept it no longer belongs to.
+
+Because groups are sticky, editing an already grouped object does not regroup it.
+Once its file is confirmed again, **Review grouping changes** on step 1 checks
+where each edited object now belongs -- stay, move, or stand alone -- and applies
+only the changes the teacher ticks. Regeneration carries each object's grouping
+fingerprint across, so re-extracted text that changed is noticed too. See
+`backend/lessons/REGROUPING.md`.
 
 The semantic matcher is the repository default. It uses the configured MAVIA
 teacher-workflow cutoffs: `0.60` for automatic grouping and `0.30` for teacher
@@ -37,10 +45,23 @@ After validation, the routing is:
 - Low: do not create a suggestion; retain the standalone learning object.
 
 Only confirmed learning objects in the same topic, of the same kind, from
-different materials are eligible. Titles are not model input. Existing teacher
-rejections exclude the affected candidate group. There are no hardcoded
-definition/example categories. A model can still confuse related content with
-interchangeable content; teacher evaluation must specifically test that case.
+different materials are eligible. Titles are never model input and never group
+objects by themselves. In automatic mode, however, an exact normalized,
+non-generic, one-to-one label may corroborate a pair whose content already clears
+the existing review threshold. This promotes the pair directly to automatic
+grouping without creating additional teacher-review work. It handles equivalent
+paragraph and glossary material whose different writing lengths depress the
+content-only score. Every destination-group member must still clear the content
+threshold, represented objects are excluded, teacher rejections still win, and
+ambiguous labels or destination groups retain the ordinary content-only behavior.
+
+Set `SEMANTIC_GROUPING_LABEL_CORROBORATION=False` to disable this corroboration
+and restore content-only behavior. Review mode remains strictly non-automatic;
+the feature only promotes pairs while `SEMANTIC_GROUPING_MODE=auto`. Structural
+and generic labels such as `Lesson 1`, `Examples`, `Summary`, `Figure 1`, and
+`Table 2` are excluded. There are no hardcoded definition/example content
+categories. A model can still confuse related content with interchangeable
+content; teacher evaluation must specifically test that case.
 
 ## Pipeline
 
@@ -51,6 +72,9 @@ interchangeable content; teacher evaluation must specifically test that case.
 4. Use the lowest pair score and lowest group-member score. A strong match to one
    member must not hide a weak match to another.
 5. Apply the configured or teacher-validated thresholds and winner-margin check.
+6. If the ordinary result is not already automatic, optionally corroborate an
+   exact specific label by explicitly scoring every member of its single,
+   unambiguous destination group against the existing review threshold.
 
 Embeddings and pair scores are cached by content hash and model version in
 `backend/semantic_cache/`. This derived cache is separate from the application

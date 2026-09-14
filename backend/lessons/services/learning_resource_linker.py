@@ -582,6 +582,21 @@ def prior_learning_object_groups(material: LearningMaterial) -> dict[tuple[str, 
     }
 
 
+def prior_grouping_fingerprints(material: LearningMaterial) -> dict[tuple[str, int], str]:
+    """The text each object was grouped against, keyed like the prior groups.
+
+    Regeneration recreates every object and restores its old group by title and
+    position. Carrying the old fingerprint across means a passage whose wording
+    changed on re-extraction is still noticed as edited, rather than slipping
+    back into its old group as if nothing had happened.
+    """
+    return {
+        (normalize_learning_object_title(item.title), item.order): item.grouping_content_hash
+        for item in material.learning_objects.exclude(group__isnull=True)
+        if item.grouping_content_hash
+    }
+
+
 def resolve_learning_object_group(
     material: LearningMaterial,
     title: str,
@@ -756,11 +771,12 @@ def _is_mutual_best_match(matcher, candidate_object, source_object, cache):
 
 
 def refresh_learning_object_match_suggestions(material: LearningMaterial) -> None:
-    """Persist mutually-best explainable cross-PDF candidates for this material.
+    """Persist explainable cross-PDF candidates for this material.
 
-    A pair reaches the teacher's review queue only when both objects nominate
-    each other -- see :func:`_is_mutual_best_match` for why one-directional
-    nomination floods the queue with mutually exclusive suggestions.
+    High-confidence semantic matches have already been scored against every
+    member of the candidate group, so every qualifying object may join that
+    group. Medium-confidence pair suggestions still require reciprocal
+    nomination to avoid flooding the teacher's queue.
     """
     if material.outline_node_id is None:
         return
@@ -769,8 +785,12 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
         try:
             semantic_grouping.policy()
             semantic_grouping.runtime()
-        except Exception:
+        except Exception as exc:
             logger.exception("Semantic grouping unavailable; preserving the existing review queue")
+            data = dict(material.generated_json or {})
+            data["grouping_warning"] = f"Connections could not be evaluated for {material.title}: {exc}"
+            material.generated_json = data
+            material.save(update_fields=["generated_json"])
             return
     if not learning_objects_are_confirmed(material):
         LearningObjectMatchSuggestion.objects.filter(
@@ -805,12 +825,16 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
                 section_title=source_object.section_title,
                 source_object_id=source_object.id,
             )
-        except Exception:
+        except Exception as exc:
             if not semantic_active:
                 raise
             # An inference/cache failure is not a low-confidence decision.
             # In particular, do not delete existing pending suggestions below.
             logger.exception("Semantic inference failed; preserving the remaining review queue")
+            data = dict(material.generated_json or {})
+            data["grouping_warning"] = f"Connections could not be fully evaluated for {material.title}: {exc}"
+            material.generated_json = data
+            material.save(update_fields=["generated_json"])
             return
         if not decision or decision["confidence"] is None:
             continue
@@ -823,19 +847,24 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
         if existing and (existing.evidence or {}).get("teacher_reviewed"):
             retained_ids.append(existing.id)
             continue
-        if not _is_mutual_best_match(
+        is_high_confidence = (
+            decision["confidence"]
+            == LearningObjectMatchSuggestion.Confidence.HIGH
+        )
+        if not is_high_confidence and not _is_mutual_best_match(
             matcher, candidate_object, source_object, reciprocal_cache
         ):
             continue
         if (
-            decision["confidence"] == LearningObjectMatchSuggestion.Confidence.HIGH
+            is_high_confidence
             and candidate_object.group_id
             and (not existing or existing.status != LearningObjectMatchSuggestion.Status.REJECTED)
             and source_object.group_id != candidate_object.group_id
         ):
             old_group_id = source_object.group_id
             source_object.group_id = candidate_object.group_id
-            source_object.save(update_fields=["group"])
+            source_object.mark_grouping_current()
+            source_object.save(update_fields=["group", "grouping_content_hash"])
             if old_group_id:
                 LearningObjectGroup.objects.filter(
                     pk=old_group_id,
@@ -873,6 +902,11 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
     if retained_ids:
         stale_pending = stale_pending.exclude(id__in=retained_ids)
     stale_pending.delete()
+    if (material.generated_json or {}).get("grouping_warning"):
+        data = dict(material.generated_json)
+        data.pop("grouping_warning", None)
+        material.generated_json = data
+        material.save(update_fields=["generated_json"])
 
 
 def remove_empty_learning_object_groups(material: LearningMaterial) -> None:
@@ -1005,8 +1039,66 @@ def _pairing_score(
     )
 
 
+# The link a generated question is born with. It records which learning object
+# the question was written from, so it is a fact, not a pairing guess.
+GENERATED_PAIRING_METHOD = "generated_from_object"
+
+
+def _questions_open_to_pairing(material: LearningMaterial) -> list[Question]:
+    """The questions lexical pairing may re-decide, after settling generated ones.
+
+    Pairing exists to guess which object an *extracted* question belongs to, so
+    re-guessing is safe for those. A generated question is different: it was
+    written from one specific object. Re-pairing it by word overlap used to
+    throw that away -- most generated questions then scored below the
+    confirmation threshold, lost their approval, and had their learner-facing
+    copies deleted, for every concept in the file at once.
+
+    So a question holding a generated link is never re-paired, and a generated
+    question is never lexically paired at all. A generated question with no
+    links left was written from an object that has since been deleted; it has
+    no concept to belong to, so it is removed here -- and only it.
+    """
+    questions = list(material.questions.order_by("order", "id"))
+    protected_ids = set(
+        QuestionLearningObjectLink.objects.filter(
+            question__material=material,
+            method=GENERATED_PAIRING_METHOD,
+        ).values_list("question_id", flat=True)
+    )
+    linked_ids = set(
+        QuestionLearningObjectLink.objects.filter(
+            question__material=material,
+        ).values_list("question_id", flat=True)
+    )
+
+    open_questions, orphaned = [], []
+    for question in questions:
+        if question.id in protected_ids:
+            continue
+        if question.source_type == Question.SourceType.GENERATED:
+            if question.id not in linked_ids:
+                orphaned.append(question)
+            continue
+        open_questions.append(question)
+
+    if orphaned:
+        from question_generation.models import GeneratedQuestion
+
+        adaptive_ids = [item.adaptive_question_id for item in orphaned if item.adaptive_question_id]
+        Question.objects.filter(pk__in=[item.id for item in orphaned]).delete()
+        if adaptive_ids:
+            GeneratedQuestion.objects.filter(pk__in=adaptive_ids).delete()
+        logger.info(
+            "Removed %s generated question(s) whose source learning object was deleted: material=%s",
+            len(orphaned), material.id,
+        )
+    return open_questions
+
+
 def refresh_question_learning_object_links(material: LearningMaterial) -> None:
     """Auto-confirm strong pairs and preserve teacher decisions for uncertain ones."""
+    questions = _questions_open_to_pairing(material)
     learning_objects = (
         list(material.learning_objects.order_by("order", "id"))
         if learning_objects_are_confirmed(material)
@@ -1023,10 +1115,9 @@ def refresh_question_learning_object_links(material: LearningMaterial) -> None:
             .select_related("material", "group")
             .order_by("material_id", "order", "id")
         )
-    questions = list(material.questions.order_by("order", "id"))
     if not learning_objects:
         QuestionLearningObjectLink.objects.filter(
-            question__material=material,
+            question__in=questions,
         ).exclude(review_status__in=TEACHER_QUESTION_PAIRING_STATUSES).delete()
         return
 
@@ -1110,7 +1201,13 @@ def synchronize_detected_questions(material: LearningMaterial, classified_blocks
             question.order = order
             question.save(update_fields=[*payload.keys(), "order"])
         retained_ids.append(question.id)
-    material.questions.exclude(id__in=retained_ids).delete()
+    # Only questions this sync owns -- the ones extracted from the PDF -- can go
+    # stale here. Generated and manually written questions never appear in the
+    # PDF's blocks, so treating their absence as removal deleted every one of
+    # them whenever a block's classification was changed.
+    material.questions.filter(
+        source_type=Question.SourceType.PDF,
+    ).exclude(id__in=retained_ids).delete()
     refresh_question_learning_object_links(material)
 
 

@@ -117,7 +117,7 @@ class GenerationRun(models.Model):
     """One teacher-triggered execution of question generation for a material.
 
     When `node` is set, the run covered only that learning object; otherwise
-    it covered every text learning object of the material."""
+    it covered every narrated learning object of the material."""
     STATUS_CHOICES = [
         ("running", "Running"),
         ("finished", "Finished"),
@@ -147,6 +147,22 @@ class GenerationRun(models.Model):
         blank=True,
         related_name="publish_runs",
         on_delete=models.CASCADE,
+    )
+    class Kind(models.TextChoices):
+        EXTRACTION = "extraction", "PDF extraction"
+        QUESTIONS = "questions", "Question generation"
+        PUBLISH = "publish", "Topic publish"
+        VERSIONS = "versions", "Content version classification"
+
+    # Which pipeline this run belongs to. Not decoration: question generation
+    # refuses to start while another run is live, and that check had nothing to
+    # scope itself by. Without a kind, an extraction or publish run would make
+    # question generation report a conflict against unrelated work.
+    kind = models.CharField(
+        max_length=12,
+        choices=Kind.choices,
+        default=Kind.QUESTIONS,
+        db_index=True,
     )
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="running")
     started_at = models.DateTimeField(auto_now_add=True)

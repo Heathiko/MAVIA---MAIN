@@ -1,5 +1,13 @@
 # Content versions: how it works, and what is currently broken
 
+> **Status note (2026-09-15).** This is a record of the 2026-09-10 publish run.
+> The three bugs below have **not been re-checked** against the current code, so
+> do not read "currently broken" literally. The *Notes for whoever builds on
+> this* section at the end has been corrected, because the learning path it
+> described has changed. Changes to versions since then: out-of-date generated
+> versions are flagged on *Content versions* with **Keep as is** / **Regenerate**,
+> and publishing names each concept that still needs checking.
+
 Written 2026-09-10, after the first full publish run on the Grade 1 Science
 course. Intended for anyone on the team who has not been following this part of
 the pipeline day to day.
@@ -137,15 +145,19 @@ These bugs are all about **version text**. None of them change:
 
 ## Notes for whoever builds on this
 
-The contract the learning-path component should code against is settled even
-though the bugs are not:
+*(Corrected 2026-09-15 -- the original notes described a per-material path that
+no longer exists.)*
 
-- **A teaching step is a learning object with `represented_by IS NULL`.**
-  There are 65 of them right now, out of 69 objects.
+- **A learning-path step is a concept, not a learning object.** A concept is a
+  `LearningObjectGroup` spanning every PDF that teaches it; its Normal,
+  Simplified and Elaborated versions belong to the group's representative
+  learning object. Code against the published path
+  (`GET /api/learning-path/topics/<id>/published/`), described in
+  `backend/learning_path/HANDOFF.md`, rather than against `represented_by`.
 - **A represented object still exists**, keeps its `metadata_id` and its
-  question links, and should be skipped when sequencing. Edges that touch one
-  should resolve to its representative.
-- **Representation is reversible.** Ungrouping clears the flag and deletes the
-  generated rungs while keeping the teacher-written ones. Nothing is destroyed,
-  because the grouping that produced it is an automatic decision at an
-  unvalidated threshold.
+  question links; it is one of its concept's versions, not a step of its own.
+- **Representation is reversible.** When an object leaves its group (Separate,
+  Connect, accepting a suggestion, or *Review grouping changes*), its
+  `represented_by` link is cleared and only the version text it supplied is
+  removed. **Generated versions are kept**, including teacher-edited ones -- the
+  next version review fills any slot left empty.

@@ -272,6 +272,23 @@ export function separateLearningObject(courseId, nodeId, learningObjectId) {
   );
 }
 
+// Where each edited learning object now belongs. Proposes only; changes nothing.
+export function fetchRegroupingPreview(courseId, nodeId) {
+  return request(`/courses/${courseId}/outline-nodes/${nodeId}/regrouping/`);
+}
+
+// Carries out the ticked proposals. Every reviewed object is settled, ticked or not.
+export function applyRegrouping(courseId, nodeId, learningObjectIds) {
+  return request(
+    `/courses/${courseId}/outline-nodes/${nodeId}/regrouping/apply/`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ learning_object_ids: learningObjectIds }),
+    }
+  );
+}
+
 export function acceptLearningObjectMatchSuggestion(courseId, nodeId, suggestionId) {
   return request(
     `/courses/${courseId}/outline-nodes/${nodeId}/match-suggestions/${suggestionId}/accept/`,
@@ -334,8 +351,11 @@ export function updateTopicQuestion(courseId, nodeId, questionId, data) {
   );
 }
 
-export function startQuestionGeneration(materialId) {
-  return request(`/generation/materials/${materialId}/start/`, { method: "POST" });
+export function startQuestionGeneration(materialId, learningObjectId = null) {
+  const path = learningObjectId
+    ? `/generation/materials/${materialId}/nodes/${learningObjectId}/start/`
+    : `/generation/materials/${materialId}/start/`;
+  return request(path, { method: "POST" });
 }
 
 export function fetchQuestionGenerationTrace(runId) {
@@ -405,11 +425,32 @@ export function assignVersionSlot(courseId, nodeId, learningObjectId, slot) {
 
 // One object at a time: a single Gemma call runs for minutes, so this request
 // is deliberately slow and the caller must show that it is working.
-export function generateObjectVersions(courseId, nodeId, learningObjectId) {
+// replaceStale is the teacher's "Regenerate": an out-of-date version is
+// discarded and written again. Without it, generation refuses to overwrite one.
+export function generateObjectVersions(courseId, nodeId, learningObjectId, slot, { replaceStale = false } = {}) {
   return request(
     `/courses/${courseId}/outline-nodes/${nodeId}/learning-objects/${learningObjectId}/generate-versions/`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot, ...(replaceStale ? { replace_stale: true } : {}) }),
+    },
   );
+}
+
+// "Keep as is": the teacher checked an out-of-date version and it still fits.
+export function keepVersionText(courseId, nodeId, variantId) {
+  return request(`/courses/${courseId}/outline-nodes/${nodeId}/versions/${variantId}/keep/`, {
+    method: "POST",
+  });
+}
+
+export function generateAllObjectVersions(courseId, nodeId) {
+  return request(`/courses/${courseId}/outline-nodes/${nodeId}/generate-all-versions/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
 }
 
 export function editVersionText(courseId, nodeId, variantId, narration) {
@@ -430,4 +471,26 @@ export function fetchGenerationRunEvents(runId, after = 0) {
 // on first call, so the first request for a topic is slower than later ones.
 export function fetchTopicLearningPath(nodeId) {
   return request(`/learning-path/topics/${nodeId}/`);
+}
+
+// A teacher says a concept needs another first. Returns the updated preview.
+// Students' saved path changes only at the next publish.
+export function addPathLink(nodeId, prerequisiteConceptId, dependentConceptId) {
+  return request(`/learning-path/topics/${nodeId}/links/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prerequisite_concept_id: prerequisiteConceptId,
+      dependent_concept_id: dependentConceptId,
+    }),
+  });
+}
+
+// "approved" accepts a suggestion; "rejected" removes a link for good.
+export function decidePathLink(nodeId, linkId, status) {
+  return request(`/learning-path/topics/${nodeId}/links/${linkId}/decision/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
 }

@@ -13,7 +13,7 @@ from lessons.models import (
 )
 
 from .models import LessonVariant
-from .version_assignment import release_learning_object, settle_group
+from .version_assignment import release_from_group, release_learning_object, settle_group
 
 
 SHORT = "Solid has a fixed shape. It holds its form. It does not flow."
@@ -31,6 +31,20 @@ MIDDLING = "A solid keeps its shape. The particles are packed closely. It will n
 )
 class RepresentationTests(TestCase):
     def setUp(self):
+        classifier_patcher = patch("course.version_assignment.classify_group_versions")
+        self.classify_group_versions = classifier_patcher.start()
+        self.addCleanup(classifier_patcher.stop)
+        def classify(members, representative=None):
+            original = representative or members[0]
+            return {
+                item.id: {
+                    "slot": "ORIGINAL" if item.id == original.id else "ELABORATED",
+                    "confidence": 0.95,
+                    "reason": "Balanced original." if item.id == original.id else "More detailed.",
+                }
+                for item in members
+            }
+        self.classify_group_versions.side_effect = classify
         self.course = CourseGroup.objects.create(title="Grade 1 Science")
         self.node = OutlineNode.objects.create(
             course=self.course, title="Matter", order=0, depth=0
@@ -72,6 +86,33 @@ class RepresentationTests(TestCase):
         self.assertEqual(elaborated.origin, "source_pdf")
         simplified = LessonVariant.objects.get(learning_object=self.first, variant="SIMPLIFIED")
         self.assertEqual(simplified.origin, "generated")
+
+    @patch("course.variant_generator._request_variants")
+    def test_llm_selects_original_and_only_missing_slot_is_generated(self, request_variants):
+        self.classify_group_versions.side_effect = None
+        self.classify_group_versions.return_value = {
+            self.first.id: {"slot": "SIMPLIFIED", "confidence": 0.96, "reason": "Clearer."},
+            self.second.id: {"slot": "ORIGINAL", "confidence": 0.94, "reason": "Balanced."},
+        }
+        request_variants.return_value = {
+            "SIMPLIFIED": "ignored",
+            "ELABORATED": "A fuller generated explanation.",
+        }
+
+        result = settle_group(self.group)
+
+        self.assertEqual(result["representative_id"], self.second.id)
+        self.assertEqual(result["generated"], ["ELABORATED"])
+        simplified = LessonVariant.objects.get(
+            learning_object=self.second,
+            variant="SIMPLIFIED",
+        )
+        self.assertEqual(simplified.source_learning_object, self.first)
+        elaborated = LessonVariant.objects.get(
+            learning_object=self.second,
+            variant="ELABORATED",
+        )
+        self.assertEqual(elaborated.origin, "generated")
 
     @patch("course.variant_generator._request_variants")
     def test_release_takes_back_its_own_text_and_drops_generated_rows(self, request_variants):
@@ -120,7 +161,7 @@ class RepresentationTests(TestCase):
         )
 
     @patch("course.variant_generator._request_variants")
-    def test_unconfident_member_is_not_flagged(self, request_variants):
+    def test_llm_classified_member_is_represented_despite_thin_readability_margin(self, request_variants):
         request_variants.return_value = {"SIMPLIFIED": "a", "ELABORATED": "b"}
         LearningObject.objects.filter(pk=self.second.pk).update(group=None)
         middling = self._object(
@@ -130,4 +171,115 @@ class RepresentationTests(TestCase):
         settle_group(self.group)
 
         middling.refresh_from_db()
-        self.assertIsNone(middling.represented_by)
+        self.assertEqual(middling.represented_by, self.first)
+
+
+class ReleaseFromGroupTests(TestCase):
+    """Leaving a group must not leave version links pointing across concepts."""
+
+    def setUp(self):
+        self.course = CourseGroup.objects.create(title="Grade 1 Science")
+        self.node = OutlineNode.objects.create(course=self.course, title="Matter", order=0, depth=0)
+        self.group = LearningObjectGroup.objects.create(outline_node=self.node)
+        material = LearningMaterial.objects.create(course=self.course, outline_node=self.node, title="PDF")
+        self.original = LearningObject.objects.create(
+            material=material, group=self.group, title="Solid examples", content=SHORT, order=0,
+        )
+        self.member = LearningObject.objects.create(
+            material=material, group=self.group, title="Liquid examples", content=LONG, order=1,
+            represented_by=self.original,
+        )
+        self.other = LearningObject.objects.create(
+            material=material, group=self.group, title="Gas examples", content=MIDDLING, order=2,
+            represented_by=self.original,
+        )
+        self.supplied = LessonVariant.objects.create(
+            learning_object=self.original, variant="EXTRA", narration=LONG,
+            origin=LessonVariant.Origin.SOURCE_PDF, source_learning_object=self.member,
+        )
+        self.kept_source = LessonVariant.objects.create(
+            learning_object=self.original, variant="ELABORATED", narration=MIDDLING,
+            origin=LessonVariant.Origin.SOURCE_PDF, source_learning_object=self.other,
+        )
+        self.generated = LessonVariant.objects.create(
+            learning_object=self.original, variant="SIMPLIFIED", narration="Short.",
+            origin=LessonVariant.Origin.GENERATED, assigned_by=LessonVariant.AssignedBy.TEACHER,
+        )
+
+    def test_a_leaving_member_takes_back_only_its_own_text(self):
+        outcome = release_from_group(self.member, [self.original, self.other])
+
+        self.member.refresh_from_db()
+        self.assertIsNone(self.member.represented_by_id)
+        self.assertFalse(LessonVariant.objects.filter(pk=self.supplied.pk).exists())
+        self.assertTrue(LessonVariant.objects.filter(pk=self.kept_source.pk).exists())
+        self.assertTrue(LessonVariant.objects.filter(pk=self.generated.pk).exists())
+        self.assertEqual(outcome, {"was_original": False, "removed_version_slots": ["extra"]})
+
+    def test_a_leaving_original_releases_everyone_it_represented(self):
+        self.group.version_selection = {"representative_id": self.original.id}
+        self.group.save()
+
+        outcome = release_from_group(self.original, [self.member, self.other])
+
+        self.assertTrue(outcome["was_original"])
+        self.member.refresh_from_db()
+        self.other.refresh_from_db()
+        self.group.refresh_from_db()
+        self.assertIsNone(self.member.represented_by_id)
+        self.assertIsNone(self.other.represented_by_id)
+        self.assertEqual(self.group.version_selection, {})
+        self.assertFalse(LessonVariant.objects.filter(source_learning_object__isnull=False).exists())
+        # Generated text, including a teacher's edit, is never removed here.
+        self.assertTrue(LessonVariant.objects.filter(pk=self.generated.pk).exists())
+
+    def test_leaving_with_nobody_staying_changes_nothing(self):
+        release_from_group(self.member, [])
+
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.represented_by_id, self.original.id)
+
+
+class CrossGroupRepairMigrationTests(TestCase):
+    """The one-time repair for links left behind before the fix."""
+
+    def test_links_and_texts_across_concepts_are_removed_and_nothing_else(self):
+        from importlib import import_module
+
+        from django.apps import apps
+
+        course = CourseGroup.objects.create(title="Grade 1 Science")
+        node = OutlineNode.objects.create(course=course, title="Matter", order=0, depth=0)
+        solid_group = LearningObjectGroup.objects.create(outline_node=node)
+        liquid_group = LearningObjectGroup.objects.create(outline_node=node)
+        material = LearningMaterial.objects.create(course=course, outline_node=node, title="PDF")
+        solid = LearningObject.objects.create(
+            material=material, group=solid_group, title="Solid", content=SHORT, order=0,
+        )
+        partner = LearningObject.objects.create(
+            material=material, group=solid_group, title="Solids", content=MIDDLING, order=1,
+            represented_by=solid,
+        )
+        # Separated into another concept without its links being undone.
+        liquid = LearningObject.objects.create(
+            material=material, group=liquid_group, title="Liquid", content=LONG, order=2,
+            represented_by=solid,
+        )
+        stale = LessonVariant.objects.create(
+            learning_object=solid, variant="SIMPLIFIED", narration=LONG,
+            origin=LessonVariant.Origin.SOURCE_PDF, source_learning_object=liquid,
+        )
+        valid = LessonVariant.objects.create(
+            learning_object=solid, variant="ELABORATED", narration=MIDDLING,
+            origin=LessonVariant.Origin.SOURCE_PDF, source_learning_object=partner,
+        )
+
+        migration = import_module("course.migrations.0007_repair_cross_group_version_links")
+        migration.repair_cross_group_version_links(apps, None)
+
+        liquid.refresh_from_db()
+        partner.refresh_from_db()
+        self.assertIsNone(liquid.represented_by_id)
+        self.assertEqual(partner.represented_by_id, solid.id)
+        self.assertFalse(LessonVariant.objects.filter(pk=stale.pk).exists())
+        self.assertTrue(LessonVariant.objects.filter(pk=valid.pk).exists())
