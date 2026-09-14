@@ -1,5 +1,14 @@
 # Prerequisite edge scoring v3: three weighted criteria
 
+> **Partly superseded (2026-09-15).** The three voting criteria below are what
+> the code implements, but several parts changed after measurement and review:
+> the **sibling**, **mutual-reference** and **author-statement** checks were
+> removed; unnamed concepts cast no CSR or IOLR vote; IOLR needs a 25% gap;
+> cross-section edges are never accepted automatically (from a blind
+> hand-check); and teachers edit links on the review screen. Read
+> `backend/learning_path/CRITERIA.md` for current behaviour -- this file is the
+> original design record.
+
 **Date:** 2026-09-13
 **Status:** Design, pending review
 **Replaces:** the ordinal strong/medium/weak acceptance in

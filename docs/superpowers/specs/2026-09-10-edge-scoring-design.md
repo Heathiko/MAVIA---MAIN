@@ -1,5 +1,10 @@
 # Edge scoring: multi-criteria voting with reference asymmetry
 
+> **Superseded (2026-09-15).** The component this describes,
+> `edge_derivation.py`, has been removed along with the per-material learning
+> path. Kept as a design record only. Current behaviour:
+> `backend/learning_path/CRITERIA.md`.
+
 Design date: 2026-09-10. Component: `backend/learning_path/services/edge_derivation.py`.
 
 ## Why change what exists

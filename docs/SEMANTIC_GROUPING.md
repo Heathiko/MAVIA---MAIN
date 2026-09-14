@@ -20,8 +20,16 @@ Semantic refresh only moves standalone objects; members of existing multi-object
 groups stay together. New objects may still join a group after every target member
 passes the policy. The **Separate** action records rejection before updating
 snapshots and does not run model inference. Subsequent matching respects that
-rejection. These protections apply to the existing object records; regeneration
-that replaces records is a separate workflow.
+rejection. Separate, Connect and accepting a suggestion also undo the leaving
+object's content-version links to its old group (`release_from_group`), so it is
+never left "taught through" a concept it no longer belongs to.
+
+Because groups are sticky, editing an already grouped object does not regroup it.
+Once its file is confirmed again, **Review grouping changes** on step 1 checks
+where each edited object now belongs -- stay, move, or stand alone -- and applies
+only the changes the teacher ticks. Regeneration carries each object's grouping
+fingerprint across, so re-extracted text that changed is noticed too. See
+`backend/lessons/REGROUPING.md`.
 
 The semantic matcher is the repository default. It uses the configured MAVIA
 teacher-workflow cutoffs: `0.60` for automatic grouping and `0.30` for teacher

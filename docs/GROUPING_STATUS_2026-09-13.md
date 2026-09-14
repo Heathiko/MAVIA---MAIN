@@ -1,5 +1,17 @@
 # Content preparation: section headings, chunking, and grouping
 
+> **Later changes (2026-09-15)** -- this record is otherwise left as written:
+>
+> - **Concept fragmentation** (below) is now handled for the learning path: split
+>   "(Part N of M)" pieces are merged into one concept before ordering
+>   (`backend/learning_path/services/concept_units.py`). Grouping itself is
+>   unchanged.
+> - **The "section-progression rule"** mentioned at the end no longer exists. The
+>   learning path now uses `section_title` only to hold back links between
+>   different sections (`backend/learning_path/CRITERIA.md`).
+> - **Editing grouped objects** can now be reviewed with *Review grouping
+>   changes* (`backend/lessons/REGROUPING.md`).
+
 **Date:** 2026-09-13
 **Branch:** `jean-latest`
 **Area:** PDF extraction (`content_generator.py`) and cross-PDF grouping

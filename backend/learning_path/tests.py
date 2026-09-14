@@ -61,6 +61,15 @@ class TopicPreviewTests(TopicFixture):
         self.assertEqual([step["title"] for step in path["steps"]], ["Matter", "Solid", "Liquid"])
         self.assertEqual(path["diagnostics"]["ordering"], "document_order")
 
+    def test_each_step_names_the_heading_it_sits_under(self):
+        """The concept map draws one branch per lesson heading."""
+        LearningObject.objects.filter(title="Solid").update(section_title="Solids")
+
+        steps = {step["title"]: step for step in self._path()["steps"]}
+
+        self.assertEqual(steps["Solid"]["branch"], "Solids")
+        self.assertEqual(steps["Matter"]["branch"], "")
+
     def test_a_topic_with_no_grouped_content_has_no_path(self):
         empty = OutlineNode.objects.create(course=self.course, title="Empty", order=1, depth=0)
 

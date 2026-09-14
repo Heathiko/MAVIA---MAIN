@@ -1,8 +1,9 @@
 # Teacher content publishing milestone
 
 Scope: PDF extraction, equivalent-object grouping, Normal/Simplified/Elaborated
-preparation, teacher corrections, and publication with audio. Student accounts,
-enrollment, adaptive progression, and student learning outcomes are separate work.
+preparation, teacher corrections, the learning path, and publication with audio.
+Student accounts, enrollment, adaptive progression, and student learning outcomes
+are separate work.
 
 ## Acceptance checks
 
@@ -17,12 +18,29 @@ enrollment, adaptive progression, and student learning outcomes are separate wor
    the first is retained under Other source versions. Reassign it again and verify
    both source texts survive. Extra is omitted from active version audio synthesis.
 5. Edit generated wording. Its old audio URL must clear. Changed Normal text must
-   flag generated versions whose source fingerprint is stale for review.
+   flag generated versions whose source fingerprint is stale for review: on
+   *Content versions* each flagged version offers **Keep as is** and
+   **Regenerate**, and a "versions to check" button jumps between them.
 6. Simulate generation and audio errors. The run must fail and the topic must not
-   be marked published. Retry after resolving the error. Audio for unchanged text
-   and configured voice/provider should be reused.
+   be marked published. The publish window must read **Not published** and name
+   each concept that needs attention; no "Published." message may appear. Retry
+   after resolving the error. Audio for unchanged text and configured
+   voice/provider should be reused.
 7. Listen to Normal, Simplified, and Elaborated audio from the backend media files.
    Verify text/audio correspondence on the actual deployment machine.
+8. Edit an already grouped learning object and confirm its file. **Review grouping
+   changes** must become available, propose stay / move / stand alone, leave
+   teacher-made groups unticked, and unpublish a published topic when a change
+   is applied.
+9. Generate questions for two concepts, then delete one concept. Only the deleted
+   concept's generated questions may disappear; the other's must stay attached.
+10. Publish successfully. The learning path must be saved
+    (`python manage.py show_learning_path <topic id>`) and served at
+    `GET /api/learning-path/topics/<id>/published/` -- with correct answers for a
+    teacher token, without them for a student token.
+11. On review step 5, add a concept that must come first, then try a change that
+    would create a loop. The first must re-order the preview and show "changed
+    since the last publish"; the second must be refused, naming the loop.
 
 ## Scientific evaluation still required
 
@@ -44,6 +62,10 @@ suitability, or reduced teacher workload. No such results are claimed here.
   not a factual validator or a validated reading-level instrument for your students.
 - Measure teacher task completion time and number of corrections against the
   existing preparation process, including failed or repeated runs.
+- Check learning-path prerequisites on a second topic. The one blind hand-check so
+  far (`docs/learning_path_hand_check_2026-09-14.json`, one topic) found 17 of 18
+  automatically accepted links correct, using a rule derived from that same
+  check; it is not yet evidence of general accuracy.
 
 ## Known boundaries
 
@@ -57,6 +79,8 @@ of introducing an unvalidated replacement. Unsupported model input lengths are
 reported, not automatically split into potentially incomplete ideas.
 
 Publishing still uses an in-process background thread. A server restart interrupts
-that work; durable job recovery and a versioned publication snapshot remain future
-deployment work. A failed republish marks the current topic unpublished because
-there is no immutable previous publication snapshot to serve safely.
+that work; durable job recovery remains future deployment work. The **learning
+path** is saved as a snapshot at each successful publish and left untouched by a
+failed one, but lesson content, versions and audio are not snapshotted. A failed
+republish therefore still marks the topic unpublished, because there is no
+immutable previous copy of that content to serve safely.
