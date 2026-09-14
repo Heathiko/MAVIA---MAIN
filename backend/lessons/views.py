@@ -15,7 +15,11 @@ from user.permissions import IsTeacherOrAdmin
 from course.models import LessonVariant
 from course.bulk_version_generation import classify_all_source_versions
 from course.services import sync_course_outline
-from course.variant_generator import fill_missing_slots, generate_standalone_variants
+from course.variant_generator import (
+    _fingerprint as version_fingerprint,
+    fill_missing_slots,
+    generate_standalone_variants,
+)
 from question_generation.models import GenerationRun
 from .services.topic_publish import confirmed_materials_for, run_topic_publish
 from course.version_assignment import (
@@ -86,6 +90,7 @@ from .services.regrouping import (
     propose_regrouping,
 )
 from .services.question_workflow import (
+    delete_generated_questions_for,
     duplicate_for_topic,
     duplicate_in_topic,
     enriched_question_values,
@@ -289,6 +294,11 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             slot_rows = {}
             extra_rows = []
             if version_state["representative_id"] is not None:
+                representative = next(
+                    (item for item in learning_objects if item.id == version_state["representative_id"]),
+                    None,
+                ) or LearningObject.objects.filter(pk=version_state["representative_id"]).first()
+                current_fingerprint = version_fingerprint(representative) if representative else ""
                 for row in LessonVariant.objects.filter(
                     learning_object_id=version_state["representative_id"],
                 ):
@@ -298,6 +308,15 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                         "origin": row.origin,
                         "assigned_by": row.assigned_by,
                         "source_learning_object_id": row.source_learning_object_id,
+                        # Written from different Normal text than the concept has
+                        # now. Publishing refuses these until a teacher checks them.
+                        "stale": bool(
+                            row.origin == LessonVariant.Origin.GENERATED
+                            and row.variant in ("SIMPLIFIED", "ELABORATED")
+                            and row.source_fingerprint
+                            and current_fingerprint
+                            and row.source_fingerprint != current_fingerprint
+                        ),
                     }
                     # Extras are kept for the learning-path component to rule on;
                     # they are not one of the three slots a student is offered, so
@@ -1085,6 +1104,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
 
         material = learning_object.material
         group = learning_object.group
+        # Only this concept's generated questions go with it. Every other
+        # concept's generated questions are left exactly as they are.
+        delete_generated_questions_for(learning_object)
         learning_object.delete()
         if group is not None and not group.learning_objects.exists():
             group.delete()
@@ -1204,6 +1226,8 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         result = fill_missing_slots(
             learning_object,
             target_slots=[requested_slot] if requested_slot else None,
+            # The teacher's "Regenerate" on an out-of-date version.
+            replace_stale=bool(request.data.get("replace_stale")),
         )
         payload = self._learning_resources_payload(node, request)
         payload["version_generation"] = {
@@ -1290,6 +1314,37 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         variant.assigned_by = LessonVariant.AssignedBy.TEACHER
         variant.save(update_fields=["narration", "assigned_by", "audio_url", "source_fingerprint"])
 
+        return Response(self._learning_resources_payload(node, request))
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"outline-nodes/(?P<node_id>[^/.]+)/versions/(?P<variant_id>[^/.]+)/keep",
+    )
+    def keep_version_text(self, request, pk=None, node_id=None, variant_id=None):
+        """Confirm an out-of-date version still matches the current Normal text.
+
+        The wording is left exactly as it is; only the record of which text it
+        was checked against moves forward, which is what clears the publish
+        block.
+        """
+        course = self.get_object()
+        try:
+            node = course.nodes.get(pk=node_id)
+        except OutlineNode.DoesNotExist:
+            return Response({"detail": "Outline node not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            variant = LessonVariant.objects.select_related("learning_object").get(
+                pk=variant_id,
+                learning_object__material__outline_node=node,
+            )
+        except (LessonVariant.DoesNotExist, TypeError, ValueError):
+            return Response({"detail": "Version not found in this topic."}, status=status.HTTP_404_NOT_FOUND)
+
+        variant.source_fingerprint = version_fingerprint(variant.learning_object)
+        variant.assigned_by = LessonVariant.AssignedBy.TEACHER
+        variant.save(update_fields=["source_fingerprint", "assigned_by"])
         return Response(self._learning_resources_payload(node, request))
 
     @action(
@@ -1964,6 +2019,8 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
 
         if request.method == "DELETE":
             group = learning_object.group
+            # Only this object's generated questions go with it.
+            delete_generated_questions_for(learning_object)
             learning_object.delete()
             # A group whose only member was deleted is not a concept any more.
             if group is not None and not group.learning_objects.exists():

@@ -1,0 +1,423 @@
+"""The three criteria, their thresholds, and the veto over their verdicts.
+
+These exist because the module had no coverage at all while carrying the entire
+edge decision. Each test below pins a rule that a measurement on real content
+showed to be load-bearing -- the docstrings say which, so a later change that
+trips one of them can tell whether it is breaking a deliberate choice or an
+accident.
+"""
+
+import math
+
+from django.test import TestCase
+
+from lessons.models import (
+    CourseGroup,
+    LearningMaterial,
+    LearningObject,
+    LearningObjectGroup,
+    OutlineNode,
+)
+
+from .services import criteria
+from .services.concept_units import concepts_for_topic
+from .services.criteria import (
+    ACCEPTED,
+    MAX_IOL,
+    MIN_IOL_MARGIN,
+    PENDING,
+    WINDOW_SIZE,
+    _windows,
+    cast_votes,
+    concept_names,
+    crosses_sections,
+    decide,
+    decide_pairs,
+    inbound_outbound,
+    inbound_outbound_ratios,
+    only_contrastive_mentions,
+    reference_matrix,
+    semantic_reference,
+    temporal_order,
+)
+from .services.text_signals import normalize
+
+
+class Stub:
+    """The learning-object surface the criteria actually read."""
+
+    def __init__(self, id, order=0, title="", content=""):
+        self.id = id
+        self.order = order
+        self.title = title
+        self.content = content
+        self.section_title = ""
+        self.kind = "text"
+
+
+def votes(temporal=0, semantic=0, ratio=0):
+    """A vote tally in the shape ``decide`` expects."""
+    return {
+        "temporal_order": temporal,
+        "semantic_reference": semantic,
+        "inbound_outbound": ratio,
+    }
+
+
+class WindowTests(TestCase):
+    def test_short_text_is_one_window(self):
+        self.assertEqual(_windows("a solid keeps its shape"), ["a solid keeps its shape"])
+
+    def test_empty_text_has_no_windows(self):
+        self.assertEqual(_windows(""), [])
+
+    def test_long_text_slides_by_one_word(self):
+        text = " ".join(str(number) for number in range(WINDOW_SIZE + 2))
+        result = _windows(text)
+
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0].split()[0], "0")
+        self.assertEqual(result[1].split()[0], "1")
+
+    def test_a_very_long_concept_is_capped(self):
+        """Runtime is O(windows x concepts), and a long passage's later windows
+        repeat its subject, so the cap costs nothing it was measuring."""
+        text = " ".join(str(number) for number in range(2000))
+
+        self.assertLessEqual(len(_windows(text)), criteria.MAX_WINDOWS_PER_CONCEPT)
+
+
+class ConceptNameTests(TestCase):
+    def test_a_structural_label_names_nothing(self):
+        names = concept_names([Stub(1, title="Examples"), Stub(2, title="Solid")])
+
+        self.assertIsNone(names[1])
+        self.assertEqual(names[2], "solid")
+
+
+class TemporalOrderTests(TestCase):
+    def test_the_earlier_concept_votes_yes(self):
+        self.assertEqual(temporal_order(Stub(1, order=0), Stub(2, order=5)), 1)
+
+    def test_the_later_concept_votes_no(self):
+        self.assertEqual(temporal_order(Stub(1, order=5), Stub(2, order=0)), 0)
+
+
+class SemanticReferenceTests(TestCase):
+    def setUp(self):
+        self.a, self.b = Stub(1), Stub(2)
+
+    def test_the_more_referenced_concept_votes_yes(self):
+        matrix = {(1, 2): 0.40, (2, 1): 0.10}
+
+        self.assertEqual(semantic_reference(self.a, self.b, matrix), 1)
+
+    def test_the_less_referenced_concept_votes_no(self):
+        matrix = {(1, 2): 0.10, (2, 1): 0.40}
+
+        self.assertEqual(semantic_reference(self.a, self.b, matrix), 0)
+
+    def test_an_unnameable_concept_casts_no_vote(self):
+        """Regression, measured: a concept with no name -- "Examples",
+        "Everyday Examples" -- has no row in the matrix, so its side of the
+        comparison is structurally 0.000. Comparing a measured number against
+        one that could never be measured is not evidence of direction; it made
+        every nameless concept a dependent of nearly everything.
+        """
+        only_forward = {(1, 2): 0.40}
+
+        self.assertEqual(semantic_reference(self.a, self.b, only_forward), 0)
+
+    def test_a_measured_zero_still_counts_against_a_measured_score(self):
+        """A present-but-zero row is a measurement, not an absence, so it must
+        not be confused with the unnameable case above."""
+        matrix = {(1, 2): 0.40, (2, 1): 0.0}
+
+        self.assertEqual(semantic_reference(self.a, self.b, matrix), 1)
+
+    def test_two_measured_zeroes_cast_no_vote(self):
+        matrix = {(1, 2): 0.0, (2, 1): 0.0}
+
+        self.assertEqual(semantic_reference(self.a, self.b, matrix), 0)
+
+
+class InboundOutboundTests(TestCase):
+    def setUp(self):
+        self.a, self.b = Stub(1), Stub(2)
+
+    def test_a_clearly_more_foundational_concept_votes_yes(self):
+        self.assertEqual(inbound_outbound(self.a, self.b, {1: 2.0, 2: 1.0}), 1)
+
+    def test_a_narrow_lead_casts_no_vote(self):
+        """Regression, measured: the ratios sat between 1.60 and 2.12, so a bare
+        `>` let 2.001 beating 2.000 cast a full vote on nearly every pair. That
+        is what filled the review queue."""
+        just_under = 2.0 * (1.0 + MIN_IOL_MARGIN) - 0.01
+
+        self.assertEqual(inbound_outbound(self.a, self.b, {1: just_under, 2: 2.0}), 0)
+
+    def test_the_margin_is_relative_not_absolute(self):
+        """The ratio is scale-free: being half again as foundational is what
+        matters, not being 0.4 higher."""
+        self.assertEqual(inbound_outbound(self.a, self.b, {1: 10.4, 2: 10.0}), 0)
+
+    def test_a_missing_ratio_never_wins(self):
+        self.assertEqual(inbound_outbound(self.a, self.b, {2: 1.0}), 0)
+
+    def test_an_unnameable_concept_casts_no_vote_in_either_direction(self):
+        """Regression, measured: an unnamed concept used to score 0, so every
+        named concept beat it and 55 verdicts rested on nothing else."""
+        ratios = {1: 2.0}  # concept 2 has no name, so it has no ratio
+
+        self.assertEqual(inbound_outbound(self.a, self.b, ratios), 0)
+        self.assertEqual(inbound_outbound(self.b, self.a, ratios), 0)
+
+
+class RatioTests(TestCase):
+    def test_a_concept_referring_to_nothing_is_capped_not_infinite(self):
+        """`inf > inf` is False, which would silently drop such a pair."""
+        concepts = [Stub(1), Stub(2)]
+        # Concept 1 is referred to and refers to nothing, so its denominator
+        # falls back to MIN_OUTBOUND and the raw quotient overshoots the cap.
+        ratios = inbound_outbound_ratios(concepts, {(1, 2): 2.0, (2, 1): 0.0})
+
+        self.assertEqual(ratios[1], MAX_IOL)
+        self.assertEqual(ratios[2], 0.0)
+
+    def test_an_unnameable_concept_gets_no_ratio(self):
+        """No name means nothing can refer to it, so its inbound is zero by
+        construction. Only concepts with a matrix row are measured."""
+        ratios = inbound_outbound_ratios([Stub(1), Stub(2)], {(1, 2): 2.0})
+
+        self.assertIn(1, ratios)
+        self.assertNotIn(2, ratios)
+
+
+class DecisionTests(TestCase):
+    def test_all_three_criteria_accept(self):
+        self.assertEqual(decide(votes(1, 1, 1)), ACCEPTED)
+
+    def test_two_of_three_goes_to_the_teacher(self):
+        self.assertEqual(decide(votes(1, 1, 0)), PENDING)
+
+    def test_two_content_criteria_without_position_still_pend(self):
+        self.assertEqual(decide(votes(0, 1, 1)), PENDING)
+
+    def test_position_alone_never_creates_an_edge(self):
+        """The density guard. Temporal order votes on one direction of *every*
+        pair, so without this the middle band fills with pairs whose only
+        evidence is that one paragraph came first -- document order, not
+        dependency."""
+        self.assertIsNone(decide(votes(1, 0, 0)))
+
+    def test_no_evidence_decides_nothing(self):
+        self.assertIsNone(decide(votes(0, 0, 0)))
+
+
+class CastVoteTests(TestCase):
+    def test_the_numbers_behind_each_vote_are_recorded(self):
+        """Moving to a margin-based score later needs these and nothing else."""
+        result = cast_votes(
+            Stub(1, order=0), Stub(2, order=1),
+            {(1, 2): 0.4, (2, 1): 0.1}, {1: 2.0, 2: 1.0},
+        )
+
+        self.assertEqual(result["csr_forward"], 0.4)
+        self.assertEqual(result["csr_backward"], 0.1)
+        self.assertAlmostEqual(result["csr_margin"], 0.3)
+        self.assertEqual(result["iol_prerequisite"], 2.0)
+        self.assertEqual(result["iol_dependent"], 1.0)
+
+
+VOCAB = ("matter", "solid", "liquid", "gas")
+
+
+class KeywordRuntime:
+    """A deterministic stand-in for the sentence encoder.
+
+    Each text becomes a unit vector over the words it contains, so the cosines
+    the criteria read are predictable from the fixture's wording. Loading the
+    real encoder would make these tests slow and their outcomes opaque.
+    """
+
+    def embeddings(self, payload):
+        return [self._vector(text) for text in payload]
+
+    def _vector(self, text):
+        words = set(normalize(text).split())
+        vector = [1.0 if term in words else 0.0 for term in VOCAB]
+        # A neutral axis, so text containing none of the vocabulary is still a
+        # unit vector and simply sits orthogonal to everything else.
+        vector.append(0.0 if any(vector) else 1.0)
+        norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+        return [value / norm for value in vector]
+
+
+class ReferenceMatrixTests(TestCase):
+    def test_reference_is_directional(self):
+        """B's text naming A is not the same as A's text naming B, and the
+        whole criterion rests on telling those apart."""
+        matter = Stub(1, title="Matter", content="Everything around us has mass.")
+        solid = Stub(2, title="Solid", content="A solid is matter that keeps its shape.")
+
+        matrix = reference_matrix([matter, solid], KeywordRuntime())
+
+        self.assertGreater(matrix[(1, 2)], 0.0)
+        self.assertEqual(matrix[(2, 1)], 0.0)
+
+    def test_an_unnameable_concept_gets_no_row(self):
+        """This absence is what `semantic_reference` reads to abstain."""
+        examples = Stub(1, title="Examples", content="Ice and steam.")
+        solid = Stub(2, title="Solid", content="A solid keeps its shape.")
+
+        matrix = reference_matrix([examples, solid], KeywordRuntime())
+
+        self.assertNotIn((1, 2), matrix)
+        self.assertIn((2, 1), matrix)
+
+
+class ContrastTests(TestCase):
+    def test_a_mention_only_after_a_contrast_marker_is_contrastive(self):
+        self.assertTrue(only_contrastive_mentions("solid", "A gas spreads out, unlike a solid."))
+
+    def test_contrast_is_scoped_to_the_clause_not_the_sentence(self):
+        """Liquids and gases are what this sentence is about; only solids are
+        contrasted."""
+        text = "Liquids and gases can flow, while solids normally do not."
+
+        self.assertFalse(only_contrastive_mentions("liquid", text))
+        self.assertTrue(only_contrastive_mentions("solid", text))
+
+    def test_one_plain_mention_is_enough_to_count(self):
+        text = "A solid keeps its shape. Unlike a solid, a gas spreads out."
+
+        self.assertFalse(only_contrastive_mentions("solid", text))
+
+    def test_no_mention_is_not_a_contrast(self):
+        self.assertFalse(only_contrastive_mentions("solid", "A gas spreads out."))
+
+
+class SectionTests(TestCase):
+    def _stub(self, id, section):
+        stub = Stub(id)
+        stub.section_title = section
+        return stub
+
+    def test_different_headings_cross_sections(self):
+        self.assertTrue(crosses_sections(self._stub(1, "Solids"), self._stub(2, "Gases")))
+
+    def test_the_same_heading_does_not(self):
+        self.assertFalse(crosses_sections(self._stub(1, "Solids"), self._stub(2, " solids ")))
+
+    def test_a_concept_without_a_heading_crosses_nothing(self):
+        """A comparison at the end of a lesson, or the opening definition, sits
+        under no section and legitimately builds on, or underpins, all of them."""
+        self.assertFalse(crosses_sections(self._stub(1, "Solids"), self._stub(2, "")))
+        self.assertFalse(crosses_sections(self._stub(1, ""), self._stub(2, "Gases")))
+
+
+class DecidePairTests(TestCase):
+    """The vetoes, over concepts built the way the topic path builds them."""
+
+    def setUp(self):
+        self.course = CourseGroup.objects.create(title="Grade 1 Science")
+        self.module = OutlineNode.objects.create(
+            course=self.course, title="Properties of Matter", order=0, depth=0
+        )
+        self.topic = OutlineNode.objects.create(
+            course=self.course, parent=self.module,
+            title="Solid, Liquid and Gas", order=0, depth=1,
+        )
+        self.material = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic,
+            title="States", status="completed",
+        )
+        self._concept("Matter", "Everything around us has mass.", 0)
+        self._concept("Solid", "A solid is matter that keeps its shape.", 1)
+        self._concept("Gas", "A gas spreads out, unlike a solid.", 2)
+        # Shares title words with the topic ("Solid, Liquid and Gas"), which the
+        # removed sibling rule would have used to delete its edges.
+        self._concept("Liquid", "A liquid flows, and it is a solid that melted.", 3)
+
+        self.concepts = concepts_for_topic(self.topic)
+        self.by_title = {concept.title: concept for concept in self.concepts}
+
+    def _raw_verdict(self, prerequisite, dependent, concepts=None):
+        concepts = concepts or self.concepts
+        matrix = reference_matrix(concepts, KeywordRuntime())
+        ratios = inbound_outbound_ratios(concepts, matrix)
+        return decide(cast_votes(prerequisite, dependent, matrix, ratios))
+
+    def _concept(self, title, content, order, section=""):
+        group = LearningObjectGroup.objects.create(outline_node=self.topic, label=title)
+        LearningObject.objects.create(
+            material=self.material, group=group, title=title,
+            content=content, order=order, section_title=section,
+        )
+        return group
+
+    def _decisions(self, concepts=None):
+        return {
+            (row["prerequisite"].id, row["dependent"].id): row["verdict"]
+            for row in decide_pairs(concepts or self.concepts, KeywordRuntime())
+        }
+
+    def _pair(self, prerequisite, dependent):
+        return (self.by_title[prerequisite].id, self.by_title[dependent].id)
+
+    def test_a_pair_mentioned_only_in_contrast_is_vetoed(self):
+        """"A gas spreads out, unlike a solid" is not built on solids. The
+        embedding cannot tell that apart from a real reference, so the numbers
+        alone would keep the pair."""
+        solid, gas = self.by_title["Solid"], self.by_title["Gas"]
+
+        self.assertIsNotNone(self._raw_verdict(solid, gas))
+        self.assertNotIn(self._pair("Solid", "Gas"), self._decisions())
+
+    def test_sharing_words_with_the_topic_title_no_longer_vetoes_a_pair(self):
+        """Regression for the removed sibling rule: whether an edge existed
+        depended on how objects happened to be titled."""
+        solid, liquid = self.by_title["Solid"], self.by_title["Liquid"]
+
+        self.assertIsNotNone(self._raw_verdict(solid, liquid))
+        self.assertIn(self._pair("Solid", "Liquid"), self._decisions())
+
+    def test_two_concepts_with_the_same_name_are_vetoed(self):
+        self._concept("Solid", "A solid does not flow.", 4)
+        concepts = concepts_for_topic(self.topic)
+        first, second = [concept for concept in concepts if concept.title == "Solid"]
+
+        self.assertIsNotNone(self._raw_verdict(first, second, concepts))
+        self.assertNotIn((first.id, second.id), self._decisions(concepts))
+
+    def test_a_real_dependency_survives_the_vetoes(self):
+        self.assertIn(self._pair("Matter", "Solid"), self._decisions())
+
+    def _verdicts_with_sections(self, solid_section, liquid_section):
+        LearningObject.objects.filter(title="Solid").update(section_title=solid_section)
+        LearningObject.objects.filter(title="Liquid").update(section_title=liquid_section)
+        concepts = concepts_for_topic(self.topic)
+        by_title = {concept.title: concept for concept in concepts}
+        rows = {
+            (row["prerequisite"].title, row["dependent"].title): row
+            for row in decide_pairs(concepts, KeywordRuntime())
+        }
+        return rows[("Solid", "Liquid")], by_title
+
+    def test_an_edge_across_sections_is_never_accepted_automatically(self):
+        """Regression, measured: every one of 35 cross-section edges in a blind
+        hand-check was wrong. They stay reviewable, never automatic."""
+        same, _ = self._verdicts_with_sections("States", "States")
+        self.assertEqual(same["verdict"], ACCEPTED)
+        self.assertFalse(same["cross_section"])
+
+        crossing, _ = self._verdicts_with_sections("Solids", "Liquids")
+        self.assertEqual(crossing["verdict"], PENDING)
+        self.assertTrue(crossing["cross_section"])
+
+    def test_a_concept_is_never_its_own_prerequisite(self):
+        for (prerequisite, dependent) in self._decisions():
+            self.assertNotEqual(prerequisite, dependent)
+
+    def test_too_few_concepts_decide_nothing(self):
+        self.assertEqual(decide_pairs(self.concepts[:1], KeywordRuntime()), [])

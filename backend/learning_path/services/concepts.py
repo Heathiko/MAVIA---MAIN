@@ -77,22 +77,3 @@ def _reads_as_sentence(normalized_title):
     mentions.
     """
     return definition_subject(normalized_title) is not None
-
-
-def resolve_concepts(learning_objects):
-    """``{learning_object_id: concept or None}`` for a whole material."""
-    return {item.id: resolve_concept(item) for item in learning_objects}
-
-
-def taught_concepts(learning_objects):
-    """The set of concepts this material actually teaches.
-
-    S2 (taxonomic is-a) is only strong evidence when the parent concept is one
-    of these: "a whale is a mammal" is not an instructional dependency unless
-    the lesson also teaches mammals.
-    """
-    return {
-        concept
-        for concept in (resolve_concept(item) for item in learning_objects)
-        if concept
-    }

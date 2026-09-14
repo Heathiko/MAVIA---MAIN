@@ -90,6 +90,18 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
         outcome = settle_group(group)
         variant_generated.extend(outcome["generated"])
         variant_errors.extend(outcome["errors"])
+        # One named event per problem, so the teacher reads which concept needs
+        # attention instead of a generic "resolve the reported errors".
+        for error in outcome["errors"]:
+            concept = LearningObject.objects.filter(pk=error.get("learning_object_id")).first()
+            name = concept.title if concept else (group.label or f"Concept {index}")
+            emit(
+                "versions_failed",
+                f"“{name}”: {error.get('detail') or 'versions could not be settled.'}",
+                group_id=group.id,
+                learning_object_id=error.get("learning_object_id"),
+                slots=error.get("slots", []),
+            )
         emit(
             "versions_finished",
             f"Concept {index} of {len(groups)} settled",
@@ -110,9 +122,12 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
         if not (candidate.content or "").strip() or not {"SIMPLIFIED", "ELABORATED"}.issubset(slots):
             incomplete_versions.append(candidate.id)
     if incomplete_versions:
+        names = list(
+            LearningObject.objects.filter(pk__in=incomplete_versions).values_list("title", flat=True)
+        )
         emit(
-            "versions_incomplete",
-            f"{len(incomplete_versions)} concept(s) still missing a version",
+            "versions_incomplete_failed",
+            f"{len(incomplete_versions)} concept(s) still missing a version: {', '.join(names)}",
             learning_object_ids=incomplete_versions,
         )
 
@@ -154,6 +169,33 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
             )
 
     ready = not (image_errors or variant_errors or incomplete_versions or audio_errors)
+
+    # The learning path is saved only when everything else succeeded, so the
+    # saved path always matches what students can see. A failure here keeps the
+    # topic unpublished rather than publishing content without a path.
+    path_summary = None
+    path_error = ""
+    if ready:
+        from learning_path.services.publishing import publish_learning_path
+
+        emit("path_started", "Building the learning path", node_id=node.id)
+        try:
+            path_summary = publish_learning_path(node)
+        except Exception as exc:  # noqa: BLE001 -- reported, never swallowed
+            path_error = f"The learning path could not be built: {exc}"
+            ready = False
+            emit("path_failed", path_error, node_id=node.id)
+        else:
+            emit(
+                "path_finished",
+                f"Learning path saved: {path_summary['steps']} steps, "
+                f"{path_summary['links']} prerequisite links",
+                node_id=node.id,
+                steps=path_summary["steps"],
+                links=path_summary["links"],
+                moved=path_summary["moved"],
+            )
+
     node.published = ready
     node.published_at = timezone.now() if ready else None
     node.save(update_fields=["published", "published_at"])
@@ -169,6 +211,8 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
         "incomplete_versions": incomplete_versions,
         "image_descriptions_generated": image_generated,
         "image_description_errors": image_errors,
+        "learning_path": path_summary,
+        "learning_path_error": path_error,
     }
     emit(
         "publish_finished" if ready else "publish_failed",
