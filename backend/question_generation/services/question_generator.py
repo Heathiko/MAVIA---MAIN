@@ -1,8 +1,30 @@
+import hashlib
 import json
+import logging
 import re
+import threading
+import time
 
 import requests
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
+
+QUESTION_GENERATOR_VERSION = 2
+QUESTION_TEMPERATURE = 0.7
+QUESTION_NUM_PREDICT = 2048
+_warm_lock = threading.Lock()
+_warm_model = ""
+_warm_until = 0.0
+
+
+def _mark_question_model_warm():
+    global _warm_model, _warm_until
+    with _warm_lock:
+        _warm_model = settings.QUESTION_LLM_MODEL
+        # Slightly shorter than the default Ollama keep-alive so the local
+        # state never intentionally outlives the server-side residency window.
+        _warm_until = time.monotonic() + 25 * 60
 
 # ── Prompt templates ──
 # Intentionally SHORT to minimize token usage.
@@ -97,6 +119,48 @@ QUESTION_SCHEMA = {
 # dropped rather than coerced -- guessing at what the model meant would put an
 # ungradeable question into the bank.
 SUPPORTED_FORMATS = ("MCQ", "TF")
+
+
+def question_bank_fingerprint(content, distribution):
+    """Identify the exact source and generation contract for a question bank."""
+    payload = {
+        "version": QUESTION_GENERATOR_VERSION,
+        "content": content,
+        "model": settings.QUESTION_LLM_MODEL,
+        "distribution": distribution,
+        "prompts": PROMPT_TEMPLATES,
+        "examples": FEW_SHOT_EXAMPLES,
+        "format_instructions": FORMAT_INSTRUCTIONS,
+        "schemas": QUESTION_SCHEMA,
+        "temperature": QUESTION_TEMPERATURE,
+        "num_predict": QUESTION_NUM_PREDICT,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _ollama_metrics(data):
+    """Convert Ollama nanosecond timings into trace-friendly values."""
+    def milliseconds(name):
+        value = data.get(name)
+        return round(value / 1_000_000, 1) if isinstance(value, (int, float)) else None
+
+    eval_count = data.get("eval_count") or 0
+    eval_duration = data.get("eval_duration") or 0
+    tokens_per_second = (
+        round(eval_count / (eval_duration / 1_000_000_000), 2)
+        if eval_count and eval_duration else None
+    )
+    return {
+        "load_ms": milliseconds("load_duration"),
+        "prompt_eval_ms": milliseconds("prompt_eval_duration"),
+        "eval_ms": milliseconds("eval_duration"),
+        "total_ms": milliseconds("total_duration"),
+        "prompt_tokens": data.get("prompt_eval_count"),
+        "output_tokens": data.get("eval_count"),
+        "tokens_per_second": tokens_per_second,
+        "model": settings.QUESTION_LLM_MODEL,
+    }
 
 
 def build_response_schema(format_split):
@@ -264,7 +328,7 @@ def _parse_llm_response(response_text):
         return [parsed]
 
 
-def _ollama_generate(prompt, schema=None):
+def _ollama_generate(prompt, schema=None, on_metrics=None):
     """Call Ollama over HTTP using the project's existing settings.
 
     ``schema`` constrains the reply at decode time. Temperature stays where it
@@ -274,13 +338,17 @@ def _ollama_generate(prompt, schema=None):
     payload = {
         "model": settings.QUESTION_LLM_MODEL,
         "prompt": prompt,
-        "stream": False,
-        "keep_alive": settings.OLLAMA_KEEP_ALIVE,
+        # Chunks keep slow CPU generation from looking like an idle HTTP
+        # connection. They are joined before parsing, preserving the API.
+        "stream": True,
+        "keep_alive": getattr(
+            settings, "QUESTION_LLM_KEEP_ALIVE", settings.OLLAMA_KEEP_ALIVE
+        ),
         "options": {
-            "temperature": 0.7,
+            "temperature": QUESTION_TEMPERATURE,
             # generous ceiling — a batch of MCQs (4 choices + explanation
             # each) can run past 1000 tokens and get cut off mid-JSON
-            "num_predict": 2048,
+            "num_predict": QUESTION_NUM_PREDICT,
         },
     }
     if schema is not None:
@@ -289,12 +357,86 @@ def _ollama_generate(prompt, schema=None):
         f"{settings.OLLAMA_BASE_URL}/api/generate",
         json=payload,
         timeout=settings.OLLAMA_TIMEOUT,
+        stream=True,
     )
     response.raise_for_status()
-    return response.json()["response"]
+    response_parts = []
+    data = None
+    for raw_line in response.iter_lines():
+        if not raw_line:
+            continue
+        chunk = json.loads(raw_line)
+        if chunk.get("error"):
+            raise RuntimeError(str(chunk["error"]))
+        response_parts.append(chunk.get("response") or "")
+        data = chunk
+    if data is None:
+        raise ValueError("Ollama returned an empty streaming response.")
+    data["response"] = "".join(response_parts)
+    _mark_question_model_warm()
+    if on_metrics:
+        on_metrics(_ollama_metrics(data))
+    return data["response"]
 
 
-def generate_questions(content, thinking_order, format_split, max_retries=3):
+def warm_question_model(on_metrics=None):
+    """Load the configured question model without generating lesson content."""
+    with _warm_lock:
+        already_warm = (
+            _warm_model == settings.QUESTION_LLM_MODEL
+            and time.monotonic() < _warm_until
+        )
+    if already_warm:
+        metrics = {
+            "load_ms": 0.0,
+            "prompt_eval_ms": 0.0,
+            "eval_ms": 0.0,
+            "total_ms": 0.0,
+            "prompt_tokens": 0,
+            "output_tokens": 0,
+            "tokens_per_second": None,
+            "model": settings.QUESTION_LLM_MODEL,
+            "warm_cache_hit": True,
+        }
+        if on_metrics:
+            on_metrics(metrics)
+        return metrics
+
+    payload = {
+        "model": settings.QUESTION_LLM_MODEL,
+        "prompt": "",
+        "stream": False,
+        "keep_alive": getattr(
+            settings, "QUESTION_LLM_KEEP_ALIVE", settings.OLLAMA_KEEP_ALIVE
+        ),
+    }
+    try:
+        response = requests.post(
+            f"{settings.OLLAMA_BASE_URL}/api/generate",
+            json=payload,
+            timeout=settings.OLLAMA_TIMEOUT,
+        )
+        response.raise_for_status()
+        metrics = _ollama_metrics(response.json())
+        metrics["warm_cache_hit"] = False
+        _mark_question_model_warm()
+        if on_metrics:
+            on_metrics(metrics)
+        return metrics
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        # Warming is an optimization, never a prerequisite. The real request
+        # remains authoritative and will surface its own failure normally.
+        logger.warning("Question model warm-up failed: %s", exc)
+        return None
+
+
+def generate_questions(
+    content,
+    thinking_order,
+    format_split,
+    max_retries=3,
+    on_metrics=None,
+):
     """
     Generate one thinking order's questions in a single LLM call.
 
@@ -316,7 +458,7 @@ def generate_questions(content, thinking_order, format_split, max_retries=3):
 
     for attempt in range(max_retries):
         try:
-            raw_text = _ollama_generate(prompt, schema=schema)
+            raw_text = _ollama_generate(prompt, schema=schema, on_metrics=on_metrics)
             questions = _parse_llm_response(raw_text)
 
             validated = []

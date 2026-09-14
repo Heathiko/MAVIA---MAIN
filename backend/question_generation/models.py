@@ -87,6 +87,13 @@ class GeneratedQuestion(models.Model):
 
     status = models.CharField(
         max_length=5, choices=STATUS_CHOICES, default="draft", db_index=True)
+    # Hash of the source content and complete generation configuration. A full
+    # "Generate all" run may reuse a complete bank only when every row carries
+    # the current fingerprint. Explicit single-concept generation still
+    # regenerates on demand.
+    generation_fingerprint = models.CharField(
+        max_length=64, blank=True, default="", db_index=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

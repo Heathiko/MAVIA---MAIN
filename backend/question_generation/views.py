@@ -155,7 +155,7 @@ def _normal_question_source(node):
     return normal, ""
 
 
-def _run_pipeline(run_id, material_id, node_ids=None):
+def _run_pipeline(run_id, material_id, node_ids=None, skip_complete=False):
     """Thread target: run the pipeline, streaming trace events to the DB."""
     from .services.pipeline import generate_questions_for_material
 
@@ -172,10 +172,15 @@ def _run_pipeline(run_id, material_id, node_ids=None):
         )
 
     try:
-        material = LearningMaterial.objects.get(id=material_id)
+        run = GenerationRun.objects.select_related("material").get(id=run_id)
+        material = run.material
         # questions are saved to the DB per node as the pipeline progresses
         questions = generate_questions_for_material(
-            material, on_event=on_event, node_ids=node_ids)
+            material,
+            on_event=on_event,
+            node_ids=node_ids,
+            skip_complete=skip_complete or run.node_id is None,
+        )
         on_event("saved", f"Saved {len(questions)} questions to database",
                  {"count": len(questions)})
         GenerationRun.objects.filter(id=run_id).update(
@@ -218,6 +223,7 @@ class StartGenerationView(APIView):
 
         node = None
         requested_node_id = node_id if node_id is not None else request.data.get("node_id")
+        skip_complete = request.data.get("skip_complete", requested_node_id is None) is True
         if requested_node_id is not None:
             node = content_nodes.filter(id=requested_node_id).first()
             if node is None:
@@ -279,7 +285,12 @@ class StartGenerationView(APIView):
         )
         threading.Thread(
             target=_run_pipeline,
-            args=(run.id, material.id, [node.id] if node else normal_ids),
+            args=(
+                run.id,
+                material.id,
+                [node.id] if node else normal_ids,
+                skip_complete,
+            ),
             daemon=True,
         ).start()
         return Response(

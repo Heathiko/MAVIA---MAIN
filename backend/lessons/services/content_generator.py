@@ -51,6 +51,15 @@ class MaterialDeletedDuringGeneration(RuntimeError):
     pass
 
 
+class LearningMaterialValidationError(ValueError):
+    """The uploaded PDF is readable, but is not valid lesson material here.
+
+    This is deliberately separate from extraction, model, and database errors.
+    Upload workflows may safely discard a rejected source document while still
+    retaining genuine processing failures for diagnosis and retry.
+    """
+
+
 def _material_exists(material: LearningMaterial) -> bool:
     return bool(material.pk) and LearningMaterial.objects.filter(pk=material.pk).exists()
 
@@ -214,6 +223,64 @@ def build_fallback_learning_objects_from_text(cleaned_text: str) -> list[dict]:
     return learning_objects
 
 
+def _merge_adjacent_embedded_image_fragments(page, images: list[dict]) -> list[dict]:
+    """Join raster tiles that are really one image on a PDF page.
+
+    Some PDF writers store the upper/lower (or left/right) portions of one
+    visual as separate image blocks.  The alignment and tiny-gap requirements
+    are deliberately strict so nearby independent figures remain independent.
+    """
+    merged = [dict(image) for image in images]
+    changed = True
+    while changed:
+        changed = False
+        for left_index, left in enumerate(merged):
+            left_bbox = fitz.Rect(left.get("bbox") or (0, 0, 0, 0))
+            for right_index in range(left_index + 1, len(merged)):
+                right = merged[right_index]
+                right_bbox = fitz.Rect(right.get("bbox") or (0, 0, 0, 0))
+                vertical_gap = max(right_bbox.y0 - left_bbox.y1, left_bbox.y0 - right_bbox.y1)
+                horizontal_gap = max(right_bbox.x0 - left_bbox.x1, left_bbox.x0 - right_bbox.x1)
+                vertically_tiled = (
+                    -1.0 <= vertical_gap <= 3.0
+                    and abs(left_bbox.x0 - right_bbox.x0) <= 2.0
+                    and abs(left_bbox.x1 - right_bbox.x1) <= 2.0
+                )
+                horizontally_tiled = (
+                    -1.0 <= horizontal_gap <= 3.0
+                    and abs(left_bbox.y0 - right_bbox.y0) <= 2.0
+                    and abs(left_bbox.y1 - right_bbox.y1) <= 2.0
+                )
+                if not (vertically_tiled or horizontally_tiled):
+                    continue
+
+                bbox = left_bbox | right_bbox
+                try:
+                    image_bytes = page.get_pixmap(clip=bbox, dpi=150, alpha=False).tobytes("png")
+                except (RuntimeError, ValueError):
+                    continue
+                combined = {
+                    **left,
+                    "width": int(bbox.width),
+                    "height": int(bbox.height),
+                    "area": int(bbox.get_area()),
+                    "extension": "png",
+                    "image_bytes": image_bytes,
+                    "bbox": tuple(float(value) for value in bbox),
+                    "fragment_block_indexes": [
+                        *(left.get("fragment_block_indexes") or [left.get("block_index")]),
+                        *(right.get("fragment_block_indexes") or [right.get("block_index")]),
+                    ],
+                }
+                merged[left_index] = combined
+                del merged[right_index]
+                changed = True
+                break
+            if changed:
+                break
+    return merged
+
+
 def extract_meaningful_pdf_images(file_path: str, max_images: int | None = None) -> list[dict]:
     images = []
     max_images = max_images or int(os.getenv("MAX_PDF_IMAGES_FOR_VISION", "4"))
@@ -227,6 +294,7 @@ def extract_meaningful_pdf_images(file_path: str, max_images: int | None = None)
             page_rect = page.rect
             page_area = max(page_rect.width * page_rect.height, 1)
             page_dict = page.get_text("dict")
+            page_image_start = len(images)
             for block_index, block in enumerate(page_dict.get("blocks", [])):
                 if block.get("type") != 1:
                     continue
@@ -274,6 +342,11 @@ def extract_meaningful_pdf_images(file_path: str, max_images: int | None = None)
                         "bbox": tuple(float(value) for value in bbox),
                     }
                 )
+
+            images[page_image_start:] = _merge_adjacent_embedded_image_fragments(
+                page,
+                images[page_image_start:],
+            )
 
             for region in find_captioned_figure_regions(page, page_dict):
                 bbox = fitz.Rect(region["bbox"])
@@ -430,7 +503,45 @@ def _borderless_table_regions(page_dict: dict, page_rect: fitz.Rect) -> list[dic
         for row in group[1:]:
             bbox |= row["bbox"]
         regions.append({"rows": rows, "bbox": bbox})
-    return regions
+    return _merge_adjacent_table_fragments(regions, page_rect)
+
+
+def _merge_adjacent_table_fragments(regions: list[dict], page_rect: fitz.Rect) -> list[dict]:
+    """Reassemble one table that the borderless detector split vertically.
+
+    A larger row gap inside a table can make it appear to be two regions.  We
+    join only same-width, nearly touching regions on the same page. Distinct
+    stacked tables normally have a heading or a materially larger gap and are
+    therefore left alone.
+    """
+    ordered = sorted(regions, key=lambda region: (fitz.Rect(region["bbox"]).y0, fitz.Rect(region["bbox"]).x0))
+    merged: list[dict] = []
+    maximum_gap = max(18.0, page_rect.height * 0.03)
+    for region in ordered:
+        current = {**region, "bbox": fitz.Rect(region["bbox"]), "rows": list(region["rows"])}
+        if not merged:
+            merged.append(current)
+            continue
+        previous = merged[-1]
+        previous_bbox = fitz.Rect(previous["bbox"])
+        current_bbox = fitz.Rect(current["bbox"])
+        gap = current_bbox.y0 - previous_bbox.y1
+        width_ratio = min(previous_bbox.width, current_bbox.width) / max(
+            previous_bbox.width,
+            current_bbox.width,
+            1,
+        )
+        same_columns = (
+            abs(previous_bbox.x0 - current_bbox.x0) <= 8.0
+            and abs(previous_bbox.x1 - current_bbox.x1) <= 8.0
+            and width_ratio >= 0.95
+        )
+        if 0 <= gap <= maximum_gap and same_columns:
+            previous["rows"].extend(current["rows"])
+            previous["bbox"] = previous_bbox | current_bbox
+        else:
+            merged.append(current)
+    return merged
 
 
 def _nearest_table_title(page, table_bbox: fitz.Rect, page_height: float) -> str:
@@ -2872,7 +2983,11 @@ def apply_classification_override(
     return material
 
 
-def generate_material_outputs(material: LearningMaterial) -> LearningMaterial:
+def generate_material_outputs(
+    material: LearningMaterial,
+    *,
+    propagate_validation_error: bool = False,
+) -> LearningMaterial:
     import time as _time
     _t0 = _time.monotonic()
 
@@ -2881,13 +2996,18 @@ def generate_material_outputs(material: LearningMaterial) -> LearningMaterial:
 
     try:
         _trace("start: extracting PDF text")
-        text = extract_pdf_text(material.pdf_file.path)
+        try:
+            text = extract_pdf_text(material.pdf_file.path)
+        except (fitz.FileDataError, fitz.EmptyFileError) as exc:
+            raise LearningMaterialValidationError(
+                "The uploaded file is not a readable PDF."
+            ) from exc
         is_image_only_pdf = not _has_enough_embedded_pdf_text(text)
         if is_image_only_pdf:
             _trace("embedded text is sparse; using deterministic PDF page extraction fallback")
             transcribed_text = transcribe_image_only_pdf_pages(material.pdf_file.path)
             if not transcribed_text.strip():
-                raise ValueError("No readable text was found in the PDF.")
+                raise LearningMaterialValidationError("No readable text was found in the PDF.")
             text = transcribed_text
             extracted_blocks = _text_blocks_from_transcription(transcribed_text)
         else:
@@ -2895,9 +3015,11 @@ def generate_material_outputs(material: LearningMaterial) -> LearningMaterial:
 
         cleaned_preserved_text = clean_pdf_text_for_extraction(text, limit=None)
         if not cleaned_preserved_text.strip():
-            raise ValueError("No meaningful lesson text was found in the PDF.")
+            raise LearningMaterialValidationError(
+                "No meaningful lesson text was found in the PDF."
+            )
         if is_course_outline_document(cleaned_preserved_text):
-            raise ValueError(
+            raise LearningMaterialValidationError(
                 "This PDF appears to be a course outline, not lesson material. "
                 "Upload it through Course outline extraction."
             )
@@ -2915,11 +3037,11 @@ def generate_material_outputs(material: LearningMaterial) -> LearningMaterial:
         )
         if matched_node is None:
             if selected_node is not None:
-                raise ValueError(
+                raise LearningMaterialValidationError(
                     f'This PDF does not match the selected topic "{selected_node.title}" '
                     "or any sufficiently confident topic in the approved course outline."
                 )
-            raise ValueError(
+            raise LearningMaterialValidationError(
                 "This PDF does not match any topic in the approved course outline."
             )
 
@@ -3042,6 +3164,16 @@ def generate_material_outputs(material: LearningMaterial) -> LearningMaterial:
         _trace(f"done: status={material.status}")
     except MaterialDeletedDuringGeneration as exc:
         _trace(f"stopped: {exc}")
+    except LearningMaterialValidationError as exc:
+        _trace(f"REJECTED: {exc}")
+        if propagate_validation_error:
+            raise
+        material.status = LearningMaterial.Status.FAILED
+        material.error_message = str(exc)
+        try:
+            _save_material_update(material, ["status", "error_message"])
+        except MaterialDeletedDuringGeneration as deleted_exc:
+            _trace(f"stopped while saving rejection state: {deleted_exc}")
     except Exception as exc:
         _trace(f"FAILED: {type(exc).__name__}: {exc}")
         material.status = LearningMaterial.Status.FAILED

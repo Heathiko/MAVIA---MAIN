@@ -1939,6 +1939,32 @@ button {
   margin-top: 1rem;
 }
 
+.topic-toast {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1200;
+  max-width: min(28rem, calc(100vw - 2rem));
+  padding: 0.8rem 1rem;
+  color: #154734;
+  background: #e8f8f1;
+  border: 1px solid #8dd9bc;
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgb(16 55 45 / 18%);
+  animation: topic-toast-in 160ms ease-out;
+}
+
+@keyframes topic-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.4rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .muted-text {
   color: var(--muted);
   margin-top: 0.65rem;

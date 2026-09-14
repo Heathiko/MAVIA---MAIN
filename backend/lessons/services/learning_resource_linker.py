@@ -708,23 +708,39 @@ def record_teacher_match_decision(
     return suggestion
 
 
-def _nominated_candidate(matcher, learning_object, cache):
+def _nominated_candidate(
+    matcher,
+    learning_object,
+    cache,
+    *,
+    allow_grouped_source=False,
+):
     """The single object this one picks as its own cross-PDF equivalent.
 
     Memoised per refresh: in a lopsided pair of PDFs many objects nominate the
     same partner, so the reciprocal lookup is asked about far fewer objects
     than there are pairs.
     """
-    if learning_object.id not in cache:
+    cache_key = (learning_object.id, bool(allow_grouped_source))
+    if cache_key not in cache:
         try:
-            cache[learning_object.id] = matcher(
+            matcher_kwargs = {
+                "section_title": learning_object.section_title,
+                "source_object_id": learning_object.id,
+            }
+            if allow_grouped_source:
+                # This is a read-only reciprocal check. It excludes the
+                # candidate's current group and asks whether the candidate
+                # nominates the new object's group back; no membership changes
+                # are made by semantic_decision().
+                matcher_kwargs["allow_grouped_source"] = True
+            cache[cache_key] = matcher(
                 learning_object.material,
                 learning_object.title,
                 learning_object.content,
                 learning_object.kind,
                 learning_object.order,
-                section_title=learning_object.section_title,
-                source_object_id=learning_object.id,
+                **matcher_kwargs,
             )
         except Exception:
             # A failed lookup is not evidence against the pair. Record the
@@ -734,11 +750,18 @@ def _nominated_candidate(matcher, learning_object, cache):
                 "Reciprocal match lookup failed for learning object %s",
                 learning_object.id,
             )
-            cache[learning_object.id] = "unavailable"
-    return cache[learning_object.id]
+            cache[cache_key] = "unavailable"
+    return cache[cache_key]
 
 
-def _is_mutual_best_match(matcher, candidate_object, source_object, cache):
+def _is_mutual_best_match(
+    matcher,
+    candidate_object,
+    source_object,
+    cache,
+    *,
+    allow_grouped_candidate=False,
+):
     """True when the candidate nominates the source back.
 
     "Both teach the same concept" is a symmetric claim, but the matcher only
@@ -749,7 +772,12 @@ def _is_mutual_best_match(matcher, candidate_object, source_object, cache):
     declines. Requiring the nomination to run both ways makes the pair a claim
     about the two objects rather than about one of them.
     """
-    decision = _nominated_candidate(matcher, candidate_object, cache)
+    decision = _nominated_candidate(
+        matcher,
+        candidate_object,
+        cache,
+        allow_grouped_source=allow_grouped_candidate,
+    )
     if decision == "unavailable":
         return True
     if not decision:
@@ -852,7 +880,16 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
             == LearningObjectMatchSuggestion.Confidence.HIGH
         )
         if not is_high_confidence and not _is_mutual_best_match(
-            matcher, candidate_object, source_object, reciprocal_cache
+            matcher,
+            candidate_object,
+            source_object,
+            reciprocal_cache,
+            # A medium match to an established group used to vanish here:
+            # semantic_decision refused to evaluate the grouped candidate, so
+            # reciprocity could never succeed. Allowing this read-only lookup
+            # preserves mutual-best protection and creates review work only
+            # when the grouped candidate genuinely nominates the source back.
+            allow_grouped_candidate=semantic_active,
         ):
             continue
         if (

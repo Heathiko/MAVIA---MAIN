@@ -1,5 +1,5 @@
 import json
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase, override_settings
 
@@ -12,6 +12,11 @@ CONTENT = "A solid keeps a fixed shape. A liquid takes the shape of its containe
 
 def _response(items):
     return json.dumps({"questions": items})
+
+
+def _stream_response(post, data):
+    post.return_value.iter_lines.return_value = [json.dumps(data).encode("utf-8")]
+    post.return_value.raise_for_status.return_value = None
 
 
 MCQ_ITEM = {
@@ -32,12 +37,13 @@ TF_ITEM = {
 class StructuredOutputTests(SimpleTestCase):
     def test_ollama_call_sends_a_json_schema(self):
         with patch("question_generation.services.question_generator.requests.post") as post:
-            post.return_value.json.return_value = {"response": _response([MCQ_ITEM])}
-            post.return_value.raise_for_status.return_value = None
+            _stream_response(post, {"response": _response([MCQ_ITEM]), "done": True})
             qg._ollama_generate("prompt", schema=qg.build_response_schema({"MCQ": 1}))
 
         sent = post.call_args.kwargs["json"]
         self.assertIn("format", sent)
+        self.assertTrue(sent["stream"])
+        self.assertTrue(post.call_args.kwargs["stream"])
         self.assertEqual(sent["format"]["type"], "object")
         self.assertIn("questions", sent["format"]["properties"])
 
@@ -45,11 +51,56 @@ class StructuredOutputTests(SimpleTestCase):
         # The schema constrains shape, not content. Dropping temperature would
         # cost question variety without preventing anything.
         with patch("question_generation.services.question_generator.requests.post") as post:
-            post.return_value.json.return_value = {"response": _response([MCQ_ITEM])}
-            post.return_value.raise_for_status.return_value = None
+            _stream_response(post, {"response": _response([MCQ_ITEM]), "done": True})
             qg._ollama_generate("prompt", schema=qg.build_response_schema({"MCQ": 1}))
 
         self.assertEqual(post.call_args.kwargs["json"]["options"]["temperature"], 0.7)
+
+    def test_ollama_metrics_are_reported_in_milliseconds(self):
+        callback = Mock()
+        with patch("question_generation.services.question_generator.requests.post") as post:
+            _stream_response(post, {
+                "response": _response([MCQ_ITEM]),
+                "load_duration": 2_000_000,
+                "prompt_eval_duration": 3_000_000,
+                "eval_duration": 2_000_000_000,
+                "total_duration": 2_100_000_000,
+                "prompt_eval_count": 120,
+                "eval_count": 40,
+                "done": True,
+            })
+            qg._ollama_generate("prompt", on_metrics=callback)
+
+        metrics = callback.call_args.args[0]
+        self.assertEqual(metrics["load_ms"], 2.0)
+        self.assertEqual(metrics["output_tokens"], 40)
+        self.assertEqual(metrics["tokens_per_second"], 20.0)
+
+    def test_warmup_loads_model_without_requesting_output(self):
+        with patch.object(qg, "_warm_model", ""), patch.object(
+            qg, "_warm_until", 0.0
+        ), patch("question_generation.services.question_generator.requests.post") as post:
+            post.return_value.json.return_value = {"response": "", "load_duration": 1}
+            post.return_value.raise_for_status.return_value = None
+            qg.warm_question_model()
+
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["prompt"], "")
+        self.assertFalse(payload["stream"])
+        self.assertEqual(payload["keep_alive"], "30m")
+
+    def test_warmup_is_reused_while_model_keep_alive_is_active(self):
+        with patch.object(qg, "_warm_model", ""), patch.object(
+            qg, "_warm_until", 0.0
+        ), patch("question_generation.services.question_generator.requests.post") as post:
+            post.return_value.json.return_value = {"response": "", "load_duration": 1}
+            post.return_value.raise_for_status.return_value = None
+            first = qg.warm_question_model()
+            second = qg.warm_question_model()
+
+        self.assertFalse(first["warm_cache_hit"])
+        self.assertTrue(second["warm_cache_hit"])
+        post.assert_called_once()
 
     def test_schema_allows_both_formats(self):
         schema = qg.build_response_schema({"MCQ": 2, "TF": 1})
@@ -134,6 +185,20 @@ class DistributionConfigTests(SimpleTestCase):
             self.assertEqual(
                 sum(config["format_split"].values()), config["count"], msg=order
             )
+
+    def test_default_generation_does_not_pad_the_question_count(self):
+        from .services.pipeline import OVERGENERATION_FACTOR
+
+        self.assertEqual(OVERGENERATION_FACTOR, 1.0)
+
+    def test_fingerprint_changes_with_content_or_model(self):
+        first = qg.question_bank_fingerprint(CONTENT, QUESTION_DISTRIBUTION)
+        changed_content = qg.question_bank_fingerprint(CONTENT + " More.", QUESTION_DISTRIBUTION)
+        with override_settings(QUESTION_LLM_MODEL="another-model"):
+            changed_model = qg.question_bank_fingerprint(CONTENT, QUESTION_DISTRIBUTION)
+
+        self.assertNotEqual(first, changed_content)
+        self.assertNotEqual(first, changed_model)
 
     @override_settings(QUESTION_COUNT_LOT=4, QUESTION_COUNT_HOT=2)
     def test_counts_are_configurable(self):

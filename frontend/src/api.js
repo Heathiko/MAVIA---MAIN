@@ -18,15 +18,16 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     let message = `Request failed: ${response.status}`;
+    let responseData = null;
     const responseForText = response.clone();
     try {
-      const data = await response.json();
-      if (data.detail) {
-        message = data.detail;
-      } else if (Array.isArray(data.non_field_errors)) {
-        message = data.non_field_errors[0];
-      } else if (data && typeof data === "object") {
-        const first = Object.values(data)[0];
+      responseData = await response.json();
+      if (responseData.detail) {
+        message = responseData.detail;
+      } else if (Array.isArray(responseData.non_field_errors)) {
+        message = responseData.non_field_errors[0];
+      } else if (responseData && typeof responseData === "object") {
+        const first = Object.values(responseData)[0];
         message = Array.isArray(first) ? first[0] : String(first);
       }
     } catch {
@@ -39,7 +40,10 @@ async function request(path, options = {}) {
         /* keep status-based message */
       }
     }
-    throw new Error(message);
+    const requestError = new Error(message);
+    requestError.status = response.status;
+    requestError.data = responseData;
+    throw requestError;
   }
   if (response.status === 204) {
     return null;
@@ -351,11 +355,19 @@ export function updateTopicQuestion(courseId, nodeId, questionId, data) {
   );
 }
 
-export function startQuestionGeneration(materialId, learningObjectId = null) {
+export function startQuestionGeneration(
+  materialId,
+  learningObjectId = null,
+  skipComplete = false,
+) {
   const path = learningObjectId
     ? `/generation/materials/${materialId}/nodes/${learningObjectId}/start/`
     : `/generation/materials/${materialId}/start/`;
-  return request(path, { method: "POST" });
+  return request(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skip_complete: skipComplete }),
+  });
 }
 
 export function fetchQuestionGenerationTrace(runId) {

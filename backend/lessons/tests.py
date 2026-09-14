@@ -1,9 +1,12 @@
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
-from unittest.mock import patch
 
 
 def authenticated_api_client():
@@ -35,6 +38,7 @@ from .models import (
 )
 from .serializers import CourseDetailSerializer, LearningMaterialSerializer
 from .services.content_generator import (
+    LearningMaterialValidationError,
     _text_blocks_from_transcription,
     build_learning_objects_from_pdf_blocks,
     build_narration_script_from_learning_objects,
@@ -42,6 +46,8 @@ from .services.content_generator import (
     balance_learning_object_chunks,
     _borderless_table_regions,
     _instructional_table_rows,
+    _merge_adjacent_embedded_image_fragments,
+    _merge_adjacent_table_fragments,
     _plausible_table_bbox,
     describe_pdf_images,
     exclude_text_blocks_inside_tables,
@@ -68,6 +74,7 @@ from .services.learning_resource_linker import (
 )
 from .features.pdf_processing.use_cases import (
     PdfProcessingUseCaseError,
+    RejectedLearningMaterialError,
     upload_course_outline,
     upload_course_pdf,
     upload_learning_material,
@@ -206,6 +213,93 @@ class CumulativeCourseOutlineTests(TestCase):
             pdf_file=uploaded,
             title="Matter lesson",
         )
+
+    @patch("lessons.features.pdf_processing.use_cases.generate_material_outputs")
+    def test_rejected_lesson_material_is_not_stored(self, generate_outputs):
+        generate_outputs.side_effect = LearningMaterialValidationError(
+            "No meaningful lesson text was found in the PDF."
+        )
+        course = CourseGroup.objects.create(title="Science")
+        topic = OutlineNode.objects.create(
+            course=course,
+            title="Matter",
+            order=0,
+            depth=0,
+        )
+
+        with tempfile.TemporaryDirectory() as media_root:
+            with self.settings(MEDIA_ROOT=media_root):
+                with self.assertRaisesMessage(
+                    PdfProcessingUseCaseError,
+                    "automatically deleted and was not stored",
+                ):
+                    upload_learning_material(
+                        course=course,
+                        pdf_file=SimpleUploadedFile(
+                            "not-a-lesson.pdf",
+                            b"%PDF-1.4 invalid lesson",
+                        ),
+                        outline_node_id=topic.id,
+                    )
+
+                self.assertFalse(course.materials.exists())
+                stored_files = [path for path in Path(media_root).rglob("*") if path.is_file()]
+                self.assertEqual(stored_files, [])
+                generate_outputs.assert_called_once()
+                self.assertTrue(
+                    generate_outputs.call_args.kwargs["propagate_validation_error"]
+                )
+
+    @patch("lessons.features.pdf_processing.use_cases.upload_learning_material")
+    @patch("lessons.features.pdf_processing.use_cases.is_course_outline_pdf", return_value=False)
+    def test_unified_upload_explains_rejected_document_type(
+        self,
+        _is_outline,
+        upload_material,
+    ):
+        upload_material.side_effect = RejectedLearningMaterialError(
+            "No meaningful lesson text was found in the PDF."
+        )
+        course = CourseGroup.objects.create(title="Science")
+
+        with self.assertRaisesMessage(
+            PdfProcessingUseCaseError,
+            "neither a valid course outline nor valid lesson material",
+        ):
+            upload_course_pdf(
+                course=course,
+                pdf_file=SimpleUploadedFile(
+                    "unrelated.pdf",
+                    b"%PDF-1.4 unrelated",
+                ),
+            )
+
+    def test_unreadable_pdf_is_deleted_instead_of_becoming_failed_material(self):
+        course = CourseGroup.objects.create(title="Science")
+        topic = OutlineNode.objects.create(
+            course=course,
+            title="Matter",
+            order=0,
+            depth=0,
+        )
+
+        with tempfile.TemporaryDirectory() as media_root:
+            with self.settings(MEDIA_ROOT=media_root):
+                with self.assertRaisesMessage(
+                    RejectedLearningMaterialError,
+                    "not a readable PDF",
+                ):
+                    upload_learning_material(
+                        course=course,
+                        pdf_file=SimpleUploadedFile(
+                            "fake.pdf",
+                            b"this is not actually a PDF",
+                        ),
+                        outline_node_id=topic.id,
+                    )
+
+                self.assertFalse(course.materials.exists())
+                self.assertFalse(any(Path(media_root).rglob("*.pdf")))
 
     def test_later_outline_merges_children_and_appends_new_roots(self):
         course = CourseGroup.objects.create(title="Science")
@@ -2452,6 +2546,67 @@ class LearningObjectPreservationTests(TestCase):
 
         self.assertEqual(len(regions), 1)
         self.assertEqual(len(regions[0]["rows"]), 3)
+
+    def test_adjacent_same_width_table_fragments_are_reassembled(self):
+        import fitz
+
+        regions = [
+            {
+                "bbox": fitz.Rect(74.3, 360.3, 343.8, 456.2),
+                "rows": [
+                    ["Property", "Solid", "Liquid", "Gas"],
+                    ["Shape", "Definite", "Not definite", "Not definite"],
+                    ["Volume", "Definite", "Definite", "Not definite"],
+                ],
+            },
+            {
+                "bbox": fitz.Rect(74.3, 472.1, 343.9, 568.2),
+                "rows": [
+                    ["Particle movement", "Vibrate", "Slide", "Move freely"],
+                    ["Can flow?", "No", "Yes", "Yes"],
+                    ["Example", "Rock", "Water", "Air"],
+                ],
+            },
+        ]
+
+        merged = _merge_adjacent_table_fragments(regions, fitz.Rect(0, 0, 600, 800))
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(len(merged[0]["rows"]), 6)
+        self.assertEqual(tuple(round(value, 1) for value in merged[0]["bbox"]), (74.3, 360.3, 343.9, 568.2))
+
+    def test_separate_stacked_tables_are_not_merged(self):
+        import fitz
+
+        regions = [
+            {"bbox": fitz.Rect(70, 100, 340, 200), "rows": [["A", "B"]] * 3},
+            {"bbox": fitz.Rect(70, 260, 340, 360), "rows": [["C", "D"]] * 3},
+        ]
+
+        merged = _merge_adjacent_table_fragments(regions, fitz.Rect(0, 0, 600, 800))
+
+        self.assertEqual(len(merged), 2)
+
+    def test_touching_embedded_image_tiles_become_one_visual(self):
+        class FakePixmap:
+            def tobytes(self, _extension):
+                return b"combined-image"
+
+        class FakePage:
+            def get_pixmap(self, **_kwargs):
+                return FakePixmap()
+
+        fragments = [
+            {"bbox": (50, 100, 350, 220), "block_index": 2, "image_bytes": b"top"},
+            {"bbox": (50, 221, 350, 340), "block_index": 3, "image_bytes": b"bottom"},
+        ]
+
+        merged = _merge_adjacent_embedded_image_fragments(FakePage(), fragments)
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["bbox"], (50.0, 100.0, 350.0, 340.0))
+        self.assertEqual(merged[0]["image_bytes"], b"combined-image")
+        self.assertEqual(merged[0]["fragment_block_indexes"], [2, 3])
 
     def test_nearly_full_page_text_alignment_is_not_accepted_as_a_table(self):
         import fitz

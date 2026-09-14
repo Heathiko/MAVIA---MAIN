@@ -8,7 +8,11 @@ from django.conf import settings
 from django.db import transaction
 
 from .bloom_classifier import BLOOM_TO_DIFFICULTY, BloomClassifier
-from .question_generator import generate_questions
+from .question_generator import (
+    generate_questions,
+    question_bank_fingerprint,
+    warm_question_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +80,10 @@ QUESTION_DISTRIBUTION = {
 # drift still leaves enough in each bucket. This is what replaced the old
 # multi-round rebalancing: overgenerating inside the SAME set of LLM calls is
 # far cheaper than issuing extra calls to correct a shortfall afterwards.
-OVERGENERATION_FACTOR = 1.5
+OVERGENERATION_FACTOR = max(
+    1.0,
+    float(getattr(settings, "QUESTION_OVERGENERATION_FACTOR", 1.0)),
+)
 
 # Bloom levels the classifier may return but that MCQ/TF cannot assess.
 # "create" questions (design/construct/compose a novel artifact) have no
@@ -149,7 +156,12 @@ def _print_material_summary(material, node_count, all_questions, stats):
 
 # ── Phase 1: generation (LLM) ──
 
-def _draft_questions_for_node(node, on_event=None):
+def _draft_questions_for_node(
+    node,
+    classifier,
+    on_event=None,
+    generation_fingerprint="",
+):
     """Run every LLM call for one node and persist the results as drafts.
 
     Nothing is classified, deduplicated or trimmed here — the questions go
@@ -158,24 +170,89 @@ def _draft_questions_for_node(node, on_event=None):
     """
     from question_generation.models import GeneratedQuestion
 
-    # clear drafts orphaned by an earlier crashed run so they can't be
-    # mistaken for this run's output
-    GeneratedQuestion.objects.filter(node=node, status="draft").delete()
+    draft_rows = GeneratedQuestion.objects.filter(node=node, status="draft")
+    # A changed source, model, prompt, or generation contract invalidates old
+    # partial work. Matching fingerprints are safe to resume.
+    draft_rows.exclude(generation_fingerprint=generation_fingerprint).delete()
+    resumed = list(
+        draft_rows.filter(generation_fingerprint=generation_fingerprint).order_by("id")
+    )
 
-    drafted = 0
+    # Drafts created before resumable generation did not record which request
+    # produced them. Classify those once so an in-progress bank can still
+    # receive credit on its first retry after this upgrade.
+    inferred = []
+    for draft in resumed:
+        if draft.thinking_order:
+            continue
+        classification = classifier.classify(draft.question_text)
+        thinking_order = classification.get("thinking_order")
+        if thinking_order in QUESTION_DISTRIBUTION:
+            draft.thinking_order = thinking_order
+            inferred.append(draft)
+    if inferred:
+        GeneratedQuestion.objects.bulk_update(inferred, ["thinking_order"])
+
+    resumed_counts = Counter(
+        (draft.thinking_order, draft.question_format)
+        for draft in resumed
+        if draft.thinking_order in QUESTION_DISTRIBUTION
+    )
+    if resumed:
+        _emit(
+            on_event,
+            "questions_resumed",
+            f"Resumed {len(resumed)} compatible saved draft(s)",
+            node_id=node.id,
+            count=len(resumed),
+            by_thinking_order=dict(
+                Counter(draft.thinking_order or "unclassified" for draft in resumed)
+            ),
+        )
+
+    drafted = len(resumed)
     for thinking_order, config in QUESTION_DISTRIBUTION.items():
         # Pad each format so classification drift still leaves enough in the
         # bucket, then ask for the whole mix in one call.
-        padded = {
+        targets = {
             fmt: max(1, ceil(n * OVERGENERATION_FACTOR))
             for fmt, n in config["format_split"].items()
         }
+        padded = {
+            fmt: target - resumed_counts.get((thinking_order, fmt), 0)
+            for fmt, target in targets.items()
+            if target - resumed_counts.get((thinking_order, fmt), 0) > 0
+        }
+        if not padded:
+            _emit(
+                on_event,
+                "generation_step_resumed",
+                f"Reused completed {thinking_order} drafts",
+                node_id=node.id,
+                thinking_order=thinking_order,
+                count=sum(
+                    resumed_counts.get((thinking_order, fmt), 0)
+                    for fmt in targets
+                ),
+            )
+            continue
         summary = " + ".join(f"{n} {fmt}" for fmt, n in padded.items())
         print(f"Generating {summary} {thinking_order} question(s) for: {node.title}")
+        def record_metrics(metrics, order=thinking_order):
+            _emit(
+                on_event,
+                "llm_metrics",
+                f"{order} model call completed",
+                node_id=node.id,
+                thinking_order=order,
+                **metrics,
+            )
+
         questions = generate_questions(
             content=node.content,
             thinking_order=thinking_order,
             format_split=padded,
+            on_metrics=record_metrics,
         )
         batch = [
             GeneratedQuestion(
@@ -185,7 +262,12 @@ def _draft_questions_for_node(node, on_event=None):
                 choices=q.get("choices"),
                 correct_answer=q["correct_answer"],
                 explanation=q.get("explanation", ""),
+                # While this row is a draft, this is the generation request
+                # that produced it. Finalization replaces it with the Bloom
+                # classifier's authoritative result.
+                thinking_order=thinking_order,
                 status="draft",
+                generation_fingerprint=generation_fingerprint,
             )
             for q in questions
         ]
@@ -342,7 +424,13 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
     return keep
 
 
-def generate_questions_for_node(node, classifier, on_event=None, stats=None):
+def generate_questions_for_node(
+    node,
+    classifier,
+    on_event=None,
+    stats=None,
+    generation_fingerprint="",
+):
     """Generate and finalize one LearningObject's question bank.
 
     Two phases: every LLM call happens first and lands in the database as
@@ -355,7 +443,12 @@ def generate_questions_for_node(node, classifier, on_event=None, stats=None):
     on_event(event_type, message, data) receives trace events when provided.
     stats, when given a dict, accumulates run totals for a material summary.
     """
-    drafted = _draft_questions_for_node(node, on_event=on_event)
+    drafted = _draft_questions_for_node(
+        node,
+        classifier,
+        on_event=on_event,
+        generation_fingerprint=generation_fingerprint,
+    )
     if stats is not None:
         stats["total_drafted"] = stats.get("total_drafted", 0) + drafted
 
@@ -367,7 +460,27 @@ def generate_questions_for_node(node, classifier, on_event=None, stats=None):
     return finalize_node_questions(node, classifier, on_event=on_event, stats=stats)
 
 
-def generate_questions_for_material(material, on_event=None, node_ids=None):
+def _complete_current_bank(node, fingerprint):
+    """Return a reusable complete bank, or an empty list when regeneration is needed."""
+    final = list(node.generated_questions.filter(status="final").order_by("id"))
+    if not final or any(q.generation_fingerprint != fingerprint for q in final):
+        return []
+    counts = Counter(q.thinking_order for q in final)
+    if any(
+        counts.get(order, 0) < config["count"]
+        for order, config in QUESTION_DISTRIBUTION.items()
+    ):
+        return []
+    return final
+
+
+def generate_questions_for_material(
+    material,
+    on_event=None,
+    node_ids=None,
+    *,
+    skip_complete=False,
+):
     """Full pipeline: LearningMaterial → classified questions for its text
     learning objects, straight from the database (no JSON handoff).
 
@@ -377,10 +490,6 @@ def generate_questions_for_material(material, on_event=None, node_ids=None):
     questions."""
     from question_generation.models import GeneratedQuestion
 
-    if _classifier_cache is None:
-        _emit(on_event, "classifier_loading", "Loading Bloom's classifier model")
-    classifier = _get_classifier()
-
     nodes_qs = (
         material.learning_objects
         .exclude(content="")
@@ -389,6 +498,15 @@ def generate_questions_for_material(material, on_event=None, node_ids=None):
     if node_ids is not None:
         nodes_qs = nodes_qs.filter(id__in=node_ids)
     nodes = list(nodes_qs)
+    fingerprints = {
+        node.id: question_bank_fingerprint(node.content, QUESTION_DISTRIBUTION)
+        for node in nodes
+    }
+    reusable = {
+        node.id: _complete_current_bank(node, fingerprints[node.id])
+        for node in nodes
+    } if skip_complete else {}
+    nodes_to_generate = [node for node in nodes if not reusable.get(node.id)]
     if node_ids is None:
         # full-material run: drop stale questions on nodes this run will not
         # touch (e.g. a learning object whose content was emptied since the
@@ -399,13 +517,54 @@ def generate_questions_for_material(material, on_event=None, node_ids=None):
         on_event, "material_started",
         f"Generating questions for {len(nodes)} content nodes",
         material_id=material.id, material_title=material.title,
-        node_count=len(nodes),
+        node_count=len(nodes), generate_count=len(nodes_to_generate),
+        reuse_count=len(nodes) - len(nodes_to_generate),
     )
 
     all_questions = []
-    stats = {"total_drafted": 0, "excluded_create": 0, "duplicates": 0, "trimmed": 0}
+    stats = {
+        "total_drafted": 0,
+        "excluded_create": 0,
+        "duplicates": 0,
+        "trimmed": 0,
+        "reused_nodes": len(nodes) - len(nodes_to_generate),
+    }
+    classifier = None
+    if nodes_to_generate:
+        # Production background runs always provide the trace callback. Keep
+        # direct service/test calls network-free unless they actually generate.
+        if on_event:
+            _emit(on_event, "model_warming", "Loading question model into Ollama")
+
+            def record_warm_metrics(metrics):
+                _emit(
+                    on_event,
+                    "model_warmed",
+                    "Question model is ready",
+                    **metrics,
+                )
+
+            warm_question_model(on_metrics=record_warm_metrics)
+        if _classifier_cache is None:
+            _emit(on_event, "classifier_loading", "Loading Bloom's classifier model")
+        classifier = _get_classifier()
+
     total_nodes = len(nodes)
     for position, node in enumerate(nodes, start=1):
+        cached = reusable.get(node.id)
+        if cached:
+            all_questions.extend(cached)
+            _emit(
+                on_event,
+                "node_skipped",
+                f"Reused unchanged question bank: {node.title}",
+                node_id=node.id,
+                title=node.title,
+                count=len(cached),
+                index=position,
+                total=total_nodes,
+            )
+            continue
         logger.info('(%s/%s) generating questions for "%s"', position, total_nodes, node.title)
         # index/total are what let the teacher's dialog draw a real progress
         # bar. Without them it can only spin, and a spinner cannot tell slow
@@ -416,7 +575,12 @@ def generate_questions_for_material(material, on_event=None, node_ids=None):
             index=position, total=total_nodes,
         )
         questions = generate_questions_for_node(
-            node, classifier, on_event=on_event, stats=stats)
+            node,
+            classifier,
+            on_event=on_event,
+            stats=stats,
+            generation_fingerprint=fingerprints[node.id],
+        )
         all_questions.extend(questions)
         _emit(
             on_event, "node_finished",
@@ -430,9 +594,10 @@ def generate_questions_for_material(material, on_event=None, node_ids=None):
     _print_material_summary(material, len(nodes), all_questions, stats)
     _emit(
         on_event, "material_finished",
-        f"Generated {len(all_questions)} questions from {stats['total_drafted']} drafts",
+        f"Completed {len(all_questions)} questions from {stats['total_drafted']} new drafts",
         total=len(all_questions),
         drafted=stats["total_drafted"],
+        reused_nodes=stats["reused_nodes"],
         excluded_create=stats["excluded_create"],
         duplicates=stats["duplicates"],
         trimmed=stats["trimmed"],

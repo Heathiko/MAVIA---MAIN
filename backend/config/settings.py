@@ -180,6 +180,10 @@ CONTENT_VERSION_LLM_AUTO_THRESHOLD = float(
 
 # Model for question generation (separate from the content generation model)
 QUESTION_LLM_MODEL = os.getenv("QUESTION_LLM_MODEL", "llama3.2:3b")
+QUESTION_LLM_KEEP_ALIVE = os.getenv("QUESTION_LLM_KEEP_ALIVE", "30m")
+QUESTION_OVERGENERATION_FACTOR = float(
+    os.getenv("QUESTION_OVERGENERATION_FACTOR", "1.0")
+)
 
 
 # Quiet the dev server's per-request access log (e.g. the frontend's
