@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 
 import IconButton from "@/components/IconButton";
 import GradientTile from "@/components/GradientTile";
@@ -69,6 +70,38 @@ function stepQuestions(step: ApiStep): LegacyQuestion[] {
     correct_answer: "",
   }));
 }
+
+const VARIANT_INFO: Record<Variant, { icon: keyof typeof Ionicons.glyphMap; label: string } | null> = {
+  normal: null,
+  simplified: { icon: "reader-outline", label: "Simplified explanation" },
+  elaborated: { icon: "sparkles-outline", label: "Extra detail" },
+};
+
+// A quiet, wide colored strip — used both for the "reviewing a prerequisite"
+// notice and the variant badge. Always paired with an accessible label so a
+// screen reader announces the same thing a sighted student sees.
+function Notice({
+  icon,
+  tone,
+  children,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  tone: "review" | "variant";
+  children: string;
+}) {
+  const palette = tone === "review" ? styles.noticeReview : styles.noticeVariant;
+  return (
+    <View style={[styles.notice, palette]} accessible accessibilityRole="text" accessibilityLabel={children}>
+      <Ionicons name={icon} size={16} color={tone === "review" ? colors.brand600 : colors.brand700} />
+      <Text style={[styles.noticeText, tone === "variant" && { color: colors.brand700 }]}>{children}</Text>
+    </View>
+  );
+}
+
+const THINKING_LABEL: Record<string, string> = {
+  LOT: "Quick check",
+  HOT: "Think it through",
+};
 
 export default function LessonPlayerScreen() {
   const router = useRouter();
@@ -271,10 +304,15 @@ export default function LessonPlayerScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
-        {inPathMode && remediationTarget !== null && phase !== "done" && (
-          <Text style={styles.remediationBanner} accessibilityRole="text">
+        {inPathMode && phase !== "done" && remediationTarget !== null && (
+          <Notice icon="return-up-back-outline" tone="review">
             Quick review before you continue — you'll pick back up where you left off.
-          </Text>
+          </Notice>
+        )}
+        {inPathMode && phase !== "done" && VARIANT_INFO[variant] && (
+          <Notice icon={VARIANT_INFO[variant]!.icon} tone="variant">
+            {VARIANT_INFO[variant]!.label}
+          </Notice>
         )}
 
         {phase === "audio" && track && (
@@ -378,6 +416,21 @@ export default function LessonPlayerScreen() {
           </>
         )}
 
+        {phase === "questions" && inPathMode && pathStep && (
+          <View style={styles.conceptHeader}>
+            <Text style={styles.conceptTitle} numberOfLines={2} accessibilityRole="header">
+              {pathStep.title}
+            </Text>
+            {pathStep.questions[questionIndex] && (
+              <View style={styles.thinkingTag}>
+                <Text style={styles.thinkingTagText}>
+                  {THINKING_LABEL[pathStep.questions[questionIndex].thinking_order] ?? "Question"}
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+
         {phase === "questions" && questions[questionIndex] && (
           <QuestionCard
             key={questions[questionIndex].id}
@@ -420,15 +473,39 @@ const styles = StyleSheet.create({
   },
   headerTitle: { flex: 1, textAlign: "center", fontSize: 15, fontWeight: "800", color: colors.ink },
   body: { paddingBottom: spacing.xl, gap: spacing.xs },
-  remediationBanner: {
+  notice: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
     marginTop: spacing.sm,
-    padding: spacing.sm,
-    borderRadius: radii.sm,
-    backgroundColor: colors.brand100,
-    color: colors.brand600,
-    fontSize: 13,
-    fontWeight: "700",
-    textAlign: "center",
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.pill,
+    alignSelf: "center",
+  },
+  noticeReview: { backgroundColor: colors.brand100 },
+  noticeVariant: { backgroundColor: colors.brand50, borderWidth: 1, borderColor: colors.brand200 },
+  noticeText: { fontSize: 13, fontWeight: "700", color: colors.brand600 },
+  conceptHeader: {
+    marginTop: spacing.lg,
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  conceptTitle: { fontSize: 18, fontWeight: "800", color: colors.ink, textAlign: "center" },
+  thinkingTag: {
+    paddingVertical: 4,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radii.pill,
+    backgroundColor: colors.panel,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  thinkingTagText: {
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+    color: colors.muted,
   },
   artWrap: { alignItems: "center", marginTop: spacing.lg },
   trackTitle: { marginTop: spacing.lg, fontSize: 20, fontWeight: "800", color: colors.ink, textAlign: "center" },
