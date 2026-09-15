@@ -1,6 +1,6 @@
 # Prerequisite edge criteria (v3)
 
-**Status (2026-09-14):** criteria, vetoes and topic ordering are implemented in
+**Status (2026-09-15):** criteria, vetoes and topic ordering are implemented in
 `services/criteria.py` and `services/concept_units.py`. On a successful publish,
 `services/publishing.py` stores the links (`ConceptPrerequisite`) and the step
 order (`LearningPathStep`); only `accepted` and teacher-`approved` links shape
@@ -44,13 +44,41 @@ by a real file's order means the result never contradicts all the files at once.
 A step's title is its Normal version's **current** title. A group's label is
 set once, when the group forms, and does not follow later renames.
 
+### How learn-first links adjust that order
+
+The merged order above is only a starting point. The final order must also
+respect every link that shapes the path -- `accepted` links and those a teacher
+`approved` (`services/publishing.py` -> `order_with_links`):
+
+1. A concept can be placed only once every concept it must come after is
+   already placed.
+2. Among the concepts that can be placed, the one earliest in the merged order
+   goes next.
+3. Repeat until every concept is placed.
+
+Wherever no link says otherwise, the merged order stands. A link that runs
+against it moves concepts. On *Solid, Liquid and Gas*, a teacher approved
+"Diagram description for Solid" before "Solid", while the merged order had Solid
+first -- so the diagram became step 2 and Solid step 3, and the review screen
+reports those two as moved from the lesson files' order. Nothing else changed.
+
+Links cannot contradict each other in a loop: the review screen refuses a change
+that would create one. If a loop ever reached this step, the earliest remaining
+concept would be placed and the links it could not satisfy reported, never
+silently dropped.
+
+The review screen's preview runs both passes on every load with the links
+stored so far; a successful publish runs them and saves the result
+(`LearningPathStep`).
+
 ---
 
 ## What decides an edge
 
 An edge says: *understanding A is expected to support understanding B.*
 
-Three criteria vote, and two things outside the vote can also produce an edge.
+Three criteria vote; vetoes and a section rule can then cancel or downgrade the
+result, and a teacher can add, approve or remove edges by hand.
 
 ### The three voting criteria
 
@@ -62,8 +90,9 @@ TemO(A, B) = 1  if Position(A) < Position(B)
            = 0  otherwise
 ```
 
-Glossary and vocabulary sections are left out of the position index, because
-those are usually alphabetical and their order means nothing.
+`Position` is the concept's place in the merged order described above. Every
+concept counts, including glossary-style sections; excluding those was part of
+the original design but is not implemented.
 
 **2. Semantic reference (CSR)** -- whose text is talking about the other, even
 without naming it outright.
@@ -118,8 +147,8 @@ score(A, B) = (TemO + CSR_direction + IOLR) / 3
 
 | score | outcome |
 |---|---|
-| 3/3 | **accepted** -- the edge constrains the order |
-| 2/3 | **pending** -- shown to the teacher, does *not* constrain the order |
+| 3/3 | **accepted** -- the edge constrains the order (unless it crosses sections, below) |
+| 2/3 | **pending** -- stored, offered to the teacher as a collapsed suggestion, does *not* constrain the order |
 | 1/3 or 0 | discarded |
 
 **Density guard: position alone can never make an edge.** At least one content
@@ -193,9 +222,9 @@ Stored in `ConceptPrerequisite`, between concepts (groups) of one topic.
 
 | status | set by | shapes the order? | shown to the teacher |
 |---|---|---|---|
-| `accepted` | criteria: 3/3 votes, not cross-section | yes | on the step, under *Needs first* |
-| `pending` | criteria: 2/3, or 3/3 but cross-section | no | collapsed under *Suggestions* |
-| `approved` | a teacher added it, or approved a suggestion | yes | on the step, under *Needs first* |
+| `accepted` | criteria: 3/3 votes, not cross-section | yes | listed under *What must a student learn before this?* |
+| `pending` | criteria: 2/3, or 3/3 but cross-section | no | collapsed, with its passage: *The system thinks … may also need to come before …* |
+| `approved` | a teacher added it, or approved a suggestion | yes | listed under *What must a student learn before this?* |
 | `rejected` | a teacher removed it, or rejected a suggestion | no | not shown |
 
 `rejected` is stored rather than deleted, so re-deriving at the next publish does
@@ -206,12 +235,21 @@ overwritten by the criteria; only `accepted` and `pending` rows are replaced.
 
 ## Teacher control
 
-On review step 5, each concept shows its prerequisites and lets a teacher:
+On review step 5, each concept shows its full passage and a panel titled
+*What must a student learn before this?*, where a teacher can:
 
-- **Add** a prerequisite from a list of the topic's other concepts -> `approved`.
+- **Add** a concept that must come first, from a list of the topic's other
+  concepts -> `approved`.
 - **Remove** one (with confirmation) -> `rejected`; it is never suggested again,
   though a teacher can add it back by hand.
-- **Approve or reject** the hidden suggestions for that concept.
+- **Review suggestions** -- concepts the criteria think may need to come
+  *before* this one -- each shown with its passage and flagged when it sits in a
+  different section: *Yes, learn it first* -> `approved`, *No* -> `rejected`.
+
+Each concept's box is outlined by its status: dashed grey when it is linked to
+nothing, orange when a link moved it from the lesson files' order. The Graph
+view draws the same path as a concept map -- the lesson's headings as branches,
+concepts in teaching order -- and highlights what a selected concept needs first.
 
 Rules applied to every change (`services/teacher_links.py`):
 
@@ -231,10 +269,13 @@ only way to connect them.
 ## Decisions taken
 
 **Pending edges do not constrain the path.** An unverified guess should not
-shape what a learner is taught. Consequence for the review screen: the teacher
-sees the order *as it currently stands*, so accepting a pending edge re-sorts
-it -- the screen must show what would change before they accept. Accepting can
-also close a loop, so the cycle check runs at accept time and rolls back.
+shape what a learner is taught. Approving one re-sorts the preview at once; the
+screen does not yet show what would move *before* the teacher approves.
+Approving can also close a loop, so the loop check runs first and refuses the
+change.
+
+**Links win over document order**, and the teacher can change links, so the
+teacher -- not the file order -- has the final say on sequence.
 
 **Votes stay binary, and margins are recorded anyway.** Three yes/no votes give
 only four possible scores (0, 1/3, 2/3, 1), so "two tuned thresholds" really
@@ -255,13 +296,16 @@ document positions or source text, so TemO cannot be computed on them, CSR has
 nothing to window, and IOLR follows from CSR. All three criteria are
 uncomputable on that data, and no K-12 prerequisite dataset exists.
 
-Thresholds are set from `docs/prerequisite_labelling_sample.csv`: 42 pairs from
-one material, stratified across the similarity range. Six are
-`Part N -> Part N+1` continuations whose answer is known, so they double as a
-consistency check on whoever labels.
-
-Until labels exist, the strictest setting applies: 3/3 accepts, 2/3 pends,
+The operating rules are the strictest available: 3/3 accepts, 2/3 pends,
 everything else is discarded -- erring toward too few edges rather than too many.
+
+The only labels so far are the blind hand-check above
+(`docs/learning_path_hand_check_2026-09-14.json`, 62 concept pairs, one topic).
+It is what the cross-section rule and the reported precision rest on. It is too
+small to tune thresholds, and a second topic is needed before either figure
+generalises. (`docs/prerequisite_labelling_sample.csv` predates the concept-level
+path: its 42 pairs are between learning objects of one file, so it does not
+label this design.)
 
 ---
 
@@ -279,8 +323,14 @@ All deliberate:
 
 ---
 
-## Not in this change
+## Not done yet
 
-Subtopic-level ordering. Adaptive reordering, mastery tracking, remediation.
-Serving the derived order to learners -- `LessonPackageService` still emits
-chunks in `order, id`.
+- **Ordering subtopics or modules.** Paths are per subtopic; their order comes
+  from the course outline.
+- **Adaptive reordering, mastery tracking, remediation.** The saved path is
+  served for that work (`GET /api/learning-path/topics/<id>/published/`, see
+  `HANDOFF.md`), but the existing student apps (`adaptive/services.py`,
+  `adaptive_portal/services.py`) still walk learning objects in PDF order and
+  have not been switched to it.
+- **Showing the effect of an approval before it is made.**
+- **Confirming the cross-section rule on a second topic.**

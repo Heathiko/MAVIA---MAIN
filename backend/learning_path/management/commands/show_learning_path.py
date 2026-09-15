@@ -51,10 +51,15 @@ class Command(BaseCommand):
                     self.stdout.write(f"  {step['position']:>2}. {step['title']}  [after: {needs}]")
 
         if links:
+            # Current concept titles, as the review screen shows them. A group's
+            # label is set when the group forms and does not follow renames.
+            titles = {step["concept_id"]: step["title"] for step in build_topic_path(node.id)["steps"]}
             rows = ConceptPrerequisite.objects.filter(outline_node=node).select_related("prerequisite", "dependent")
             self.stdout.write(f"Links: {dict(Counter(row.status for row in rows))}")
             for row in rows:
+                before = titles.get(row.prerequisite_id, row.prerequisite.label)
+                after = titles.get(row.dependent_id, row.dependent.label)
                 self.stdout.write(
-                    f"  [{row.status:>8}] {row.prerequisite.label[:34]} -> {row.dependent.label[:34]}"
+                    f"  [{row.status:>8}] {before[:34]} -> {after[:34]}"
                     + ("  (cross-section)" if row.cross_section else "")
                 )

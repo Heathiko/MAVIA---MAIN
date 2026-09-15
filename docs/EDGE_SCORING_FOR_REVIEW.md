@@ -1,5 +1,10 @@
 # MAVIA edge scoring — current implementation and output
 
+> **Superseded (2026-09-15).** Despite the title, this is **not** the current
+> implementation: it describes the per-material scoring (2026-09-10) that has
+> since been removed. Do not send it for review as the current design. Current
+> behaviour: `backend/learning_path/CRITERIA.md`.
+
 Copy everything below the line into ChatGPT (or any reviewer) for critique.
 
 ---

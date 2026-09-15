@@ -15,7 +15,11 @@ Course-outline and lesson-PDF processing for accessible science content.
 - Keeps questions separate from narration content and links confirmed questions to concept groups.
 - Connects equivalent learning objects from different PDFs without assigning difficulty levels.
 - Provides one-at-a-time teacher review for uncertain object and question pairs.
+- Lets teachers review where edited, already grouped objects now belong (*Review grouping changes*).
 - Generates lesson audio from confirmed learning-object content and teacher image descriptions.
+- Builds one learning path per subtopic: concepts merged across PDFs, ordered by the
+  lesson files and by "learn first" links that teachers can add, approve or remove.
+  The path is saved at each successful publish and served to the adaptive rules.
 
 ## Matching approach
 
@@ -46,11 +50,28 @@ backend, with reuse for unchanged text and voice settings.
 See [Teacher publishing validation](docs/TEACHER_PUBLISHING_VALIDATION.md) for
 the milestone scope and evaluation still needed before making accuracy claims.
 
+## Guides
+
+Every Markdown file in the repository is listed, with its purpose and status, in
+[GUIDES.md](GUIDES.md). The main ones:
+
+| Guide | Covers |
+|---|---|
+| [backend/learning_path/HANDOFF.md](backend/learning_path/HANDOFF.md) | Using the published learning path from the adaptive rules: API, response shape, remediation |
+| [backend/learning_path/CRITERIA.md](backend/learning_path/CRITERIA.md) | How the learning path is built: ordering, prerequisite criteria, hand-check evidence, teacher control |
+| [backend/lessons/REGROUPING.md](backend/lessons/REGROUPING.md) | Review grouping changes, and version links when objects change groups |
+| [docs/SEMANTIC_GROUPING.md](docs/SEMANTIC_GROUPING.md) | Cross-PDF grouping of learning objects |
+| [docs/TEACHER_PUBLISHING_VALIDATION.md](docs/TEACHER_PUBLISHING_VALIDATION.md) | Acceptance checks and evaluation still required |
+
+Files under `docs/superpowers/specs/`, and dated status notes in `docs/`, are
+design and status records; each marks where it has been superseded.
+
 ## Verification
 
 ```powershell
-& .\backend\.venv\Scripts\python.exe backend\manage.py migrate
-& .\backend\.venv\Scripts\python.exe backend\manage.py test lessons
+& .\.venv\Scripts\python.exe backend\manage.py migrate
+& .\.venv\Scripts\python.exe backend\manage.py test
+& .\.venv\Scripts\python.exe backend\manage.py show_learning_path
 cd frontend
 npm.cmd run build
 ```

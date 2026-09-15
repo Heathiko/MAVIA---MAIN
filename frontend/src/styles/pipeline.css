@@ -6289,3 +6289,501 @@ button {
   color: #8a3d3d;
   font-size: 0.86rem;
 }
+
+/* Learning path concept map (review step 5 and the learning path page).
+   Subtopic at the top, lesson headings as branches, concepts in teaching order.
+   Lines are the teaching flow; selecting a box highlights its prerequisites. */
+.cm {
+  --cm-line: #9aa6b8;
+  --cm-ink: #1f2a37;
+  --cm-card: #ffffff;
+  --cm-needed: #1d6a86;
+  --cm-leads: #2f7556;
+  --cm-gap: 22px;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.cm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 2.1rem;
+  font-size: 0.88rem;
+}
+
+.cm-key {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.8rem;
+}
+.cm-key.is-needed { background: #d6e9f0; color: var(--cm-needed); }
+.cm-key.is-leads { background: #dcefe5; color: var(--cm-leads); }
+
+.cm-scroll {
+  overflow-x: auto;
+  padding: 1.2rem 0.6rem 1.6rem;
+  border: 1px solid #e3e8ef;
+  border-radius: 12px;
+  background: #f6f7f9;
+}
+
+.cm-canvas {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: max-content;
+  margin: 0 auto;
+}
+
+.cm-root {
+  padding: 0.7rem 2.4rem;
+  border: 2px solid var(--cm-ink);
+  border-radius: 999px;
+  background: #cfe0f7;
+  color: var(--cm-ink);
+  font-weight: 800;
+  font-size: 1.15rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.cm-block { display: flex; flex-direction: column; align-items: center; width: 100%; }
+
+/* The vertical line joining one block to the one above it. */
+.cm-link {
+  display: block;
+  width: 2px;
+  height: var(--cm-gap);
+  background: var(--cm-line);
+}
+
+.cm-row { display: flex; justify-content: center; }
+.cm-row .cm-card { width: 340px; }
+
+.cm-branches {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--cols), 250px);
+  gap: 0 26px;
+  padding-top: var(--cm-gap);
+  padding-bottom: var(--cm-gap);
+}
+
+/* Horizontal bars from the first column's centre to the last's, above and below. */
+.cm-branches::before,
+.cm-branches::after {
+  content: "";
+  position: absolute;
+  left: 125px;
+  right: 125px;
+  height: 2px;
+  background: var(--cm-line);
+}
+.cm-branches::before { top: 0; }
+.cm-branches::after { bottom: 0; }
+
+.cm-column {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Each column drops from the top bar and rises into the bottom bar. */
+.cm-column::before,
+.cm-column::after {
+  content: "";
+  position: absolute;
+  left: calc(50% - 1px);
+  width: 2px;
+  background: var(--cm-line);
+}
+.cm-column::before { top: calc(-1 * var(--cm-gap)); height: var(--cm-gap); }
+.cm-column::after { top: 100%; height: var(--cm-gap); }
+
+.cm-heading {
+  width: 100%;
+  padding: 0.5rem 0.8rem;
+  border: 2px solid var(--cm-ink);
+  border-radius: 12px;
+  color: var(--cm-ink);
+  font-weight: 800;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.cm-stack {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  position: relative;
+}
+
+/* A short line between the heading and the first box, and between boxes. */
+.cm-stack > .cm-card { position: relative; margin-top: 16px; }
+.cm-stack > .cm-card::before {
+  content: "";
+  position: absolute;
+  top: -18px;
+  left: calc(50% - 1px);
+  width: 2px;
+  height: 16px;
+  background: var(--cm-line);
+}
+
+/* A column shorter than its neighbours still reaches the bar below. */
+.cm-stack::after {
+  content: "";
+  flex: 1;
+  width: 2px;
+  min-height: 0;
+  background: var(--cm-line);
+}
+
+.cm-card {
+  display: grid;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0;
+  border: 2px solid var(--cm-ink);
+  border-radius: 10px;
+  background: var(--cm-card);
+  color: var(--cm-ink);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  transition: opacity 150ms ease, box-shadow 150ms ease;
+}
+
+.cm-card-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  padding: 0.45rem 0.7rem;
+  border-bottom: 2px solid var(--cm-ink);
+  font-weight: 800;
+  font-size: 0.9rem;
+  line-height: 1.25;
+}
+
+.cm-card-position {
+  flex: none;
+  min-width: 1.5rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.75);
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+.cm-card-summary {
+  padding: 0 0.7rem 0.6rem;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: #374151;
+}
+
+/* Branch colours, echoing a printed concept map. */
+.cm-heading.tone-1, .cm-card.tone-1 .cm-card-title { background: #f6c9cc; }
+.cm-heading.tone-2, .cm-card.tone-2 .cm-card-title { background: #f4dfc0; }
+.cm-heading.tone-3, .cm-card.tone-3 .cm-card-title { background: #c9dcf5; }
+.cm-heading.tone-4, .cm-card.tone-4 .cm-card-title { background: #d6cff3; }
+.cm-heading.tone-5, .cm-card.tone-5 .cm-card-title { background: #c8ebe7; }
+.cm-card.tone-plain .cm-card-title { background: #e8ecf2; }
+
+.cm-card:hover { box-shadow: 0 4px 14px rgba(31, 42, 55, 0.14); }
+.cm-card:focus-visible { outline: 3px solid var(--cm-needed); outline-offset: 3px; }
+
+.cm-card.is-selected { box-shadow: 0 0 0 4px #1f2a37; }
+.cm-card.is-needed { box-shadow: 0 0 0 4px var(--cm-needed); }
+.cm-card.is-leads { box-shadow: 0 0 0 4px var(--cm-leads); }
+.cm-card.is-dimmed { opacity: 0.35; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cm-card { transition: none; }
+}
+
+/* ---- Learning path review: full text, learn-first panel, path strip ---- */
+
+/* Branch colours shared by the list, the strip and the concept map. */
+.tone-1 { --tone: #f6c9cc; --tone-ink: #7c2d34; }
+.tone-2 { --tone: #f4dfc0; --tone-ink: #6b4a14; }
+.tone-3 { --tone: #c9dcf5; --tone-ink: #1f4a7a; }
+.tone-4 { --tone: #d6cff3; --tone-ink: #45338a; }
+.tone-5 { --tone: #c8ebe7; --tone-ink: #1d5c55; }
+.tone-plain { --tone: #e8ecf2; --tone-ink: #35405a; }
+
+.path-step-position[class*="tone-"] { background: var(--tone); color: var(--tone-ink); }
+
+.path-branch {
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: var(--tone);
+  color: var(--tone-ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.path-step-text {
+  margin: 0.35rem 0 0.2rem;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: #2b3445;
+  white-space: pre-line;
+}
+
+.path-step-needs { margin: 0.35rem 0 0; font-size: 0.85rem; }
+
+/* Concept map boxes carry the whole passage. */
+.cm-card-text {
+  padding: 0 0.7rem 0.7rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: #374151;
+  white-space: pre-line;
+}
+
+/* What must a student learn before this? */
+.lf {
+  margin-top: 0.7rem;
+  border: 1.5px solid #b9c9dc;
+  border-radius: 10px;
+  background: #f3f7fb;
+  overflow: hidden;
+}
+
+.lf-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.55rem 0.8rem;
+  background: #e3ecf6;
+  border-bottom: 1.5px solid #b9c9dc;
+}
+
+.lf-head h5 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: #1c3553;
+}
+
+.lf-count {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #3d5a7a;
+  font-variant-numeric: tabular-nums;
+}
+
+.lf-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0.8rem 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.lf-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 7px;
+  background: #ffffff;
+  border: 1px solid #d5e0ec;
+}
+
+.lf-position {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 6px;
+  background: #1c3553;
+  color: #ffffff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.lf-title { font-weight: 600; font-size: 0.88rem; color: #1f2a37; }
+
+.lf-remove {
+  border: 0;
+  background: transparent;
+  color: #9b3b3b;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.2rem 0.4rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.lf-remove:hover { background: #fbe8e8; }
+.lf-remove:focus-visible { outline: 2px solid #9b3b3b; outline-offset: 1px; }
+
+.lf-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #1c3553;
+}
+
+.lf-add select {
+  flex: 1 1 220px;
+  max-width: 420px;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #9fb4cc;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #1f2a37;
+  font: inherit;
+  font-weight: 500;
+}
+
+.lf-suggestions {
+  border-top: 1px dashed #b9c9dc;
+  background: #fbfaf5;
+}
+
+.lf-suggestions summary {
+  cursor: pointer;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #6a5326;
+}
+
+.lf-suggestions ul {
+  list-style: none;
+  margin: 0;
+  padding: 0 0.8rem 0.7rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.lf-suggestion {
+  padding: 0.6rem 0.7rem;
+  border: 1px solid #e6dcc5;
+  border-radius: 8px;
+  background: #ffffff;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.lf-suggestion-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.88rem;
+}
+
+.lf-branch {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
+.lf-flag {
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: #fbe8e8;
+  color: #8a3d3d;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.lf-suggestion-text {
+  margin: 0;
+  padding-left: 0.6rem;
+  border-left: 3px solid #e6dcc5;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: #374151;
+  white-space: pre-line;
+}
+
+.lf-suggestion-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  color: #4b5563;
+}
+.lf-suggestion-actions > span { flex: 1 1 220px; }
+
+/* Path counts, each with a swatch matching the stroke on the concept boxes. */
+.ps-caption {
+  margin: 0.3rem 0 0.7rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 1.2rem;
+  font-size: 0.86rem;
+  color: #4b5563;
+}
+
+.ps-caption b {
+  color: #1f2a37;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  margin-right: 0.2rem;
+}
+
+.ps-swatch {
+  display: inline-block;
+  width: 16px;
+  height: 12px;
+  margin-right: 0.4rem;
+  vertical-align: -1px;
+  border-radius: 3px;
+  background: #ffffff;
+}
+.ps-swatch.is-floating { border: 2px dashed #7c8698; }
+.ps-swatch.is-moved { border: 2px solid #c27a12; }
+
+/* Each concept is its own clearly bounded box; its stroke says its status. */
+.path-step-list { gap: 0.75rem; }
+
+.path-step {
+  padding: 0.75rem 0.85rem;
+  border: 1.5px solid #cfd6e2;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.path-step.is-floating {
+  border: 2px dashed #7c8698;
+  background: #ffffff;
+}
+
+.path-step.is-moved { border: 2px solid #c27a12; }
+
+/* Both at once: moved, and linked to nothing. */
+.path-step.is-floating.is-moved { border: 2px dashed #c27a12; }
+
+.path-chip.is-floating { background: #eef0f4; color: #4b5563; }
+.path-chip.is-moved { background: #fbeed8; color: #8a5410; }

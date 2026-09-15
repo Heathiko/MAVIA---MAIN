@@ -52,9 +52,20 @@ def build_topic_path(node_id):
         elif row.status == ConceptPrerequisite.Status.PENDING:
             suggested[row.dependent_id].append(entry)
 
+    def branch(concept):
+        # The lesson heading this concept sits under, as the document wrote it.
+        # The concept map draws one branch per heading; the representative's own
+        # heading wins, since another file may file the same concept elsewhere.
+        members = [concept.representative, *concept.members]
+        return next(
+            ((member.section_title or "").strip() for member in members if (member.section_title or "").strip()),
+            "",
+        )
+
     steps = []
     for position, concept in enumerate(ordered, start=1):
         steps.append({
+            "branch": branch(concept),
             "prerequisites": shown[concept.id],
             "suggestions": suggested[concept.id],
             "position": position,
