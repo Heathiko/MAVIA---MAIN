@@ -1448,7 +1448,14 @@ def _starts_excluded_section(text: str) -> bool:
         "other topics",
         "probing questions to think about",
         "projects and activities",
+        "quick check",
+        "quick checks",
         "spark",
+        "a student handout and study guide",
+        "student handout",
+        "student handout and study guide",
+        "study tip",
+        "study tips",
         "unit materials",
         "using the internet",
         "vocabulary",
@@ -1460,6 +1467,31 @@ def _starts_excluded_section(text: str) -> bool:
         return True
     if label.startswith("lesson ") and ":" in text:
         return True
+    return False
+
+
+def _starts_contextual_excluded_section(blocks: list[dict], index: int) -> bool:
+    """Recognize ambiguous support headings only when their body is a prompt.
+
+    ``Reflection`` can name a real concept in subjects such as physics, so it
+    must not be globally excluded by title. In a student handout, however, a
+    Reflection heading immediately followed by a question is an activity
+    boundary and should not become a learning object.
+    """
+    text = (blocks[index].get("text") or "").strip()
+    if _starts_excluded_section(text):
+        return True
+    if _normalized_heading_label(text) != "reflection":
+        return False
+
+    for following in blocks[index + 1 :]:
+        following_text = (following.get("text") or "").strip()
+        if not following_text or _is_image_caption(following_text):
+            continue
+        return bool(
+            following.get("category") == "assessment"
+            or _is_question_or_activity_text(following_text)
+        )
     return False
 
 
@@ -1684,6 +1716,8 @@ def _is_question_or_activity_text(text: str) -> bool:
         "practice",
         "practice exercise",
         "practice exercises",
+        "quick check",
+        "quick checks",
         "practice task",
         "practice tasks",
         "check your understanding",
@@ -1692,6 +1726,7 @@ def _is_question_or_activity_text(text: str) -> bool:
         "knowledge check",
         "comprehension check",
         "self check",
+        "self check quiz",
         "ask",
         "test yourself",
         "try this",
@@ -1713,6 +1748,11 @@ def _is_question_or_activity_text(text: str) -> bool:
     }
     if label in section_labels:
         return True
+    if re.match(
+        r"^(?:practice\s+)?exercises?\s+(?:\d+|[a-z]|[ivxlcdm]+)(?:\b|$)",
+        label,
+    ):
+        return True
     if any(re.fullmatch(rf"{re.escape(section)}\s+\d+", label) for section in section_labels):
         return True
     if any(
@@ -1721,6 +1761,14 @@ def _is_question_or_activity_text(text: str) -> bool:
     ):
         return True
     if stripped.endswith("?"):
+        return True
+    if re.search(
+        r"(?:^|[?\u2022\u25cf\u25aa\-*]\s*)"
+        r"(?:how|why|what|which|who|where|when|do|does|did|is|are|can|could|should|would)\b"
+        r"[^?]{1,500}\?",
+        stripped,
+        flags=re.IGNORECASE,
+    ):
         return True
     if re.search(r"_{3,}", stripped):
         return True
@@ -1988,7 +2036,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
         ):
             continue
 
-        if _starts_excluded_section(text):
+        if _starts_contextual_excluded_section(classified_blocks, index):
             _finalize_current_learning_object(current, learning_objects)
             current = None
             active_section_title = ""
@@ -2007,7 +2055,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             )
             if _ends_excluded_section(block, classified_blocks, index) or prose_exit:
                 skipping_excluded_section = False
-                if _starts_excluded_section(text):
+                if _starts_contextual_excluded_section(classified_blocks, index):
                     skipping_excluded_section = True
                     excluded_section_allows_prose_exit = _excluded_section_allows_prose_exit(text)
                     continue

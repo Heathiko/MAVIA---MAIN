@@ -4027,6 +4027,103 @@ class LearningObjectPreservationTests(TestCase):
         self.assertNotIn("Write your answers", all_content)
         self.assertNotIn("What happened", all_content)
 
+    def test_handout_support_sections_do_not_become_learning_objects(self):
+        blocks = [
+            {"block_id": 100, "page": 1, "text": "A Student Handout and Study Guide", "line_count": 1},
+            {
+                "block_id": 101,
+                "page": 1,
+                "text": "This handout covers the lesson and can be used alongside class discussion.",
+                "line_count": 1,
+            },
+            {"block_id": 1, "page": 1, "text": "Point of View", "line_count": 1},
+            {
+                "block_id": 2,
+                "page": 1,
+                "text": "Point of view is the perspective from which a story is narrated.",
+                "line_count": 1,
+            },
+            {"block_id": 3, "page": 2, "text": "Practice Exercises", "line_count": 1},
+            {"block_id": 4, "page": 2, "text": "Exercise A: Map the Plot", "line_count": 1},
+            {
+                "block_id": 5,
+                "page": 2,
+                "text": "Choose one story and label each of its six plot parts.",
+                "line_count": 1,
+            },
+            {"block_id": 6, "page": 2, "text": "Exercise B: Identify the Conflict", "line_count": 1},
+            {
+                "block_id": 7,
+                "page": 2,
+                "text": "What is the main conflict? Use one scene to prove your answer.",
+                "line_count": 1,
+            },
+            {"block_id": 8, "page": 2, "text": "Self-Check Quiz", "line_count": 1},
+            {"block_id": 9, "page": 2, "text": "Fill in the blank with the correct term.", "line_count": 1},
+            {"block_id": 10, "page": 2, "text": "Answer Key", "line_count": 1},
+            {"block_id": 11, "page": 2, "text": "1. Plot 2. Conflict", "line_count": 1},
+            {"block_id": 12, "page": 2, "text": "Reflection", "line_count": 1},
+            {
+                "block_id": 13,
+                "page": 2,
+                "text": "Why does point of view matter? Explain using an example.",
+                "line_count": 1,
+            },
+            {"block_id": 14, "page": 2, "text": "Study Tips", "line_count": 1},
+            {
+                "block_id": 15,
+                "page": 2,
+                "text": "Underline the narrator's pronouns before answering the quiz.",
+                "line_count": 1,
+            },
+            {"block_id": 16, "page": 3, "text": "Theme", "line_count": 1},
+            {
+                "block_id": 17,
+                "page": 3,
+                "text": "A theme is the central message or insight communicated by a story.",
+                "line_count": 1,
+            },
+        ]
+
+        learning_objects = build_learning_objects_from_pdf_blocks(blocks, [])
+        by_title = {item["title"]: item["content"] for item in learning_objects}
+        all_text = "\n".join(f'{item["title"]}\n{item["content"]}' for item in learning_objects)
+
+        self.assertEqual(
+            by_title["Point of View"],
+            "Point of view is the perspective from which a story is narrated.",
+        )
+        self.assertEqual(
+            by_title["Theme"],
+            "A theme is the central message or insight communicated by a story.",
+        )
+        for excluded in (
+            "Student Handout",
+            "Exercise A",
+            "Exercise B",
+            "Self-Check",
+            "Reflection",
+            "Study Tips",
+        ):
+            self.assertNotIn(excluded, all_text)
+
+    def test_reflection_remains_a_learning_object_when_it_is_a_real_concept(self):
+        blocks = [
+            {"block_id": 1, "page": 1, "text": "Reflection", "line_count": 1},
+            {
+                "block_id": 2,
+                "page": 1,
+                "text": "Reflection occurs when light strikes a surface and bounces back.",
+                "line_count": 1,
+            },
+        ]
+
+        learning_objects = build_learning_objects_from_pdf_blocks(blocks, [])
+
+        self.assertEqual(len(learning_objects), 1)
+        self.assertEqual(learning_objects[0]["title"], "Reflection")
+        self.assertIn("light strikes a surface", learning_objects[0]["content"])
+
     def test_choose_outline_node_for_material_prefers_deeper_topic(self):
         course = CourseGroup.objects.create(title="Science 7")
         module = OutlineNode.objects.create(course=course, title="Matter", order=0, depth=0)
