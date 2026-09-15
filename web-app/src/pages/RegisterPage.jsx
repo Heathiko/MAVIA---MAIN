@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { register } from "../api";
 
 // Web registration is teacher-only — students sign up from the MAVIA mobile
@@ -16,6 +16,7 @@ export default function RegisterPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
+  const navigate = useNavigate();
 
   function update(field) {
     return (event) =>
@@ -27,8 +28,12 @@ export default function RegisterPage() {
     setSubmitting(true);
     setError("");
     try {
-      await register(form);
-      setDone(true);
+      const result = await register(form);
+      if (result.verification_required === false) {
+        navigate("/login", { replace: true });
+      } else {
+        setDone(true);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
