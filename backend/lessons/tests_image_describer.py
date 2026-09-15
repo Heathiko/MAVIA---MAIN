@@ -1,8 +1,11 @@
 from unittest.mock import MagicMock, patch
 
 import requests
+from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
+from rest_framework.test import APIClient
 
+from lessons.models import CourseGroup, LearningMaterial, LearningObject
 from lessons.services import image_describer
 from lessons.services.content_generator import describe_pdf_images
 
@@ -63,6 +66,39 @@ class DescribeImageTests(TestCase):
 
     @patch("lessons.services.image_describer.requests.post")
     @patch("lessons.services.image_describer.requests.get")
+    def test_identical_request_reuses_cached_description(self, mock_get, mock_post):
+        mock_get.return_value = _ok_response({})
+        mock_post.return_value = _ok_response(
+            {"response": "Particles in a solid remain close together and vibrate in place."}
+        )
+
+        first = image_describer.describe_image_for_lesson(
+            PNG, lesson_title="States of matter", caption="Solid particles"
+        )
+        second = image_describer.describe_image_for_lesson(
+            PNG, lesson_title="States of matter", caption="Solid particles"
+        )
+
+        self.assertEqual(second, first)
+        mock_get.assert_called_once()
+        mock_post.assert_called_once()
+
+    @patch("lessons.services.image_describer.requests.post")
+    @patch("lessons.services.image_describer.requests.get")
+    def test_successful_reachability_check_is_reused_for_different_images(
+        self, mock_get, mock_post
+    ):
+        mock_get.return_value = _ok_response({})
+        mock_post.return_value = _ok_response({"response": "A useful explanation."})
+
+        image_describer.describe_image_for_lesson(PNG, caption="First figure")
+        image_describer.describe_image_for_lesson(PNG + b"2", caption="Second figure")
+
+        mock_get.assert_called_once()
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch("lessons.services.image_describer.requests.post")
+    @patch("lessons.services.image_describer.requests.get")
     def test_skip_sentinel_becomes_empty(self, mock_get, mock_post):
         mock_get.return_value = _ok_response({})
         mock_post.return_value = _ok_response({"response": "SKIP"})
@@ -74,6 +110,18 @@ class DescribeImageTests(TestCase):
         mock_get.side_effect = requests.ConnectionError("refused")
         self.assertEqual(image_describer.describe_image_for_lesson(PNG), "")
         mock_post.assert_not_called()
+
+    @patch("lessons.services.image_describer.requests.post")
+    @patch("lessons.services.image_describer.requests.get")
+    def test_ollama_can_recover_without_backend_restart(self, mock_get, mock_post):
+        mock_get.side_effect = [requests.ConnectionError("refused"), _ok_response({})]
+        mock_post.return_value = _ok_response({"response": "Particles represent the three states of matter."})
+
+        self.assertEqual(image_describer.describe_image_for_lesson(PNG), "")
+        self.assertEqual(
+            image_describer.describe_image_for_lesson(PNG),
+            "Particles represent the three states of matter.",
+        )
 
     @patch("lessons.services.image_describer.requests.post")
     @patch("lessons.services.image_describer.requests.get")
@@ -135,3 +183,77 @@ class DescribePdfImagesIntegrationTests(TestCase):
         [described] = describe_pdf_images([self._image()], "The water cycle", "")
         self.assertEqual(described["description"], "Figure 1. The water cycle")
         self.assertEqual(described["description_source"], "caption_or_visible_text")
+
+    @patch("lessons.services.image_describer.describe_image_for_lesson")
+    @patch("lessons.services.image_describer._learning_object_image_bytes", return_value=PNG)
+    def test_missing_saved_narration_can_be_regenerated(self, _image_bytes, describe):
+        describe.return_value = "Solid particles are packed closely, liquid particles can move, and gas particles are far apart."
+        course = CourseGroup.objects.create(title="Science")
+        material = LearningMaterial.objects.create(course=course, title="States of matter")
+        learning_object = LearningObject.objects.create(
+            material=material,
+            kind=LearningObject.Kind.IMAGE,
+            title="Particle arrangement",
+            content="",
+            image_url="/media/extracted_images/particles.png",
+        )
+
+        result = image_describer.populate_missing_image_descriptions(material)
+
+        learning_object.refresh_from_db()
+        self.assertEqual(result["generated_learning_object_ids"], [learning_object.id])
+        self.assertIn("Solid particles", learning_object.content)
+
+
+class RegenerateImageNarrationsApiTests(TestCase):
+    @patch("lessons.views.populate_missing_image_descriptions")
+    def test_repairs_confirmed_image_and_returns_generation_result(self, populate):
+        course = CourseGroup.objects.create(title="Science")
+        material = LearningMaterial.objects.create(
+            course=course,
+            title="States of matter",
+            generated_json={"learning_objects_confirmed": True},
+        )
+        learning_object = LearningObject.objects.create(
+            material=material,
+            kind=LearningObject.Kind.IMAGE,
+            title="Particle arrangement",
+            content="",
+            image_url="/media/extracted_images/particles.png",
+        )
+        generation_result = {
+            "generated_count": 1,
+            "generated_learning_object_ids": [learning_object.id],
+            "errors": [],
+        }
+
+        def save_description(_material):
+            learning_object.content = "Solid particles are packed in fixed positions."
+            learning_object.save(update_fields=["content"])
+            return generation_result
+
+        populate.side_effect = save_description
+
+        user = get_user_model().objects.create_user(
+            username="image_narration_teacher",
+            role=get_user_model().Role.TEACHER,
+            is_verified=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.post(
+            f"/api/courses/{course.id}/materials/{material.id}/regenerate-image-narrations/"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["image_description_generation"], generation_result)
+        returned_material = next(item for item in response.data["materials"] if item["id"] == material.id)
+        self.assertEqual(
+            returned_material["learning_objects"][0]["content"],
+            "Solid particles are packed in fixed positions.",
+        )
+        self.assertIn(
+            "Solid particles are packed in fixed positions.",
+            returned_material["generated_json"]["narration_script"][0]["content"],
+        )
+        populate.assert_called_once_with(material)

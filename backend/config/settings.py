@@ -31,9 +31,12 @@ INSTALLED_APPS = [
     "rest_framework.authtoken",
     "corsheaders",
     "user",
-    "adaptive_config",
     "lessons",
+    "question_generation",
+    "course",
     "adaptive",
+    "adaptive_config",
+    "learning_path",
 ]
 
 AUTH_USER_MODEL = "user.User"
@@ -72,6 +75,11 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
+        # course's variant generation fans Ollama calls across a thread pool
+        # (ADAPTIVE_VARIANT_CONCURRENCY) with writes still serialized to this
+        # thread; a longer SQLite lock timeout avoids spurious "database is
+        # locked" errors under that pattern.
+        "OPTIONS": {"timeout": 20},
     }
 }
 
@@ -165,3 +173,89 @@ IMAGE_DESCRIPTION_ENABLED = os.getenv("IMAGE_DESCRIPTION_ENABLED", "True").lower
 )
 IMAGE_DESCRIPTION_MODEL = os.getenv("IMAGE_DESCRIPTION_MODEL", "gemma3:4b")
 IMAGE_DESCRIPTION_TIMEOUT = int(os.getenv("IMAGE_DESCRIPTION_TIMEOUT", "120"))
+
+# ---------------------------------------------------------------------------
+# course / question_generation / learning_path (ported from Milestone1-Jean,
+# 2026-09-15). Same Ollama server as the image-description feature above;
+# OLLAMA_MODEL is the text model these use (separate from the vision model).
+# ---------------------------------------------------------------------------
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "240"))
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
+
+# Questions generated per learning object, per thinking order. Lower these
+# while iterating: each thinking order is one LLM call, and the count drives
+# how much that call has to write.
+QUESTION_COUNT_LOT = int(os.getenv("QUESTION_COUNT_LOT", "3"))
+QUESTION_COUNT_HOT = int(os.getenv("QUESTION_COUNT_HOT", "3"))
+
+ADAPTIVE_VARIANT_GENERATION_ENABLED = os.getenv(
+    "ADAPTIVE_VARIANT_GENERATION_ENABLED", "True"
+).lower() in ("1", "true", "yes")
+ADAPTIVE_VARIANT_LLM_MODEL = os.getenv("ADAPTIVE_VARIANT_LLM_MODEL", OLLAMA_MODEL)
+ADAPTIVE_VARIANT_TIMEOUT = int(os.getenv("ADAPTIVE_VARIANT_TIMEOUT", str(OLLAMA_TIMEOUT)))
+# Decode budget for one simplified+elaborated pair. A learning object is
+# 15-60 words and the elaborated cap is 2x source words, so ~200 words of JSON
+# is the real ceiling; 1024 just meant every call ran the decoder long past the
+# grounding limit. Raise it only if long source objects start truncating.
+ADAPTIVE_VARIANT_NUM_PREDICT = int(os.getenv("ADAPTIVE_VARIANT_NUM_PREDICT", "512"))
+# How many Ollama generation calls to keep in flight. The bottleneck in a
+# publish run is N sequential calls to a local model; Ollama serves concurrent
+# requests, so this is close to an N-times speed-up until it hits the server's
+# own OLLAMA_NUM_PARALLEL (set that to at least this value).
+ADAPTIVE_VARIANT_CONCURRENCY = int(os.getenv("ADAPTIVE_VARIANT_CONCURRENCY", "3"))
+
+CONTENT_VERSION_LLM_ENABLED = os.getenv(
+    "CONTENT_VERSION_LLM_ENABLED", "True"
+).lower() in ("1", "true", "yes")
+CONTENT_VERSION_LLM_MODEL = os.getenv("CONTENT_VERSION_LLM_MODEL", ADAPTIVE_VARIANT_LLM_MODEL)
+CONTENT_VERSION_LLM_TIMEOUT = int(os.getenv("CONTENT_VERSION_LLM_TIMEOUT", str(OLLAMA_TIMEOUT)))
+CONTENT_VERSION_LLM_AUTO_THRESHOLD = float(
+    os.getenv("CONTENT_VERSION_LLM_AUTO_THRESHOLD", "0.80")
+)
+
+# Model for question generation (separate from the content generation model)
+QUESTION_LLM_MODEL = os.getenv("QUESTION_LLM_MODEL", "llama3.2:3b")
+
+# Quiet the dev server's per-request access log; application diagnostics use
+# the standard Python logging system instead. INFO reports each step of every
+# pipeline; DEBUG adds the per-item detail (each drafted question, each
+# duplicate or surplus dropped) that would otherwise bury it.
+MAVIA_LOG_LEVEL = os.getenv("MAVIA_LOG_LEVEL", "INFO").upper()
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        # The pipelines already name themselves in the message, so a prefix
+        # here would only repeat it.
+        "trace": {"format": "%(message)s"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler"},
+        "trace": {"class": "logging.StreamHandler", "formatter": "trace"},
+    },
+    "loggers": {
+        "django.server": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "lessons.views": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        # Progress reporting. These packages report each step through the
+        # logger rather than print(), so the terminal and the teacher's
+        # progress dialog are fed by the same call and cannot disagree.
+        # Configured explicitly because there is no root handler: without an
+        # entry here, INFO records propagate to a handler-less root and are
+        # dropped by Python's last-resort handler, which passes WARNING and
+        # above only.
+        "lessons": {"handlers": ["trace"], "level": MAVIA_LOG_LEVEL, "propagate": False},
+        "question_generation": {"handlers": ["trace"], "level": MAVIA_LOG_LEVEL, "propagate": False},
+        "learning_path": {"handlers": ["trace"], "level": MAVIA_LOG_LEVEL, "propagate": False},
+        "course": {"handlers": ["trace"], "level": MAVIA_LOG_LEVEL, "propagate": False},
+    },
+}

@@ -4,11 +4,9 @@ Given the raw bytes of a figure pulled out of a teacher's PDF, ask a local
 vision model (Ollama) what *concept* the figure teaches — not where things
 sit on the page, but the science it is there to show.
 
-This is purely additive. If Ollama isn't running, the model isn't a vision
-model, it times out, or it can't make sense of the figure, every entry point
-returns "" and the caller keeps its existing fallback (the figure's caption
-or the text visible inside it). Nothing in the pipeline breaks when the
-model is absent.
+This is purely additive. If Ollama is temporarily unavailable, extraction keeps
+the figure and its caption or visible-text fallback. Confirmation and publishing
+retry blank narrations using the saved image file.
 
 Point it at a different Ollama vision model with IMAGE_DESCRIPTION_MODEL
 (llava, moondream, qwen2-vl, llama3.2-vision …), or turn it off entirely
@@ -18,8 +16,13 @@ with IMAGE_DESCRIPTION_ENABLED=False.
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
-from functools import lru_cache
+import sqlite3
+import threading
+import time
+from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from django.conf import settings
@@ -29,6 +32,11 @@ logger = logging.getLogger(__name__)
 _SKIP = "SKIP"
 _MAX_VISIBLE_TEXT = 400
 _MAX_NEARBY_TEXT = 600
+_CACHE_VERSION = "1"
+_CACHE_SKIP = "__SKIP__"
+_cache_lock = threading.Lock()
+_reachability_lock = threading.Lock()
+_reachable_until = 0.0
 
 
 def _cfg(name: str, default):
@@ -39,19 +47,93 @@ def _base_url() -> str:
     return _cfg("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 
 
-@lru_cache(maxsize=1)
 def _service_reachable() -> bool:
-    """One cheap check per process — don't hammer a dead endpoint once per
-    figure. Tests call reset_reachability_cache() between cases."""
+    """Cache successful checks briefly; failures remain immediately retryable."""
+    global _reachable_until
+    now = time.monotonic()
+    with _reachability_lock:
+        if now < _reachable_until:
+            return True
     try:
         response = requests.get(f"{_base_url()}/api/tags", timeout=2)
-        return response.status_code == 200
+        reachable = response.status_code == 200
+        if reachable:
+            ttl = max(0, int(_cfg("IMAGE_DESCRIPTION_REACHABILITY_TTL", 15)))
+            with _reachability_lock:
+                _reachable_until = time.monotonic() + ttl
+        return reachable
     except requests.RequestException:
         return False
 
 
+def _cache_path() -> Path:
+    configured = _cfg(
+        "IMAGE_DESCRIPTION_CACHE_PATH",
+        Path(settings.BASE_DIR) / "image_description_cache" / "descriptions.sqlite3",
+    )
+    return Path(configured)
+
+
+def _cache_key(image_bytes: bytes, prompt: str, model: str) -> str:
+    digest = hashlib.sha256()
+    for value in (_CACHE_VERSION.encode(), model.encode(), prompt.encode(), image_bytes):
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+    return digest.hexdigest()
+
+
+def _cached_description(key: str) -> str | None:
+    if not _cfg("IMAGE_DESCRIPTION_CACHE_ENABLED", True):
+        return None
+    try:
+        path = _cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _cache_lock, sqlite3.connect(path, timeout=5) as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS descriptions "
+                "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            row = connection.execute(
+                "SELECT value FROM descriptions WHERE key = ?", (key,)
+            ).fetchone()
+        return row[0] if row else None
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("figure description cache read failed: %s", exc)
+        return None
+
+
+def _store_cached_description(key: str, value: str) -> None:
+    if not _cfg("IMAGE_DESCRIPTION_CACHE_ENABLED", True):
+        return
+    try:
+        path = _cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _cache_lock, sqlite3.connect(path, timeout=5) as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS descriptions "
+                "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT OR REPLACE INTO descriptions (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("figure description cache write failed: %s", exc)
+
+
 def reset_reachability_cache() -> None:
-    _service_reachable.cache_clear()
+    """Clear local test/runtime caches without changing extracted lesson data."""
+    global _reachable_until
+    with _reachability_lock:
+        _reachable_until = 0.0
+    try:
+        path = _cache_path()
+        if not path.exists():
+            return
+        with _cache_lock, sqlite3.connect(path, timeout=5) as connection:
+            connection.execute("DELETE FROM descriptions")
+    except (OSError, sqlite3.Error):
+        return
 
 
 def build_prompt(
@@ -107,17 +189,25 @@ def describe_image_for_lesson(
         return ""
     if not _cfg("IMAGE_DESCRIPTION_ENABLED", True):
         return ""
+
+    model = _cfg("IMAGE_DESCRIPTION_MODEL", "gemma3:4b")
+    prompt = build_prompt(
+        lesson_title=lesson_title,
+        nearby_text=nearby_text,
+        caption=caption,
+        visible_text=visible_text,
+    )
+    cache_key = _cache_key(image_bytes, prompt, model)
+    cached = _cached_description(cache_key)
+    if cached is not None:
+        return "" if cached == _CACHE_SKIP else cached
+
     if not _service_reachable():
         return ""
 
     payload = {
-        "model": _cfg("IMAGE_DESCRIPTION_MODEL", "gemma3:4b"),
-        "prompt": build_prompt(
-            lesson_title=lesson_title,
-            nearby_text=nearby_text,
-            caption=caption,
-            visible_text=visible_text,
-        ),
+        "model": model,
+        "prompt": prompt,
         "images": [base64.b64encode(image_bytes).decode("ascii")],
         "stream": False,
         "options": {"temperature": 0.2},
@@ -126,7 +216,7 @@ def describe_image_for_lesson(
         response = requests.post(
             f"{_base_url()}/api/generate",
             json=payload,
-            timeout=int(_cfg("IMAGE_DESCRIPTION_TIMEOUT", 120)),
+            timeout=int(_cfg("IMAGE_DESCRIPTION_TIMEOUT", 300)),
         )
         response.raise_for_status()
         text = (response.json().get("response") or "").strip()
@@ -138,6 +228,77 @@ def describe_image_for_lesson(
         )
         return ""
 
-    if not text or _looks_like_skip(text):
+    if not text:
         return ""
+    if _looks_like_skip(text):
+        _store_cached_description(cache_key, _CACHE_SKIP)
+        return ""
+    _store_cached_description(cache_key, text)
     return text
+
+
+def _learning_object_image_bytes(learning_object) -> bytes | None:
+    """Read a saved image without allowing paths outside MEDIA_ROOT."""
+    image_url = str(learning_object.image_url or "").strip()
+    if not image_url:
+        return None
+    url_path = urlparse(image_url).path
+    media_url = str(settings.MEDIA_URL or "/media/")
+    if not url_path.startswith(media_url):
+        return None
+    relative = url_path[len(media_url):].lstrip("/\\")
+    media_root = Path(settings.MEDIA_ROOT).resolve()
+    candidate = (media_root / relative).resolve()
+    if not candidate.is_relative_to(media_root) or not candidate.is_file():
+        return None
+    return candidate.read_bytes()
+
+
+def populate_missing_image_descriptions(material) -> dict:
+    """Retry blank image narrations using images already stored by the backend."""
+    from lessons.models import LearningObject
+
+    images = [item for item in material.learning_objects.filter(
+        kind=LearningObject.Kind.IMAGE,
+    ).order_by("order", "id") if not (item.content or "").strip()]
+    logger.info("Image narration retry: material=%s blank_images=%s", material.id, len(images))
+    generated_ids = []
+    errors = []
+    for learning_object in images:
+        try:
+            image_bytes = _learning_object_image_bytes(learning_object)
+        except OSError as exc:
+            errors.append({"learning_object_id": learning_object.id, "detail": str(exc)})
+            continue
+        if not image_bytes:
+            errors.append({
+                "learning_object_id": learning_object.id,
+                "detail": "The saved image file is unavailable on the backend.",
+            })
+            continue
+        description = describe_image_for_lesson(
+            image_bytes,
+            lesson_title=(material.outline_node.title if material.outline_node_id else material.title),
+            nearby_text=(material.extracted_text or "")[:_MAX_NEARBY_TEXT],
+            caption=learning_object.title,
+        )
+        if not description:
+            errors.append({
+                "learning_object_id": learning_object.id,
+                "detail": "Gemma did not return an image narration. Confirm Ollama is running and retry.",
+            })
+            continue
+        learning_object.content = description
+        learning_object.save(update_fields=["content"])
+        generated_ids.append(learning_object.id)
+        logger.info(
+            "Image narration generated: material=%s learning_object=%s model=%s",
+            material.id,
+            learning_object.id,
+            _cfg("IMAGE_DESCRIPTION_MODEL", "gemma3:4b"),
+        )
+    return {
+        "generated_count": len(generated_ids),
+        "generated_learning_object_ids": generated_ids,
+        "errors": errors,
+    }

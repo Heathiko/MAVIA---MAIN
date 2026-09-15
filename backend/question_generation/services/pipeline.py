@@ -1,0 +1,442 @@
+import logging
+import re
+import sys
+from collections import Counter
+from math import ceil
+
+from django.conf import settings
+from django.db import transaction
+
+from .bloom_classifier import BLOOM_TO_DIFFICULTY, BloomClassifier
+from .question_generator import generate_questions
+
+logger = logging.getLogger(__name__)
+
+# Windows consoles often default to a legacy codepage (e.g. cp1252) that
+# can't encode the ✓/✗/⊘/→/─/═ symbols this module emits, which would
+# otherwise crash a run the first time one is written. Force UTF-8 output so
+# the trace is reliable regardless of the terminal's codepage.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
+# ── Configuration ──
+# How many questions per thinking order per content node (LearningObject).
+# LOT and HOT are cognitive categories, not difficulty tiers — the counts are
+# equal because neither is "the harder half" of the bank.
+def thinking_order_counts():
+    """Target questions per thinking order, overridable per deployment.
+
+    Read at call time rather than import time so a settings override in a test
+    or a changed .env takes effect without reloading the module.
+    """
+    return {
+        "LOT": int(getattr(settings, "QUESTION_COUNT_LOT", 3)),
+        "HOT": int(getattr(settings, "QUESTION_COUNT_HOT", 3)),
+    }
+
+
+def _split(count, weights):
+    """Divide ``count`` across formats by weight, giving the remainder to the
+    first format so the split always sums back to ``count``."""
+    total = sum(weights.values())
+    split = {fmt: count * weight // total for fmt, weight in weights.items()}
+    first = next(iter(weights))
+    split[first] += count - sum(split.values())
+    return {fmt: n for fmt, n in split.items() if n}
+
+
+# How many questions per thinking order per content node (LearningObject).
+# LOT and HOT are cognitive categories, not difficulty tiers -- the counts are
+# equal because neither is "the harder half" of the bank.
+#
+# Each thinking order is ONE LLM call. The format split is requested inside
+# that call rather than split across calls: multiple-choice and true/false
+# questions come back in the same structured response, so LOT no longer costs
+# two round trips. The split is stated explicitly because true/false is much
+# cheaper for the model to produce, and left to itself the bank drifts toward
+# it -- and a true/false question a learner can guess right half the time is
+# weak evidence of mastery.
+_COUNTS = thinking_order_counts()
+QUESTION_DISTRIBUTION = {
+    "LOT": {
+        "count": _COUNTS["LOT"],
+        "format_split": _split(_COUNTS["LOT"], {"MCQ": 2, "TF": 1}),
+    },
+    "HOT": {
+        "count": _COUNTS["HOT"],
+        "format_split": _split(_COUNTS["HOT"], {"MCQ": 1}),
+    },
+}
+# Per node: one call per thinking order, 3 LOT + 3 HOT = 6 questions
+
+# Ask for more than the target in the one generation pass, so classification
+# drift still leaves enough in each bucket. This is what replaced the old
+# multi-round rebalancing: overgenerating inside the SAME set of LLM calls is
+# far cheaper than issuing extra calls to correct a shortfall afterwards.
+OVERGENERATION_FACTOR = 1.5
+
+# Bloom levels the classifier may return but that MCQ/TF cannot assess.
+# "create" questions (design/construct/compose a novel artifact) have no
+# single gradeable answer, so they are dropped during post-processing.
+# The trained model still predicts "create" — the exclusion is ours, applied
+# at the application level, and the model is deliberately left alone.
+UNASSESSABLE_BLOOM_LEVELS = {"create"}
+
+# loaded once per process — reloading RoBERTa on every run costs ~10s
+_classifier_cache = None
+
+
+def _get_classifier():
+    global _classifier_cache
+    if _classifier_cache is None:
+        _classifier_cache = BloomClassifier()
+    return _classifier_cache
+
+
+def _emit(on_event, event_type, message, **data):
+    """Send a trace event to the optional callback. No-op when tracing is off."""
+    if on_event:
+        on_event(event_type, message, data or None)
+
+
+def _dedup_key(question_text):
+    """Normalized form used to spot two questions that only differ cosmetically.
+
+    Lowercased, punctuation dropped and whitespace collapsed, so
+    "What is matter?" and "what is  matter" collide.
+    """
+    text = (question_text or "").lower()
+    text = re.sub(r"[^a-z0-9\s]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+# ── Trace printing ──
+
+def _print_node_summary(node, kept, rejected):
+    """One line per node. The per-question detail sits at debug level.
+
+    This used to be an eight-line block framed by dividers, per node -- which
+    for a 33-node material buried the one thing a reader wants from a trace:
+    where it is now, and whether it is still moving.
+    """
+    counts = Counter(q.thinking_order for q in kept)
+    breakdown = ", ".join(f"{counts.get(order, 0)} {order}" for order in QUESTION_DISTRIBUTION)
+    short = [
+        order for order, config in QUESTION_DISTRIBUTION.items()
+        if counts.get(order, 0) < config["count"]
+    ]
+    logger.info(
+        'node "%s": kept %s (%s), discarded %s%s',
+        node.title, len(kept), breakdown, len(rejected),
+        f" — short on {', '.join(short)}" if short else "",
+    )
+
+
+def _print_material_summary(material, node_count, all_questions, stats):
+    counts = Counter(q.thinking_order for q in all_questions)
+    distribution = ", ".join(f"{counts.get(order, 0)} {order}" for order in QUESTION_DISTRIBUTION)
+    logger.info(
+        'finished "%s": %s questions across %s nodes (%s) from %s drafts '
+        "[excluded %s, duplicates %s, trimmed %s]",
+        material.title, len(all_questions), node_count, distribution,
+        stats["total_drafted"], stats["excluded_create"],
+        stats["duplicates"], stats["trimmed"],
+    )
+
+
+# ── Phase 1: generation (LLM) ──
+
+def _draft_questions_for_node(node, on_event=None):
+    """Run every LLM call for one node and persist the results as drafts.
+
+    Nothing is classified, deduplicated or trimmed here — the questions go
+    to the database exactly as the LLM produced them (after structural
+    validation), so a crash later in the run cannot lose generated work.
+    """
+    from question_generation.models import GeneratedQuestion
+
+    # clear drafts orphaned by an earlier crashed run so they can't be
+    # mistaken for this run's output
+    GeneratedQuestion.objects.filter(node=node, status="draft").delete()
+
+    drafted = 0
+    for thinking_order, config in QUESTION_DISTRIBUTION.items():
+        # Pad each format so classification drift still leaves enough in the
+        # bucket, then ask for the whole mix in one call.
+        padded = {
+            fmt: max(1, ceil(n * OVERGENERATION_FACTOR))
+            for fmt, n in config["format_split"].items()
+        }
+        summary = " + ".join(f"{n} {fmt}" for fmt, n in padded.items())
+        print(f"Generating {summary} {thinking_order} question(s) for: {node.title}")
+        questions = generate_questions(
+            content=node.content,
+            thinking_order=thinking_order,
+            format_split=padded,
+        )
+        batch = [
+            GeneratedQuestion(
+                node=node,
+                question_text=q["question"],
+                question_format=q["format"],
+                choices=q.get("choices"),
+                correct_answer=q["correct_answer"],
+                explanation=q.get("explanation", ""),
+                status="draft",
+            )
+            for q in questions
+        ]
+        GeneratedQuestion.objects.bulk_create(batch)
+        drafted += len(batch)
+        for q in batch:
+            logger.debug('  Q: "%s" [%s, drafted]', q.question_text, q.question_format)
+        _emit(
+            on_event, "questions_drafted",
+            f"Saved {len(batch)} {thinking_order} draft(s)",
+            node_id=node.id, count=len(batch),
+            requested=sum(padded.values()), thinking_order=thinking_order,
+            formats=sorted(padded),
+        )
+    return drafted
+
+
+# ── Phase 2: post-processing (deterministic, no LLM) ──
+
+def finalize_node_questions(node, classifier, on_event=None, stats=None):
+    """Classify, deduplicate and trim one node's drafts, then promote them.
+
+    Runs entirely over rows already in the database and needs no LLM. The
+    order matters: deduplicate first (so identical text isn't classified
+    twice), then classify, then drop unassessable levels, then trim to quota.
+
+    The promotion is atomic — the previous run's final questions survive
+    until the moment this node's replacements are ready, so an interrupted
+    run never leaves a node with no questions.
+
+    NOTE: deleting a question cascades to its LearnerResponse rows —
+    regenerating resets learner history for that node's questions.
+    """
+    from question_generation.models import GeneratedQuestion
+
+    drafts = list(
+        GeneratedQuestion.objects.filter(node=node, status="draft").order_by("id")
+    )
+
+    keep = []
+    reject_ids = []
+    counts = Counter()
+    seen = set()
+    duplicates = excluded_create = trimmed = 0
+
+    for draft in drafts:
+        key = _dedup_key(draft.question_text)
+        if key in seen:
+            duplicates += 1
+            reject_ids.append(draft.id)
+            logger.debug('  ⊘ duplicate — "%s"', draft.question_text)
+            _emit(
+                on_event, "question_dropped", draft.question_text,
+                reason="duplicate of an earlier question", node_id=node.id,
+            )
+            continue
+        seen.add(key)
+
+        classification = classifier.classify(draft.question_text)
+        bloom_level = classification["bloom_level"]
+        thinking_order = classification["thinking_order"]
+
+        if bloom_level in UNASSESSABLE_BLOOM_LEVELS or thinking_order is None:
+            excluded_create += 1
+            reject_ids.append(draft.id)
+            logger.debug('  ⊘ excluded (%s) — "%s"', bloom_level, draft.question_text)
+            _emit(
+                on_event, "question_dropped", draft.question_text,
+                reason=f"{bloom_level}-level question cannot be assessed by MCQ/TF",
+                bloom_level=bloom_level, node_id=node.id,
+            )
+            continue
+
+        if counts[thinking_order] >= QUESTION_DISTRIBUTION[thinking_order]["count"]:
+            trimmed += 1
+            reject_ids.append(draft.id)
+            logger.debug('  ⊘ surplus %s — "%s"', thinking_order, draft.question_text)
+            continue
+
+        draft.bloom_level = bloom_level
+        draft.thinking_order = thinking_order
+        # A different axis from thinking_order, kept for the adaptive
+        # engine's difficulty-based remediation — see GeneratedQuestion.
+        # Derived straight from bloom_level rather than trusted from the
+        # classifier's return value, so a classifier/stub that only returns
+        # bloom_level/thinking_order/category still works.
+        draft.difficulty = classification.get("difficulty") or BLOOM_TO_DIFFICULTY.get(bloom_level, "")
+        draft.category = classification["category"]
+        draft.status = "final"
+        counts[thinking_order] += 1
+        keep.append(draft)
+        logger.debug(
+            '  ✓ %s (%s) — "%s"', thinking_order, bloom_level, draft.question_text
+        )
+
+    for thinking_order, config in QUESTION_DISTRIBUTION.items():
+        short = config["count"] - counts.get(thinking_order, 0)
+        if short > 0:
+            _emit(
+                on_event, "shortfall_warning",
+                f"{thinking_order} came up {short} question(s) short — accepting as is",
+                node_id=node.id, thinking_order=thinking_order, short=short,
+            )
+
+    with transaction.atomic():
+        # A concept owns one question bank, grounded in its Normal source.
+        # When that bank is regenerated, remove older generated banks attached
+        # to Simplified, Elaborated, or Extra source objects in the same group.
+        if node.group_id:
+            obsolete = GeneratedQuestion.objects.filter(
+                node__group_id=node.group_id,
+            ).exclude(node=node)
+            obsolete_ids = list(obsolete.values_list("id", flat=True))
+            if obsolete_ids:
+                from lessons.models import Question
+                Question.objects.filter(
+                    source_type=Question.SourceType.GENERATED,
+                    adaptive_question_id__in=obsolete_ids,
+                ).delete()
+                obsolete.delete()
+
+        # the previous run's questions are replaced only now, once this run
+        # actually has something to replace them with
+        replaced, _ = GeneratedQuestion.objects.filter(node=node, status="final").delete()
+        if reject_ids:
+            GeneratedQuestion.objects.filter(id__in=reject_ids).delete()
+        GeneratedQuestion.objects.bulk_update(
+            keep, ["bloom_level", "thinking_order", "difficulty", "category", "status"]
+        )
+
+        material = node.material
+        generated_json = material.generated_json or {}
+        if generated_json:
+            generated_json["question_audio_generated"] = False
+            generated_json["audio_playlist_generated"] = False
+            material.generated_json = generated_json
+            material.save(update_fields=["generated_json"])
+
+    # Keep the teacher's Step 2 list and the learner-facing adaptive bank in
+    # one visible workflow. The adaptive rows remain authoritative for play.
+    from lessons.services.question_workflow import mirror_generated_questions
+    mirror_generated_questions(node, keep)
+
+    if replaced:
+        logger.debug("replaced %s existing rows for node %s", replaced, node.id)
+    logger.debug("saved %s questions for node %s", len(keep), node.id)
+
+    if stats is not None:
+        stats["excluded_create"] = stats.get("excluded_create", 0) + excluded_create
+        stats["duplicates"] = stats.get("duplicates", 0) + duplicates
+        stats["trimmed"] = stats.get("trimmed", 0) + trimmed
+
+    _print_node_summary(node, keep, reject_ids)
+    return keep
+
+
+def generate_questions_for_node(node, classifier, on_event=None, stats=None):
+    """Generate and finalize one LearningObject's question bank.
+
+    Two phases: every LLM call happens first and lands in the database as
+    drafts, then a single deterministic pass classifies, deduplicates and
+    trims them. There is no regeneration loop — LOT and HOT are wide enough
+    that ordinary prompt drift lands inside the intended bucket, and a bucket
+    that still comes up short is accepted with a warning rather than paid for
+    with more LLM calls.
+
+    on_event(event_type, message, data) receives trace events when provided.
+    stats, when given a dict, accumulates run totals for a material summary.
+    """
+    drafted = _draft_questions_for_node(node, on_event=on_event)
+    if stats is not None:
+        stats["total_drafted"] = stats.get("total_drafted", 0) + drafted
+
+    _emit(
+        on_event, "node_classifying",
+        f"Classifying and filtering {drafted} draft(s)",
+        node_id=node.id, drafted=drafted,
+    )
+    return finalize_node_questions(node, classifier, on_event=on_event, stats=stats)
+
+
+def generate_questions_for_material(material, on_event=None, node_ids=None):
+    """Full pipeline: LearningMaterial → classified questions for its text
+    learning objects, straight from the database (no JSON handoff).
+
+    With node_ids, only those learning objects are (re)generated; other
+    nodes' stored questions are left untouched. Each node is finalized as
+    soon as it finishes, so an interrupted run keeps every completed node's
+    questions."""
+    from question_generation.models import GeneratedQuestion
+
+    if _classifier_cache is None:
+        _emit(on_event, "classifier_loading", "Loading Bloom's classifier model")
+    classifier = _get_classifier()
+
+    nodes_qs = (
+        material.learning_objects
+        .exclude(content="")
+        .order_by("order")
+    )
+    if node_ids is not None:
+        nodes_qs = nodes_qs.filter(id__in=node_ids)
+    nodes = list(nodes_qs)
+    if node_ids is None:
+        # full-material run: drop stale questions on nodes this run will not
+        # touch (e.g. a learning object whose content was emptied since the
+        # last run)
+        GeneratedQuestion.objects.filter(node__material=material).exclude(
+            node__in=nodes).delete()
+    _emit(
+        on_event, "material_started",
+        f"Generating questions for {len(nodes)} content nodes",
+        material_id=material.id, material_title=material.title,
+        node_count=len(nodes),
+    )
+
+    all_questions = []
+    stats = {"total_drafted": 0, "excluded_create": 0, "duplicates": 0, "trimmed": 0}
+    total_nodes = len(nodes)
+    for position, node in enumerate(nodes, start=1):
+        logger.info('(%s/%s) generating questions for "%s"', position, total_nodes, node.title)
+        # index/total are what let the teacher's dialog draw a real progress
+        # bar. Without them it can only spin, and a spinner cannot tell slow
+        # apart from stuck -- which is the whole complaint about this step.
+        _emit(
+            on_event, "node_started", f"Generating questions for: {node.title}",
+            node_id=node.id, title=node.title,
+            index=position, total=total_nodes,
+        )
+        questions = generate_questions_for_node(
+            node, classifier, on_event=on_event, stats=stats)
+        all_questions.extend(questions)
+        _emit(
+            on_event, "node_finished",
+            f"Finished node: saved {len(questions)} questions",
+            node_id=node.id,
+            count=len(questions),
+            index=position, total=total_nodes,
+            by_thinking_order=dict(Counter(q.thinking_order for q in questions)),
+        )
+
+    _print_material_summary(material, len(nodes), all_questions, stats)
+    _emit(
+        on_event, "material_finished",
+        f"Generated {len(all_questions)} questions from {stats['total_drafted']} drafts",
+        total=len(all_questions),
+        drafted=stats["total_drafted"],
+        excluded_create=stats["excluded_create"],
+        duplicates=stats["duplicates"],
+        trimmed=stats["trimmed"],
+        by_thinking_order=dict(Counter(q.thinking_order for q in all_questions)),
+        by_bloom=dict(Counter(q.bloom_level for q in all_questions)),
+    )
+    return all_questions

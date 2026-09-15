@@ -14,7 +14,7 @@ def _course_with_content(*, topics=1, questions_per_topic=2):
     made = []
     for t in range(topics):
         topic = OutlineNode.objects.create(
-            course=course, parent=module, title=f"Topic {t + 1}", order=t, depth=1
+            course=course, parent=module, title=f"Topic {t + 1}", order=t, depth=1, published=True
         )
         material = LearningMaterial.objects.create(
             course=course,

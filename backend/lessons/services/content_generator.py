@@ -854,11 +854,23 @@ def _remove_outline_container_objects(learning_objects: list[dict], outline_cont
     return cleaned
 
 
+def _is_image_learning_object(item: dict) -> bool:
+    return (
+        item.get("type") in {"image_description", "image"}
+        or item.get("kind") in {"image", LearningObject.Kind.IMAGE}
+        or bool(item.get("image_url"))
+    )
+
+
 def remove_structural_metadata_learning_objects(learning_objects: list[dict]) -> list[dict]:
     cleaned = [
         item
         for item in learning_objects
-        if not is_structural_metadata_label(item.get("title") or "")
+        # A figure keeps its narration even when its caption reads like a
+        # heading ("Comparison of Solid, Liquid, and Gas") -- dropping it would
+        # lose the only text a screen-reader user gets for that image.
+        if _is_image_learning_object(item)
+        or not is_structural_metadata_label(item.get("title") or "")
     ]
     for order, item in enumerate(cleaned):
         item["order"] = order
@@ -1084,6 +1096,21 @@ def _section_heading_title(text: str) -> str | None:
     return title[:255] if title else None
 
 
+def _qualifies_as_section_parent(block: dict) -> bool:
+    """Return whether a numbered heading may parent the headings beneath it.
+
+    Being numbered is not sufficient. ``_learning_object_heading_title`` returns
+    a numbered title before it checks category, so quiz items ("1. ______
+    condense"), answer keys and quick-check sections reach the heading path too
+    and would otherwise be promoted into sections of their own.
+    """
+    return bool(
+        _section_heading_title(block.get("text", ""))
+        and block.get("category") == "lesson_content"
+        and block.get("include_in_narration")
+    )
+
+
 def _looks_like_plain_subtopic_heading(text: str) -> str | None:
     text = re.sub(r"\s+", " ", text or "").strip()
     if not text or len(text) > 90 or re.search(r"[.!]$", text):
@@ -1255,10 +1282,42 @@ def _normalized_heading_label(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
 
+# Recap / navigation headings that summarise or point at content rather than
+# teach it. A learning object whose whole title is one of these is furniture,
+# not a step -- even when the chunker has hung real (usually duplicated) prose
+# under it. Deliberately conservative: "introduction", "summary" and "overview"
+# are left out, because a lesson's only substantive prose is sometimes there.
+_RECAP_METADATA_LABELS = frozenset({
+    "key facts",
+    "key facts to remember",
+    "key points",
+    "key points for students",
+    "key points to remember",
+    "key takeaways",
+    "things to remember",
+    "points to remember",
+    "easy way to remember",
+    "simple way to remember",
+    "quick review",
+    "quick review questions",
+    "review questions",
+    "important concept to teach",
+    "teachers notes",
+    "teacher s notes",
+})
+
+_PART_OF_SUFFIX = re.compile(r"\s+part\s+\d+\s+of\s+\d+$")
+
+
 def is_structural_metadata_label(text: str) -> bool:
     label = _normalized_heading_label(text)
     if not label:
         return False
+    # "Key Facts to Remember (Part 1 of 2)" normalises with a trailing
+    # "part 1 of 2"; the label underneath it is what decides.
+    label = _PART_OF_SUFFIX.sub("", label).strip()
+    if label in _RECAP_METADATA_LABELS:
+        return True
     return bool(
         re.fullmatch(
             r"(?:module|unit|chapter|lesson|week|quarter|section|part)\s+"
@@ -1414,6 +1473,7 @@ def _finalize_current_learning_object(current: dict | None, learning_objects: li
     parts = current.pop("parts", [])
     current.pop("has_supporting_components", None)
     current.pop("expected_enumerated_item", None)
+    current.pop("from_inline_definition", None)
     content = _format_section_content(parts)
     if content:
         current["content"] = content
@@ -1830,6 +1890,9 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
 
     current = None
     active_section_title = ""
+    # The authored section a following sub-heading belongs to. Kept apart from
+    # active_section_title, which serves the inline-definition path only.
+    section_parent_title = ""
     skipping_excluded_section = False
     excluded_section_allows_prose_exit = False
     can_append_to_previous = True
@@ -1842,6 +1905,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             _finalize_current_learning_object(current, learning_objects)
             current = None
             active_section_title = ""
+            section_parent_title = ""
             can_append_to_previous = False
             continue
 
@@ -1861,6 +1925,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             _finalize_current_learning_object(current, learning_objects)
             current = None
             active_section_title = ""
+            section_parent_title = ""
             skipping_excluded_section = True
             excluded_section_allows_prose_exit = _excluded_section_allows_prose_exit(text)
             can_append_to_previous = False
@@ -1919,10 +1984,18 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             followed_by_sibling = _followed_by_another_inline_definition(classified_blocks, index)
             if current is not None:
                 if followed_by_sibling:
-                    active_section_title = current.get("title", "")
-                    if current.get("parts"):
-                        current["section_title"] = active_section_title
-                        _finalize_current_learning_object(current, learning_objects)
+                    if current.get("from_inline_definition"):
+                        # A definition whose sibling run was interrupted by page
+                        # furniture is a peer of the terms around it, never their
+                        # section. Promoting it made the first glossary entry the
+                        # parent of every term after it, and of itself.
+                        if current.get("parts"):
+                            _finalize_current_learning_object(current, learning_objects)
+                    else:
+                        active_section_title = current.get("title", "")
+                        if current.get("parts"):
+                            current["section_title"] = active_section_title
+                            _finalize_current_learning_object(current, learning_objects)
                     current = None
                 elif not current.get("parts"):
                     # One labeled definition directly below an empty heading
@@ -1935,7 +2008,10 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             current = None
             inline_item = {
                 "order": len(learning_objects),
-                "section_title": active_section_title,
+                # A labeled definition sitting under an authored section belongs
+                # to it. The inline path only ever knew about sibling-run titles,
+                # so "Diagram description" under "2. Solids" came out parentless.
+                "section_title": active_section_title or section_parent_title,
                 "title": title,
                 "type": "lesson_content",
                 "content": content,
@@ -1947,7 +2023,12 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             if followed_by_sibling or active_section_title:
                 learning_objects.append(inline_item)
             else:
-                current = {**inline_item, "content": "", "parts": [content]}
+                current = {
+                    **inline_item,
+                    "content": "",
+                    "parts": [content],
+                    "from_inline_definition": True,
+                }
                 can_append_to_previous = True
             continue
 
@@ -1972,8 +2053,16 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
                 continue
             _finalize_current_learning_object(current, learning_objects)
             active_section_title = ""
+            if _section_heading_title(text):
+                # Any numbered heading closes the previous section; only an
+                # authored instructional one may open a new one. A non-numbered
+                # heading falls through and inherits the section it sits under.
+                section_parent_title = (
+                    heading_title if _qualifies_as_section_parent(block) else ""
+                )
             current = {
                 "order": len(learning_objects),
+                "section_title": section_parent_title,
                 "title": heading_title,
                 "type": "lesson_content",
                 "content": "",
@@ -2131,28 +2220,53 @@ def _learning_object_units(content: str) -> list[str]:
     return units
 
 
+def _cohesive_learning_object_units(content: str) -> list[str]:
+    """Keep a labelled list or example together as one splittable unit.
+
+    PDF extraction commonly represents a section such as ``Examples:`` as a
+    heading followed by one short line per item.  Treating every line as an
+    independent chunk boundary can leave the heading and first item in one
+    learning object and the rest of the list in another.  A word limit is a
+    soft accessibility target, so preserving the complete authored idea takes
+    precedence over splitting that labelled run at the exact limit.
+    """
+    authored_units = _learning_object_units(content)
+    cohesive_units: list[str] = []
+    labelled_run: list[str] = []
+
+    for unit in authored_units:
+        if unit.rstrip().endswith(":"):
+            if labelled_run:
+                cohesive_units.append("\n".join(labelled_run))
+            labelled_run = [unit]
+        elif labelled_run:
+            labelled_run.append(unit)
+        else:
+            cohesive_units.append(unit)
+
+    if labelled_run:
+        cohesive_units.append("\n".join(labelled_run))
+    return cohesive_units
+
+
 def _split_oversized_learning_object(item: dict, maximum_words: int) -> list[dict]:
     if item.get("type") != "lesson_content" or _learning_object_word_count(item) <= maximum_words:
         return [item]
 
-    units = _learning_object_units(item.get("content") or "")
+    units = _cohesive_learning_object_units(item.get("content") or "")
     if len(units) < 2:
         return [item]
 
-    total_words = sum(len(re.findall(r"\b\w+\b", unit)) for unit in units)
-    group_count = max(2, (total_words + maximum_words - 1) // maximum_words)
-    target_words = max(1, (total_words + group_count - 1) // group_count)
     groups: list[list[str]] = []
     current: list[str] = []
     current_words = 0
     for unit in units:
         unit_words = len(re.findall(r"\b\w+\b", unit))
-        groups_still_needed = group_count - len(groups)
         if (
             current
-            and current_words >= target_words
-            and groups_still_needed > 1
+            and current_words + unit_words > maximum_words
             and not current[-1].rstrip().endswith(":")
+            and not _starts_with_continuation_callout(unit)
         ):
             groups.append(current)
             current = []
@@ -2209,6 +2323,57 @@ def _is_protected_outline_object(item: dict, outline_context: dict) -> bool:
     return any(title and _is_same_label(item.get("title") or "", title) for title in protected_titles)
 
 
+def _section_variant_maximum_words() -> int:
+    return max(1, int(os.getenv("LEARNING_OBJECT_SECTION_VARIANT_MAX_WORDS", "25")))
+
+
+def _is_section_variant_item(item: dict) -> bool:
+    """Return whether this is one labelled facet of its section.
+
+    A heading with short labelled items beneath it -- "PARTICLE ARRANGEMENT"
+    over "Solid", "Liquid" and "Gas" -- teaches one idea by contrast. Each item
+    says what the others do not, so they share almost no wording and adjacent
+    similarity reads them as unrelated. Left split they are too small to teach
+    from and too generic to match across PDFs, and they take their section's
+    label with them, which makes that label ambiguous. The shared section is the
+    evidence that they belong to one another.
+    """
+    if item.get("type") != "lesson_content":
+        return False
+    section = (item.get("section_title") or "").strip()
+    title = (item.get("title") or "").strip()
+    if not section or not title:
+        return False
+    if _learning_object_word_count(item) >= _section_variant_maximum_words():
+        return False
+    # The heading that introduces the run is part of the run it introduces.
+    return _is_same_label(title, section) or len(title.split()) <= 3
+
+
+def _section_names_one_concept(section: str) -> bool:
+    """Return whether a section names a concept rather than a container.
+
+    "Vocabulary", "Glossary" and "Everyday Examples" collect entries that merely
+    sit together: each term stands alone and must stay its own object.
+    "PARTICLE ARRANGEMENT" names a single idea whose items are facets of it.
+    The label itself is what separates the two, and the grouping module already
+    keeps that list. Imported lazily, matching how that module reaches back into
+    this one.
+    """
+    from .semantic_grouping import _specific_normalized_label
+
+    return bool(_specific_normalized_label(section))
+
+
+def _can_merge_section_variants(left: dict, right: dict) -> bool:
+    section = (left.get("section_title") or "").strip()
+    if not section or section != (right.get("section_title") or "").strip():
+        return False
+    if not _section_names_one_concept(section):
+        return False
+    return _is_section_variant_item(left) and _is_section_variant_item(right)
+
+
 def _can_merge_short_learning_objects(
     left: dict,
     right: dict,
@@ -2220,9 +2385,13 @@ def _can_merge_short_learning_objects(
         return False
     if not left.get("section_title") or left.get("section_title") != right.get("section_title"):
         return False
-    if _learning_object_word_count(left) >= minimum_words or _learning_object_word_count(right) >= minimum_words:
-        return False
     if _is_protected_outline_object(left, outline_context) or _is_protected_outline_object(right, outline_context):
+        return False
+    # Checked before the size gate: these items run slightly longer than a micro
+    # object, and their evidence is the authored section rather than wording.
+    if _can_merge_section_variants(left, right):
+        return True
+    if _learning_object_word_count(left) >= minimum_words or _learning_object_word_count(right) >= minimum_words:
         return False
     if _is_relation_micro_object(left) and _is_relation_micro_object(right):
         return True
@@ -2255,6 +2424,75 @@ def _merge_learning_object_group(group: list[dict]) -> dict:
     }
 
 
+def _is_continuation_callout_label(title: str) -> bool:
+    title = re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+    return bool(
+        re.fullmatch(
+            r"(?:important|key|main|big) (?:idea|point|fact)|remember|takeaway|summary",
+            title,
+        )
+    )
+
+
+def _starts_with_continuation_callout(unit: str) -> bool:
+    first_line = (unit or "").splitlines()[0].rstrip(":").strip()
+    return _is_continuation_callout_label(first_line)
+
+
+def _is_short_continuation_callout(item: dict) -> bool:
+    """Return whether an object is a short conclusion to the prior concept."""
+    if item.get("type") != "lesson_content" or _learning_object_word_count(item) > 20:
+        return False
+    return _is_continuation_callout_label(item.get("title") or "")
+
+
+def _attach_short_continuation_callouts(learning_objects: list[dict]) -> list[dict]:
+    """Attach summary callouts before chunking so they cannot become orphan cards."""
+    attached: list[dict] = []
+    for item in learning_objects:
+        if (
+            attached
+            and _is_short_continuation_callout(item)
+            and attached[-1].get("type") == "lesson_content"
+        ):
+            previous = {**attached[-1]}
+            label = (item.get("title") or "Important idea").strip()
+            callout = (item.get("content") or "").strip()
+            previous["content"] = (
+                f"{(previous.get('content') or '').rstrip()}\n{label}:\n{callout}"
+            ).strip()
+            previous["source_excerpt"] = previous["content"]
+            previous["source_pages"] = list(
+                dict.fromkeys(
+                    page
+                    for page in [
+                        *(previous.get("source_pages") or []),
+                        previous.get("source_page"),
+                        *(item.get("source_pages") or []),
+                        item.get("source_page"),
+                    ]
+                    if page is not None
+                )
+            )
+            previous["source_block_ids"] = list(
+                dict.fromkeys(
+                    block_id
+                    for block_id in [
+                        *(previous.get("source_block_ids") or []),
+                        previous.get("source_block_id"),
+                        *(item.get("source_block_ids") or []),
+                        item.get("source_block_id"),
+                    ]
+                    if block_id is not None
+                )
+            )
+            previous["chunk_operation"] = "attached_continuation_callout"
+            attached[-1] = previous
+            continue
+        attached.append(item)
+    return attached
+
+
 def balance_learning_object_chunks(
     learning_objects: list[dict],
     outline_context: dict | None = None,
@@ -2269,7 +2507,7 @@ def balance_learning_object_chunks(
     )
 
     split_objects = []
-    for item in learning_objects:
+    for item in _attach_short_continuation_callouts(learning_objects):
         split_objects.extend(_split_oversized_learning_object(item, maximum_words))
 
     balanced = []
@@ -2526,6 +2764,8 @@ def json_dumps_for_prompt(value) -> str:
 
 def _sync_learning_objects(material: LearningMaterial, generated_json: dict):
     from .learning_resource_linker import (
+        normalize_learning_object_title,
+        prior_grouping_fingerprints,
         prior_learning_object_groups,
         question_snapshots,
         refresh_question_learning_object_links,
@@ -2540,10 +2780,11 @@ def _sync_learning_objects(material: LearningMaterial, generated_json: dict):
             f"Learning material {material.pk} was deleted before learning objects were saved."
         )
     prior_groups = prior_learning_object_groups(material)
+    prior_fingerprints = prior_grouping_fingerprints(material)
     material.learning_objects.all().delete()
     synced_learning_objects = []
     for index, item in enumerate(generated_json.get("learning_objects", [])):
-        if is_structural_metadata_label(item.get("title") or ""):
+        if not _is_image_learning_object(item) and is_structural_metadata_label(item.get("title") or ""):
             continue
         is_image = item.get("type") in {"image_description", "image"} or bool(item.get("image_url"))
         kind = LearningObject.Kind.IMAGE if is_image else LearningObject.Kind.TEXT
@@ -2563,9 +2804,14 @@ def _sync_learning_objects(material: LearningMaterial, generated_json: dict):
             section_title=item.get("section_title") or "",
             prior_groups=prior_groups,
         )
+        prior_key = (normalize_learning_object_title(title), index)
+        restored = group is not None and prior_groups.get(prior_key) == group.id
         learning_object = LearningObject.objects.create(
             material=material,
             group=group,
+            # Blank lets the model fingerprint the new text; a restored grouping
+            # keeps the text it was actually decided against.
+            grouping_content_hash=prior_fingerprints.get(prior_key, "") if restored else "",
             kind=kind,
             section_title=(item.get("section_title") or "")[:255],
             title=title,

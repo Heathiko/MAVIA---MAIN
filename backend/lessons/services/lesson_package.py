@@ -1,11 +1,17 @@
-"""Read-only lesson packaging for the teacher review player and the
-student-facing adaptive endpoints.
+"""Read-only content preview for the teacher UI.
 
 Adapter for ``Milestone1-Jean/backend/course/services.py::LessonPackageService``
 that reads mavia's own data instead of the ported ``course`` app: modules are
 top-level ``OutlineNode``s, a lesson is a child topic, tracks come straight
 from each material's ``generated_json["lesson_playlist"]``, and questions are
 ``lessons.Question`` rows.
+
+``learning_path`` (below) is the one piece of this payload that does *not*
+come from the ``lessons`` app's own rows: it is the topic's published
+prerequisite path (see ``learning_path/HANDOFF.md``), included here so a
+client reading one lesson's package also learns the concept order and
+prerequisite structure the adaptive rules use, without a second request.
+It is ``None`` until the topic has been published with a learning path.
 """
 
 from lessons.models import LearningMaterial, OutlineNode, Question
@@ -13,7 +19,30 @@ from lessons.models import LearningMaterial, OutlineNode, Question
 from .audio_generator import _playlist_text_by_order
 
 
-def _module_lesson_nodes(module_node):
+def _learning_path_summary(lesson_node):
+    """Student-safe (no answers) prerequisite path for one topic, or ``None``."""
+    from learning_path.services import get_published_path
+
+    path = get_published_path(lesson_node, include_answers=False)
+    if path is None:
+        return None
+    return {
+        "published_at": path["published_at"],
+        "steps": [
+            {
+                "position": step["position"],
+                "depth": step["depth"],
+                "concept_id": step["concept_id"],
+                "title": step["title"],
+                "prerequisites": step["prerequisites"],
+                "leads_to": step["leads_to"],
+            }
+            for step in path["steps"]
+        ],
+    }
+
+
+def _module_lesson_nodes(module_node, *, published_only=False):
     """Child topics of a module that have at least one completed material,
     in outline order."""
     descendant_ids = []
@@ -28,6 +57,8 @@ def _module_lesson_nodes(module_node):
         OutlineNode.objects.filter(id__in=descendant_ids)
         .order_by("depth", "order", "id")
     )
+    if published_only:
+        nodes = nodes.filter(published=True)
     return [
         node
         for node in nodes
@@ -49,9 +80,9 @@ def _lesson_tracks(lesson_node):
         text_by_order = _playlist_text_by_order(material)
         for item in generated_json.get("lesson_playlist", []):
             narration_order = item.get("narration_item_order")
-            text = ""
+            text = item.get("narration") or item.get("text") or ""
             if narration_order is not None:
-                text = text_by_order.get(int(narration_order), "")
+                text = text_by_order.get(int(narration_order), text)
             audio_url = item.get("audio_url") or ""
             tracks.append(
                 {
@@ -100,11 +131,12 @@ def build_lesson_payload(lesson_node):
         "has_questions": bool(questions),
         "track_count": len(tracks),
         "question_count": len(questions),
+        "learning_path": _learning_path_summary(lesson_node),
     }
 
 
-def build_module_package(module_node):
-    lesson_nodes = _module_lesson_nodes(module_node)
+def build_module_package(module_node, *, published_only=False):
+    lesson_nodes = _module_lesson_nodes(module_node, published_only=published_only)
     lessons = [build_lesson_payload(node) for node in lesson_nodes]
     return {
         "module": {
@@ -119,11 +151,11 @@ def build_module_package(module_node):
     }
 
 
-def build_course_module_summaries(course):
+def build_course_module_summaries(course, *, published_only=False):
     modules = course.nodes.filter(parent__isnull=True).order_by("order", "id")
     summaries = []
     for module_node in modules:
-        lesson_nodes = _module_lesson_nodes(module_node)
+        lesson_nodes = _module_lesson_nodes(module_node, published_only=published_only)
         track_count = 0
         question_count = 0
         for node in lesson_nodes:
