@@ -49,7 +49,7 @@ export default function App() {
         path="/contact"
         element={
           <MarketingPage title="Contact us">
-            Reach the MAVIA team at hello@mavia.example — we would love to hear
+            Reach the MAVIA team at mavia.official.contact@gmail.com — we would love to hear
             from schools and educators.
           </MarketingPage>
         }
