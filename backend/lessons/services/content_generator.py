@@ -412,12 +412,48 @@ def _instructional_table_rows(rows: list[list[str | None]]) -> bool:
     useful_rows = sum(sum(bool(cell) for cell in row) >= 2 for row in cleaned_rows)
     header_cells = sum(bool(cell) for cell in cleaned_rows[0])
     cell_word_counts = [len(cell.split()) for row in cleaned_rows for cell in row if cell]
+    # PyMuPDF's text-based table detector can turn fully justified prose into
+    # many artificial columns, even splitting individual words at column
+    # boundaries (for example, ``Spore d | ispersal``).  A real instructional
+    # table may contain lowercase cells, but it should not repeatedly split
+    # words across several long rows.  Reject that paragraph-shaped false
+    # positive before the region is rasterized and its source text is removed.
+    fragmented_prose_rows = 0
+    fragmented_boundaries = 0
+    comparable_boundaries = 0
+    for row in cleaned_rows:
+        row_fragmented_boundaries = 0
+        for left, right in zip(row, row[1:]):
+            if not left or not right:
+                continue
+            left_fragment = re.search(r"([A-Za-z]+)\s*$", left)
+            right_fragment = re.match(r"^\s*([a-z]+)", right)
+            if not left_fragment or not right_fragment:
+                continue
+            comparable_boundaries += 1
+            left_word = left_fragment.group(1)
+            right_word = right_fragment.group(1)
+            if (
+                not re.search(r"[.!?;:)]\s*$", left)
+                and (len(left_word) <= 4 or len(right_word) <= 3)
+            ):
+                row_fragmented_boundaries += 1
+                fragmented_boundaries += 1
+        if row_fragmented_boundaries >= 2 and sum(len(cell.split()) for cell in row) >= 8:
+            fragmented_prose_rows += 1
+
+    looks_like_fragmented_prose = bool(
+        fragmented_prose_rows >= 2
+        and fragmented_boundaries >= 5
+        and fragmented_boundaries / max(comparable_boundaries, 1) >= 0.25
+    )
     return bool(
         header_cells >= 2
         and useful_rows >= max(3, int(len(cleaned_rows) * 0.60))
         and occupancy >= 0.45
         and cell_word_counts
         and max(cell_word_counts) <= 40
+        and not looks_like_fragmented_prose
     )
 
 
@@ -1158,6 +1194,49 @@ def _followed_by_another_inline_definition(blocks: list[dict], index: int) -> bo
     return False
 
 
+def _split_numbered_definition_run(text: str) -> list[str]:
+    """Split one PDF block containing sequential numbered definitions.
+
+    The split is accepted only when every numbered item is independently a
+    labelled definition and the numbers are sequential. This keeps ordinary
+    numbered procedures and prose references out of this path.
+    """
+    candidates = [
+        candidate.strip()
+        for candidate in re.split(r"(?m)(?=^\s*\d+[.)]\s+[A-Z])", text or "")
+        if candidate.strip()
+    ]
+    if len(candidates) < 2:
+        return []
+    numbers = [_enumerated_item_number(candidate) for candidate in candidates]
+    if any(number is None for number in numbers):
+        return []
+    if any(right != left + 1 for left, right in zip(numbers, numbers[1:])):
+        return []
+    if any(_inline_definition_split(candidate) is None for candidate in candidates):
+        return []
+    return candidates
+
+
+def _descriptive_structural_title(title: str, content: str) -> str:
+    """Use an authored description instead of a bare ``Figure 1`` label.
+
+    PDF authors often write a structural label and its real heading on one line,
+    for example ``Figure 1 — Parts of a Fern``.  The label is useful source
+    text, but the descriptive phrase is the meaningful learning-object title.
+    """
+    if not re.fullmatch(
+        r"(?:figure|diagram|table|illustration)\s+\d+[A-Za-z]?",
+        (title or "").strip(),
+        re.IGNORECASE,
+    ):
+        return ""
+    description = re.sub(r"\s+", " ", content or "").strip()
+    if not description or len(description.split()) > 16 or re.search(r"[.!?]$", description):
+        return ""
+    return description[:255]
+
+
 def _split_embedded_heading_blocks(blocks: list[dict]) -> list[dict]:
     """Separate an all-caps heading merged with body lines in one PDF block."""
     expanded = []
@@ -1177,6 +1256,20 @@ def _split_embedded_heading_blocks(blocks: list[dict]) -> list[dict]:
             ),
         }
         lines = [line.strip() for line in normalized_text.splitlines() if line.strip()]
+        numbered_definitions = _split_numbered_definition_run(normalized_text)
+        if numbered_definitions:
+            # Keep the source run together until the section builder can see
+            # whether it belongs to a shared parent.  Without that context the
+            # three short definitions below one figure were incorrectly turned
+            # into three tiny learning objects.
+            expanded.append(
+                {
+                    **block,
+                    "numbered_definition_items": numbered_definitions,
+                }
+            )
+            continue
+
         first_line = lines[0] if lines else ""
         letters = re.sub(r"[^A-Za-z]+", "", first_line)
         heading_like = (
@@ -1937,7 +2030,24 @@ def _is_image_caption(text: str) -> bool:
 
 
 def _format_section_content(parts: list[str]) -> str:
-    return "\n".join(part.strip() for part in parts if part and part.strip()).strip()
+    normalized_parts = [
+        normalized
+        for part in parts
+        if part and part.strip()
+        for normalized in [_normalize_pdf_content_part(part)]
+        if normalized
+    ]
+    formatted_parts: list[str] = []
+    for normalized in normalized_parts:
+        if (
+            formatted_parts
+            and not re.search(r"[.!?;:]\s*$", formatted_parts[-1])
+            and re.match(r"^[a-z(]", normalized.lstrip())
+        ):
+            formatted_parts[-1] = f"{formatted_parts[-1].rstrip()} {normalized.lstrip()}"
+        else:
+            formatted_parts.append(normalized)
+    return "\n".join(formatted_parts).strip()
 
 
 def _append_pdf_text_to_learning_object(item: dict, text: str, block: dict) -> bool:
@@ -1972,6 +2082,45 @@ def _is_short_wrapped_continuation(item: dict, text: str, block: dict) -> bool:
     if item.get("source_page") and block.get("page") and item["source_page"] != block["page"]:
         return False
     return bool(re.match(r"^[a-z(]", text))
+
+
+def _short_definition_run_belongs_to_current(
+    current: dict | None,
+    definition_items: list[str],
+    source_text: str,
+    block: dict,
+) -> bool:
+    """Return whether short sibling definitions should remain one parent object.
+
+    This is based on document structure and size, not subject-specific words:
+    the definitions must be consecutive, individually short, directly follow an
+    active parent, and keep the completed object within a readable size.
+    """
+    if not current or not current.get("parts") or not (2 <= len(definition_items) <= 6):
+        return False
+    if current.get("from_inline_definition") and not current.get("from_structural_label"):
+        return False
+    if (
+        current.get("source_page") is not None
+        and block.get("page") is not None
+        and current.get("source_page") != block.get("page")
+    ):
+        return False
+
+    per_item_limit = max(
+        12,
+        int(os.getenv("LEARNING_OBJECT_SHORT_DEFINITION_MAX_WORDS", "45")),
+    )
+    combined_limit = max(
+        per_item_limit,
+        int(os.getenv("LEARNING_OBJECT_COHESIVE_SECTION_MAX_WORDS", "170")),
+    )
+    if any(len(re.findall(r"\b\w+\b", item)) > per_item_limit for item in definition_items):
+        return False
+
+    parent_text = _format_section_content(current.get("parts") or [])
+    combined_text = _format_section_content([parent_text, source_text])
+    return len(re.findall(r"\b\w+\b", combined_text)) <= combined_limit
 
 
 def build_section_learning_objects(classified_blocks: list[dict], image_descriptions: list[dict]) -> list[dict]:
@@ -2085,6 +2234,52 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             else:
                 continue
 
+        numbered_definition_items = block.get("numbered_definition_items") or []
+        if numbered_definition_items:
+            if _short_definition_run_belongs_to_current(
+                current,
+                numbered_definition_items,
+                text,
+                block,
+            ):
+                current["parts"].append(_normalize_pdf_content_part(text))
+                current["chunk_operation"] = "preserved_shared_definition_group"
+                if not current.get("source_excerpt"):
+                    current["source_excerpt"] = text
+                can_append_to_previous = True
+                continue
+
+            # Without a suitable shared parent, retain the previous behavior:
+            # each independently labelled definition becomes its own object,
+            # while its complete numbered source sentence remains untouched.
+            child_section_title = active_section_title or section_parent_title
+            if current is not None:
+                child_section_title = current.get("title") or child_section_title
+                if current.get("parts"):
+                    current["section_title"] = child_section_title
+                    _finalize_current_learning_object(current, learning_objects)
+                current = None
+            for definition in numbered_definition_items:
+                split_definition = _inline_definition_split(definition)
+                if not split_definition:
+                    continue
+                definition_title, _definition_content = split_definition
+                learning_objects.append(
+                    {
+                        "order": len(learning_objects),
+                        "section_title": child_section_title,
+                        "title": definition_title,
+                        "type": "lesson_content",
+                        "content": _normalize_pdf_content_part(definition),
+                        "source": "teacher_pdf",
+                        "source_page": block.get("page"),
+                        "source_block_id": block.get("block_id"),
+                        "source_excerpt": definition,
+                    }
+                )
+            can_append_to_previous = True
+            continue
+
         item_number = _enumerated_item_number(text)
         expected_item_number = current.get("expected_enumerated_item") if current else None
         starts_enumerated_list = bool(
@@ -2112,7 +2307,20 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             inline_definition = _definition_split(text)
         if inline_definition:
             title, content = inline_definition
-            if current is not None and _current_concept_accepts_supporting_component(current, title):
+            structural_title = _descriptive_structural_title(title, content)
+            if structural_title:
+                title = structural_title
+                # Copying a title must not delete it from the source content.
+                # Retain the complete authored structural-heading line.
+                content = _normalize_pdf_content_part(text)
+            preserve_definition_source = bool(block.get("preserve_definition_source"))
+            if preserve_definition_source:
+                content = _normalize_pdf_content_part(text)
+            if (
+                not preserve_definition_source
+                and current is not None
+                and _current_concept_accepts_supporting_component(current, title)
+            ):
                 current["parts"].append(f"{title}:\n{content}")
                 current["has_supporting_components"] = True
                 if not current.get("source_excerpt"):
@@ -2120,6 +2328,13 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
                 can_append_to_previous = True
                 continue
             followed_by_sibling = _followed_by_another_inline_definition(classified_blocks, index)
+            if structural_title:
+                # ``Figure 1 — Descriptive heading`` opens a parent object; a
+                # numbered definition run below it consists of children, not
+                # peer definitions of the bare Figure label.
+                followed_by_sibling = False
+                if current is not None and current.get("title"):
+                    active_section_title = current["title"]
             if current is not None:
                 if followed_by_sibling:
                     if current.get("from_inline_definition"):
@@ -2158,7 +2373,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
                 "source_block_id": block.get("block_id"),
                 "source_excerpt": text,
             }
-            if followed_by_sibling or active_section_title:
+            if (followed_by_sibling or active_section_title) and not structural_title:
                 learning_objects.append(inline_item)
             else:
                 current = {
@@ -2166,6 +2381,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
                     "content": "",
                     "parts": [content],
                     "from_inline_definition": True,
+                    "from_structural_label": bool(structural_title),
                 }
                 can_append_to_previous = True
             continue
@@ -2329,6 +2545,14 @@ def _learning_object_word_count(item: dict) -> int:
     return len(re.findall(r"\b[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)?\b", item.get("content") or ""))
 
 
+def _starts_authored_list_item(text: str) -> bool:
+    stripped = (text or "").lstrip()
+    return bool(
+        _enumerated_item_number(stripped) is not None
+        or re.match(r"^(?:[\u2022\u25cf\u25aa\u25e6\-*])\s+\S", stripped)
+    )
+
+
 def _learning_object_units(content: str) -> list[str]:
     """Reconstruct visual wraps while retaining authored list boundaries."""
     paragraphs = []
@@ -2340,6 +2564,19 @@ def _learning_object_units(content: str) -> list[str]:
                 paragraphs.append(" ".join(current_lines))
                 current_lines = []
             continue
+
+        if current_lines:
+            previous_line = current_lines[-1]
+            current_starts_list_item = _starts_authored_list_item(current_lines[0])
+            next_starts_list_item = _starts_authored_list_item(line)
+            # A list marker starts a new authored unit only after another list
+            # item is already in progress. PDF visual wrapping can place a
+            # reference number at the start of the next line, as in
+            # ``Figure\n1. Mosses ...``. Flushing every line that begins with
+            # ``1.`` would turn a source wrap into a false content boundary.
+            if current_starts_list_item and next_starts_list_item:
+                paragraphs.append(" ".join(current_lines))
+                current_lines = []
 
         if current_lines:
             previous_line = current_lines[-1]
@@ -2361,7 +2598,6 @@ def _learning_object_units(content: str) -> list[str]:
             re.search(r"[.!?][\"')\]]?$", line)
             or line.endswith(":")
             or _is_symbolic_relation_text(line)
-            or _enumerated_item_number(line) is not None
         ):
             paragraphs.append(" ".join(current_lines))
             current_lines = []
@@ -2374,6 +2610,55 @@ def _learning_object_units(content: str) -> list[str]:
         sentences = re.split(r"(?<!\d\.)(?<=[.!?])\s+(?=[A-Z0-9])", paragraph)
         units.extend(sentence.strip() for sentence in sentences if sentence.strip())
     return units
+
+
+def _normalize_pdf_content_part(content: str) -> str:
+    """Remove visual PDF wraps while retaining authored content structure.
+
+    PDF lines reflect page width, not paragraph intent. Ordinary prose should
+    therefore flow naturally at the web page's width. Bullets, numbered items,
+    labels, blank-line paragraphs, and short label-led lists keep their
+    structural line breaks.
+    """
+    normalized_paragraphs: list[str] = []
+    for raw_paragraph in re.split(r"\n\s*\n", content or ""):
+        units = _learning_object_units(raw_paragraph)
+        if not units:
+            continue
+
+        output_lines: list[str] = []
+        prose_units: list[str] = []
+        follows_label = False
+
+        def flush_prose() -> None:
+            if prose_units:
+                output_lines.append(" ".join(prose_units))
+                prose_units.clear()
+
+        for unit in units:
+            stripped = unit.strip()
+            if not stripped:
+                continue
+            is_label = stripped.endswith(":") and len(stripped.split()) <= 10
+            is_list_item = _starts_authored_list_item(stripped)
+            is_short_labelled_entry = bool(
+                follows_label
+                and len(stripped.split()) <= 8
+                and not re.search(r"[.!?][\"')\]]?$", stripped)
+            )
+            if is_label or is_list_item or is_short_labelled_entry:
+                flush_prose()
+                output_lines.append(stripped)
+                follows_label = is_label or (follows_label and is_short_labelled_entry)
+                continue
+            prose_units.append(stripped)
+            follows_label = False
+
+        flush_prose()
+        if output_lines:
+            normalized_paragraphs.append("\n".join(output_lines))
+
+    return "\n\n".join(normalized_paragraphs).strip()
 
 
 def _cohesive_learning_object_units(content: str) -> list[str]:
@@ -2468,7 +2753,20 @@ def _split_oversized_learning_object(
     target_words: int,
     maximum_words: int,
 ) -> list[dict]:
-    if item.get("type") != "lesson_content" or _learning_object_word_count(item) <= maximum_words:
+    word_count = _learning_object_word_count(item)
+    cohesive_section_limit = max(
+        maximum_words,
+        int(os.getenv("LEARNING_OBJECT_COHESIVE_SECTION_MAX_WORDS", "170")),
+    )
+    preserves_shared_definition_group = (
+        item.get("chunk_operation") == "preserved_shared_definition_group"
+        and word_count <= cohesive_section_limit
+    )
+    if (
+        item.get("type") != "lesson_content"
+        or word_count <= maximum_words
+        or preserves_shared_definition_group
+    ):
         return [item]
 
     units = _cohesive_learning_object_units(item.get("content") or "")

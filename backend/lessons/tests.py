@@ -47,10 +47,13 @@ from .services.content_generator import (
     balance_learning_object_chunks,
     _learning_object_word_count,
     _borderless_table_regions,
+    _format_section_content,
     _instructional_table_rows,
     _merge_adjacent_embedded_image_fragments,
     _merge_adjacent_table_fragments,
+    _normalize_pdf_content_part,
     _plausible_table_bbox,
+    _split_numbered_definition_run,
     describe_pdf_images,
     exclude_text_blocks_inside_tables,
     extract_meaningful_pdf_images,
@@ -2822,6 +2825,62 @@ class LearningObjectPreservationTests(TestCase):
         self.assertEqual(learning_objects[0]["content"], "")
         self.assertTrue(learning_objects[0]["is_table"])
 
+    def test_justified_prose_split_across_fake_columns_is_not_a_table(self):
+        rows = [
+            [
+                "2. Spore d",
+                "ispersal:",
+                "When spores",
+                "are re",
+                "ady, the spor",
+                "angia ope",
+                "n and release th",
+                "em. Wind,",
+            ],
+            [
+                "water,",
+                "or animals",
+                "carry the sp",
+                "ores aw",
+                "ay from the",
+                "parent pl",
+                "ant.",
+                "",
+            ],
+            [
+                "3. Germin",
+                "ation and",
+                "growth: If a",
+                "spore l",
+                "ands on a mo",
+                "ist, shad",
+                "ed surface, it can",
+                "germinate",
+            ],
+            [
+                "and gro",
+                "w into a n",
+                "ew, tiny plan",
+                "t, whic",
+                "h eventually",
+                "develops",
+                "into a mature fe",
+                "rn.",
+            ],
+        ]
+
+        self.assertFalse(_instructional_table_rows(rows))
+
+    def test_multi_column_instructional_table_is_not_rejected_as_fragmented_prose(self):
+        rows = [
+            ["Property", "Fern", "Moss", "Flowering plant"],
+            ["Reproductive unit", "Spore", "Spore", "Seed"],
+            ["Needs pollination", "No", "No", "Yes"],
+            ["Common habitat", "Moist shade", "Damp ground", "Many habitats"],
+        ]
+
+        self.assertTrue(_instructional_table_rows(rows))
+
     def test_table_image_is_ordered_at_its_pdf_position(self):
         blocks = [
             {
@@ -3046,6 +3105,187 @@ class LearningObjectPreservationTests(TestCase):
         self.assertFalse(any(chunk.rstrip().endswith("into") for chunk in chunks))
         self.assertFalse(any(chunk.lstrip().startswith("that holds it") for chunk in chunks))
         self.assertFalse(any(chunk.lstrip().startswith("a bowl") for chunk in chunks))
+
+    def test_visual_pdf_line_wraps_are_removed_from_saved_prose(self):
+        content = (
+            "Flowering plants rely on pollination - pollen must travel from the anther to the stigma before\n"
+            "fertilization can occur, eventually producing a seed inside a fruit. Non-flowering plants such as\n"
+            "ferns skip pollination entirely: spores are released directly from the sporangium and can grow\n"
+            "into a new plant on their own, without needing a partner flower. Both strategies achieve the\n"
+            "same goal - producing new plants - but through different structures and processes."
+        )
+
+        normalized = _normalize_pdf_content_part(content)
+
+        self.assertNotIn("\n", normalized)
+        self.assertIn("stigma before fertilization can occur", normalized)
+        self.assertIn("plants such as ferns skip pollination", normalized)
+        self.assertIn("strategies achieve the same goal", normalized)
+
+    def test_authored_lists_keep_their_line_structure_during_wrap_cleanup(self):
+        content = (
+            "Key stages:\n"
+            "1. Spore formation begins in the sporangium\n"
+            "and produces many spores.\n"
+            "2. Spore dispersal carries the spores away\n"
+            "from the parent plant."
+        )
+
+        normalized = _normalize_pdf_content_part(content)
+
+        self.assertEqual(
+            normalized,
+            "Key stages:\n"
+            "1. Spore formation begins in the sporangium and produces many spores.\n"
+            "2. Spore dispersal carries the spores away from the parent plant.",
+        )
+
+    def test_lowercase_continuation_in_adjacent_pdf_block_is_rejoined(self):
+        normalized = _format_section_content(
+            [
+                "When spores are ready, the sporangia open and release them. Wind,",
+                "water, or animals carry the spores away from the parent plant.",
+            ]
+        )
+
+        self.assertEqual(
+            normalized,
+            "When spores are ready, the sporangia open and release them. "
+            "Wind, water, or animals carry the spores away from the parent plant.",
+        )
+
+    def test_numbered_definition_titles_are_copied_without_removing_source_content(self):
+        source = (
+            "1. Sporangium (spore case) - a small case, usually grouped in clusters called sori, that\n"
+            "produces and holds spores until they are ready for release.\n"
+            "2. Spores - tiny reproductive cells, light enough to be carried away by wind, water, or passing\n"
+            "animals.\n"
+            "3. Rhizoids - thread-like structures that anchor a young fern plant to a surface and absorb\n"
+            "water, similar in function to roots."
+        )
+        blocks = [
+            {
+                "block_id": 12,
+                "page": 1,
+                "category": "lesson_content",
+                "include_in_narration": True,
+                "line_count": 6,
+                "text": source,
+            }
+        ]
+
+        split_items = _split_numbered_definition_run(source)
+        learning_objects = build_section_learning_objects(blocks, [])
+
+        self.assertEqual(len(split_items), 3)
+        self.assertEqual(
+            [item["title"] for item in learning_objects],
+            ["Sporangium (spore case)", "Spores", "Rhizoids"],
+        )
+        self.assertEqual(
+            learning_objects[0]["content"],
+            "1. Sporangium (spore case) - a small case, usually grouped in clusters called sori, "
+            "that produces and holds spores until they are ready for release.",
+        )
+        self.assertEqual(
+            learning_objects[1]["content"],
+            "2. Spores - tiny reproductive cells, light enough to be carried away by wind, water, "
+            "or passing animals.",
+        )
+        self.assertEqual(
+            learning_objects[2]["content"],
+            "3. Rhizoids - thread-like structures that anchor a young fern plant to a surface and "
+            "absorb water, similar in function to roots.",
+        )
+
+    def test_short_numbered_definitions_stay_with_their_shared_parent(self):
+        definition_source = (
+            "1. Sporangium (spore case) - a small case that produces and holds spores.\n"
+            "2. Spores - tiny reproductive cells carried by wind, water, or animals.\n"
+            "3. Rhizoids - thread-like structures that anchor a young fern and absorb water."
+        )
+        blocks = [
+            {
+                "block_id": 10,
+                "page": 1,
+                "category": "needs_review",
+                "include_in_narration": True,
+                "line_count": 1,
+                "text": "Figure 1 - Text Description of a Fern's Reproductive Structures",
+            },
+            {
+                "block_id": 11,
+                "page": 1,
+                "category": "lesson_content",
+                "include_in_narration": True,
+                "line_count": 2,
+                "text": "A mature fern frond has sori, sporangia, spores, and rhizoids.",
+            },
+            {
+                "block_id": 12,
+                "page": 1,
+                "category": "lesson_content",
+                "include_in_narration": True,
+                "line_count": 3,
+                "text": definition_source,
+            },
+        ]
+
+        learning_objects = build_section_learning_objects(blocks, [])
+
+        self.assertEqual(len(learning_objects), 1)
+        self.assertEqual(
+            learning_objects[0]["title"],
+            "Text Description of a Fern's Reproductive Structures",
+        )
+        self.assertIn(
+            "Figure 1 - Text Description of a Fern's Reproductive Structures",
+            learning_objects[0]["content"],
+        )
+        self.assertIn("1. Sporangium (spore case)", learning_objects[0]["content"])
+        self.assertIn("2. Spores", learning_objects[0]["content"])
+        self.assertIn("3. Rhizoids", learning_objects[0]["content"])
+
+        balanced = balance_learning_object_chunks(learning_objects)
+        self.assertEqual(len(balanced), 1)
+        self.assertNotIn("(Part ", balanced[0]["title"])
+
+    @patch.dict(
+        "os.environ",
+        {
+            "LEARNING_OBJECT_MAX_WORDS": "60",
+            "LEARNING_OBJECT_HARD_MAX_WORDS": "80",
+        },
+    )
+    def test_wrapped_figure_number_does_not_cut_an_example_mid_sentence(self):
+        content = (
+            "Ferns are common in shaded, moist areas across the Philippines, including pako (vegetable\n"
+            "fern), which many families recognize from local markets and home gardens. If you look under a\n"
+            "mature pako frond, you can often see small brown dots - these are the sori described in Figure\n"
+            "1. Mosses are another familiar non-flowering plant; they grow low to the ground on damp soil,\n"
+            "rocks, or tree trunks, and release their spores from small capsules that rise above the leafy\n"
+            "moss mat. In both cases, spores must land somewhere moist and shaded before they can grow\n"
+            "into a new plant, which is why ferns and mosses are so common in rainy, shaded environments."
+        )
+
+        balanced = balance_learning_object_chunks(
+            [{"type": "lesson_content", "title": "Everyday Examples", "content": content}]
+        )
+        chunks = [item["content"] for item in balanced]
+        reconstructed = "\n".join(chunks)
+        normalized = " ".join(reconstructed.split())
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(balanced[0]["title"], "Everyday Examples")
+        self.assertIn("sori described in Figure 1.", normalized)
+        self.assertIn(
+            "they grow low to the ground on damp soil, rocks, or tree trunks, "
+            "and release their spores from small capsules that rise above the leafy moss mat.",
+            normalized,
+        )
+        self.assertFalse(any(chunk.rstrip().endswith("damp soil,") for chunk in chunks))
+        self.assertFalse(any(chunk.lstrip().startswith("rocks, or tree trunks") for chunk in chunks))
+        self.assertTrue(all(chunk.rstrip().endswith((".", "!", "?", '")', "')", "]")) for chunk in chunks))
 
     @patch.dict("os.environ", {"LEARNING_OBJECT_MAX_WORDS": "12"})
     def test_short_authored_list_lines_remain_separate_when_chunked(self):
@@ -3509,7 +3749,7 @@ class LearningObjectPreservationTests(TestCase):
         self.assertNotIn("\uf06c", str(learning_objects))
         self.assertEqual(
             learning_objects[1]["content"],
-            "Solids and liquids have definite volume; gases expand to fill available\nspace.",
+            "Solids and liquids have definite volume; gases expand to fill available space.",
         )
 
     def test_non_instructional_front_matter_does_not_create_learning_objects(self):
@@ -3814,7 +4054,7 @@ class LearningObjectPreservationTests(TestCase):
         self.assertNotIn("Relate observable properties", all_text)
         self.assertEqual(
             by_title["Solid"],
-            "A solid has a definite shape. Its particles are packed\n"
+            "A solid has a definite shape. Its particles are packed "
             "closely together and mainly vibrate in fixed positions.\n"
             "Examples include a stone, pencil, wooden block, and ice cube.",
         )
