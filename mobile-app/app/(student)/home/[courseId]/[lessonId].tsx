@@ -38,7 +38,7 @@ type Phase = "audio" | "questions" | "done";
 // than a lesson's whole playlist. These adapt it to the two shapes this
 // screen already knows how to play, so nothing below needs a second render
 // path — only where a step transitions to the next one differs.
-// See backend/adaptive_portal/PATH_MODE.md for the ruling this mirrors.
+// See backend/adaptive/PATH_MODE.md for the ruling this mirrors.
 
 function stepTrack(step: ApiStep, variant: Variant): ApiTrack {
   const version = step.versions[variant] ?? step.versions.normal;

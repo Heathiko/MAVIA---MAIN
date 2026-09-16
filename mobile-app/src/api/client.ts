@@ -163,7 +163,7 @@ export type ApiTrack = {
 // concepts in prerequisite order instead of a flat question list. Present
 // only once a topic has been published that way; a lesson/course otherwise
 // stays on the plain question list above (ApiLesson.questions).
-// See backend/adaptive_portal/PATH_MODE.md for the full ruling this mirrors.
+// See backend/adaptive/PATH_MODE.md for the full ruling this mirrors.
 
 export type Variant = "normal" | "simplified" | "elaborated";
 
