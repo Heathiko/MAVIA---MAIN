@@ -13,7 +13,11 @@ from lessons.models import (
 )
 
 from .models import LessonVariant
-from .version_assignment import assign_group_versions, choose_representative
+from .version_assignment import (
+    assign_group_versions,
+    choose_representative,
+    clean_group_label,
+)
 
 
 SHORT = "Solid has a fixed shape. It holds its form. It does not flow."
@@ -53,6 +57,69 @@ class VersionAssignmentTests(TestCase):
         first = self._object(self._material("PDF one", 0), SHORT)
         second = self._object(self._material("PDF two", 5), LONG)
         self.assertEqual(choose_representative([second, first]), first)
+
+    def test_group_label_cleaner_removes_only_structural_title_markers(self):
+        self.assertEqual(clean_group_label("3.1 Matter (Part 1 of 2)"), "Matter")
+        self.assertEqual(clean_group_label("Lesson 4: Properties of Gases"), "Properties of Gases")
+        self.assertEqual(clean_group_label("3D Shapes"), "3D Shapes")
+
+    def test_singleton_uses_its_cleaned_title_as_group_label(self):
+        self._object(
+            self._material("PDF one", 0),
+            SHORT,
+            title="2.1 Solid (Part 1 of 3)",
+        )
+
+        assign_group_versions(self.group)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.label, "Solid")
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_group_uses_cleaned_llm_selected_normal_title(self, classify):
+        first = self._object(
+            self._material("PDF one", 0), SHORT, title="1. Solid (Part 1 of 2)"
+        )
+        second = self._object(
+            self._material("PDF two", 5), LONG, title="2. Properties of Solids (Part 2 of 2)"
+        )
+        classify.return_value = {
+            first.id: {"slot": "SIMPLIFIED", "confidence": 0.96, "reason": "Shorter."},
+            second.id: {"slot": "ORIGINAL", "confidence": 0.94, "reason": "Balanced."},
+        }
+
+        assign_group_versions(self.group, use_llm=True)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.label, "Properties of Solids")
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_teacher_group_label_is_not_overwritten(self, classify):
+        self.group.label = "Teacher's concept name"
+        self.group.version_selection = {"label_locked": True}
+        self.group.save(update_fields=["label", "version_selection"])
+        first = self._object(self._material("PDF one", 0), SHORT, title="Solid Part 1 of 2")
+        second = self._object(self._material("PDF two", 5), LONG, title="Solid Part 2 of 2")
+        classify.return_value = {
+            first.id: {"slot": "ORIGINAL", "confidence": 0.95, "reason": "Balanced."},
+            second.id: {"slot": "ELABORATED", "confidence": 0.95, "reason": "Longer."},
+        }
+
+        assign_group_versions(self.group, use_llm=True)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.label, "Teacher's concept name")
+
+    def test_legacy_custom_group_label_is_inferred_as_teacher_written(self):
+        self.group.label = "States of Matter"
+        self.group.save(update_fields=["label"])
+        self._object(self._material("PDF one", 0), SHORT, title="Solid (Part 1 of 1)")
+
+        assign_group_versions(self.group)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.label, "States of Matter")
+        self.assertTrue(self.group.version_selection["label_locked"])
 
     @patch("course.version_assignment.classify_group_versions")
     def test_llm_and_readability_agreement_is_assigned_with_provenance(self, classify):

@@ -3004,6 +3004,7 @@ function LearningObjectConnections({
           busyAction={busyAction}
           onReviewStepChange={onReviewStepChange}
           onResourcesChange={setResources}
+          onCourseChange={onCourseChange}
           onError={onError}
           onMessage={onMessage}
         />
@@ -3024,6 +3025,7 @@ function LearningPathReviewPanel({
   busyAction,
   onReviewStepChange,
   onResourcesChange,
+  onCourseChange,
   onError,
   onMessage,
 }) {
@@ -3120,10 +3122,18 @@ function LearningPathReviewPanel({
         } else {
           onMessage("Published.");
         }
-        try {
-          onResourcesChange(await fetchLearningResources(courseId, topicId));
-        } catch {
-          // The run is what matters; a stale panel is recoverable by reloading.
+        const [resourcesResult, courseResult] = await Promise.allSettled([
+          fetchLearningResources(courseId, topicId),
+          fetchCourse(courseId),
+        ]);
+        if (resourcesResult.status === "fulfilled") {
+          onResourcesChange(resourcesResult.value);
+        }
+        if (courseResult.status === "fulfilled") {
+          // Publishing updates the topic inside the course hierarchy. Refresh
+          // that hierarchy so the button and last-published timestamp do not
+          // keep showing the pre-publish state after the progress dialog closes.
+          onCourseChange(courseResult.value);
         }
         return;
       }

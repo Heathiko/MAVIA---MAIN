@@ -488,13 +488,19 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             None,
         )
         if target_group is None:
+            requested_label = str(request.data.get("label") or "").strip()
             target_group = LearningObjectGroup.objects.create(
                 outline_node=node,
-                label=(request.data.get("label") or learning_objects[0].title)[:255],
+                label=(requested_label or learning_objects[0].title)[:255],
+                version_selection={"label_locked": True} if requested_label else {},
             )
         elif request.data.get("label"):
             target_group.label = str(request.data["label"]).strip()[:255]
-            target_group.save(update_fields=["label"])
+            target_group.version_selection = {
+                **(target_group.version_selection or {}),
+                "label_locked": True,
+            }
+            target_group.save(update_fields=["label", "version_selection"])
 
         old_group_ids = {
             item.group_id

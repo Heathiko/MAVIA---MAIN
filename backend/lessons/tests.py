@@ -1311,6 +1311,7 @@ class LearningResourceRelationshipTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(first.group_id, second.group_id)
         self.assertEqual(first.group.label, "Shape concept")
+        self.assertTrue(first.group.version_selection["label_locked"])
 
     def test_teacher_can_accept_a_pending_match_suggestion(self):
         first_material = self._material("first")

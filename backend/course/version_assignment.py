@@ -8,6 +8,7 @@ any source version after the automatic assignment.
 
 import logging
 import hashlib
+import re
 
 from django.conf import settings
 from django.db import models, transaction
@@ -20,6 +21,56 @@ from .version_classifier import VersionClassificationError, classify_group_versi
 logger = logging.getLogger(__name__)
 
 PRIMARY_SLOTS = ("SIMPLIFIED", "ELABORATED")
+
+
+_PART_SUFFIX = re.compile(
+    r"\s*[\[(]?\s*part\s+\d+\s*(?:of|/)\s*\d+\s*[\])]?\s*$",
+    re.IGNORECASE,
+)
+_LEADING_SECTION_NUMBER = re.compile(
+    r"^\s*(?:(?:unit|lesson|chapter|section|topic)\s+)?"
+    r"\d+(?:\.\d+)*(?:\s*[.):-]\s*|\s+)",
+    re.IGNORECASE,
+)
+
+
+def clean_group_label(title):
+    """Remove extraction structure without rewriting the teacher's wording."""
+    original = (title or "").strip()
+    cleaned = _LEADING_SECTION_NUMBER.sub("", original)
+    cleaned = _PART_SUFFIX.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -–—:;,.()[]")
+    return cleaned or original
+
+
+def _sync_automatic_group_label(group, representative, members=None):
+    """Name an unlocked concept after its Normal (or temporary fallback)."""
+    selection = group.version_selection or {}
+    if representative is None or selection.get("label_locked"):
+        return
+    # Labels saved before label provenance existed may have been supplied by a
+    # teacher. Automatic labels always came from one member's title, so an
+    # existing label unlike every raw/cleaned member title is safest to treat
+    # as manual rather than overwrite on the first classification after this
+    # upgrade.
+    existing = (group.label or "").strip().casefold()
+    group_members = list(members) if members is not None else list(
+        group.learning_objects.only("title")
+    )
+    automatic_labels = {
+        candidate.casefold()
+        for item in group_members
+        for candidate in ((item.title or "").strip(), clean_group_label(item.title))
+        if candidate
+    }
+    if existing and existing not in automatic_labels:
+        group.version_selection = {**selection, "label_locked": True}
+        group.save(update_fields=["version_selection"])
+        return
+    label = clean_group_label(representative.title)[:255]
+    if label and group.label != label:
+        group.label = label
+        group.save(update_fields=["label"])
 
 
 def choose_representative(members):
@@ -43,6 +94,9 @@ def assign_group_versions(group, *, use_llm=False):
         if (item.content or "").strip()
     ]
     if len(members) < 2:
+        _sync_automatic_group_label(
+            group, members[0] if members else None, members=members
+        )
         return {
             "representative_id": members[0].id if members else None,
             "original_selected": bool(members),
@@ -251,6 +305,11 @@ def assign_group_versions(group, *, use_llm=False):
         group.save(update_fields=["version_selection"])
         classification_complete = True
 
+    # Before classification this is the stable first-upload fallback. Once
+    # Gemma selects the Normal source, the same rule automatically replaces it
+    # with that source's cleaned title. Explicit teacher labels stay locked.
+    _sync_automatic_group_label(group, representative, members=members)
+
     return {
         "representative_id": representative.id,
         "original_selected": original_selected,
@@ -393,6 +452,7 @@ def assign_source_as_representative(group, source):
     })
     group.version_selection = selection
     group.save(update_fields=["version_selection"])
+    _sync_automatic_group_label(group, source)
     return source
 
 
@@ -550,7 +610,10 @@ def release_from_group(learning_object, companions):
             represented_by=learning_object,
         ).update(represented_by=None)
         if group is not None:
-            group.version_selection = {}
+            label_locked = bool(
+                (group.version_selection or {}).get("label_locked")
+            )
+            group.version_selection = {"label_locked": True} if label_locked else {}
             group.save(update_fields=["version_selection"])
         was_original = True
     else:
