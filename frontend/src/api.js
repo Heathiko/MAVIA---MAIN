@@ -202,6 +202,17 @@ export function updateLearningObject(courseId, materialId, objectId, data) {
   );
 }
 
+export function reorderLearningObjects(courseId, materialId, objectIds) {
+  return request(
+    `/courses/${courseId}/materials/${materialId}/reorder-learning-objects/`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ object_ids: objectIds }),
+    }
+  );
+}
+
 export function deleteLearningObject(courseId, materialId, objectId) {
   return request(
     `/courses/${courseId}/materials/${materialId}/learning-objects/${objectId}/`,

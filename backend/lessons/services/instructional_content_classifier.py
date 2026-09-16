@@ -383,7 +383,18 @@ def extract_pdf_text_blocks(file_path: str) -> list[dict]:
     document = fitz.open(file_path)
     try:
         for page_index, page in enumerate(document, start=1):
-            page_dict = page.get_text("dict")
+            # PDF storage order is not necessarily visual reading order. A
+            # writer can draw a later section first, then go back and draw the
+            # bullets that visually sit under an earlier heading. Following
+            # that storage order loses the heading -> child relationship.
+            # PyMuPDF's sorted dictionary restores top-to-bottom/left-to-right
+            # order before the structural classifier sees bullets, numbering,
+            # or labelled definitions. The fallback keeps light-weight test
+            # doubles and older compatible page implementations working.
+            try:
+                page_dict = page.get_text("dict", sort=True)
+            except TypeError:
+                page_dict = page.get_text("dict")
             figure_regions = find_captioned_figure_regions(page, page_dict)
             page_rect = getattr(page, "rect", None)
             for block_index, block in enumerate(page_dict.get("blocks", [])):

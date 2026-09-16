@@ -2845,6 +2845,39 @@ button {
 .learning-object-card {
   cursor: pointer;
   text-align: left;
+  position: relative;
+}
+
+.learning-object-card[draggable="true"] {
+  cursor: grab;
+}
+
+.learning-object-card[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.learning-object-card.is-dragging {
+  opacity: 0.45;
+}
+
+.learning-object-card.is-drag-over-before::before,
+.learning-object-card.is-drag-over-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.learning-object-card.is-drag-over-before::before {
+  top: -0.55rem;
+}
+
+.learning-object-card.is-drag-over-after::after {
+  bottom: -0.55rem;
 }
 
 .learning-object-card.is-section-child {
@@ -2891,6 +2924,20 @@ button {
   color: var(--accent);
   background: var(--accent-soft);
   font-size: 0.85rem;
+}
+
+.learning-object-title .learning-object-drag-handle {
+  width: auto;
+  height: auto;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  background: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .image-object-badge {

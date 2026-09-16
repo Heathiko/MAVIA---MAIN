@@ -2,6 +2,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import fitz
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
@@ -44,6 +45,7 @@ from .services.content_generator import (
     build_narration_script_from_learning_objects,
     build_section_learning_objects,
     balance_learning_object_chunks,
+    _learning_object_word_count,
     _borderless_table_regions,
     _instructional_table_rows,
     _merge_adjacent_embedded_image_fragments,
@@ -1536,6 +1538,63 @@ class LearningResourceRelationshipTests(TestCase):
 
 
 class ConfirmLearningObjectsTests(TestCase):
+    def test_learning_objects_can_be_reordered_before_confirmation(self):
+        client = authenticated_api_client()
+        course = CourseGroup.objects.create(title="Science 7")
+        material = LearningMaterial.objects.create(
+            course=course,
+            title="Matter PDF",
+            pdf_file=SimpleUploadedFile("matter.pdf", b"%PDF-1.4"),
+            generated_json={"learning_objects_confirmed": True},
+            status=LearningMaterial.Status.COMPLETED,
+        )
+        first = LearningObject.objects.create(material=material, title="First", content="First concept.", order=0)
+        second = LearningObject.objects.create(material=material, title="Second", content="Second concept.", order=1)
+        third = LearningObject.objects.create(material=material, title="Third", content="Third concept.", order=2)
+
+        response = client.post(
+            f"/api/courses/{course.id}/materials/{material.id}/reorder-learning-objects/",
+            {"object_ids": [third.id, first.id, second.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        material.refresh_from_db()
+        self.assertEqual(
+            list(material.learning_objects.values_list("id", flat=True)),
+            [third.id, first.id, second.id],
+        )
+        self.assertEqual(
+            [item["learning_object_id"] for item in material.generated_json["learning_objects"]],
+            [third.id, first.id, second.id],
+        )
+        self.assertFalse(material.generated_json["learning_objects_confirmed"])
+
+    def test_reorder_rejects_an_incomplete_learning_object_list(self):
+        client = authenticated_api_client()
+        course = CourseGroup.objects.create(title="Science 7")
+        material = LearningMaterial.objects.create(
+            course=course,
+            title="Matter PDF",
+            pdf_file=SimpleUploadedFile("matter.pdf", b"%PDF-1.4"),
+            generated_json={},
+            status=LearningMaterial.Status.COMPLETED,
+        )
+        first = LearningObject.objects.create(material=material, title="First", content="First concept.", order=0)
+        second = LearningObject.objects.create(material=material, title="Second", content="Second concept.", order=1)
+
+        response = client.post(
+            f"/api/courses/{course.id}/materials/{material.id}/reorder-learning-objects/",
+            {"object_ids": [second.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            list(material.learning_objects.values_list("id", flat=True)),
+            [first.id, second.id],
+        )
+
     def test_learning_object_edit_updates_database_and_material_snapshot(self):
         client = authenticated_api_client()
         course = CourseGroup.objects.create(title="Science 7")
@@ -2908,6 +2967,57 @@ class LearningObjectPreservationTests(TestCase):
             content,
         )
 
+    @patch.dict(
+        "os.environ",
+        {
+            "LEARNING_OBJECT_MAX_WORDS": "60",
+            "LEARNING_OBJECT_HARD_MAX_WORDS": "80",
+        },
+    )
+    def test_coherent_object_above_target_but_below_hard_limit_stays_whole(self):
+        content = (
+            "Flowering plants reproduce sexually, which means a new plant begins when a male sex "
+            "cell joins a female sex cell. "
+            "Most of this activity happens inside the flower, which is the reproductive part of the plant. "
+            "A single flower can contain both male and female parts, and these parts work together so that "
+            "seeds can form. "
+            "Seeds later grow into new plants, allowing the species to continue."
+        )
+
+        balanced = balance_learning_object_chunks(
+            [{"type": "lesson_content", "title": "Reproduction in Flowering Plants", "content": content}]
+        )
+
+        self.assertGreater(_learning_object_word_count(balanced[0]), 60)
+        self.assertEqual(len(balanced), 1)
+        self.assertEqual(balanced[0]["title"], "Reproduction in Flowering Plants")
+
+    @patch.dict(
+        "os.environ",
+        {
+            "LEARNING_OBJECT_MAX_WORDS": "20",
+            "LEARNING_OBJECT_HARD_MAX_WORDS": "30",
+        },
+    )
+    def test_required_split_balances_all_parts_instead_of_leaving_a_tiny_tail(self):
+        sentences = [
+            "Alpha concept has enough supporting words to form one complete authored sentence.",
+            "Beta concept also has enough supporting words to form another complete sentence.",
+            "Gamma concept provides another complete explanation with useful supporting words.",
+            "The final idea has useful context too.",
+        ]
+        content = " ".join(sentences)
+
+        balanced = balance_learning_object_chunks(
+            [{"type": "lesson_content", "title": "Balanced concept", "content": content}]
+        )
+        sizes = [_learning_object_word_count(item) for item in balanced]
+
+        self.assertGreater(len(balanced), 1)
+        self.assertEqual("\n".join(item["content"] for item in balanced), "\n".join(sentences))
+        self.assertGreaterEqual(min(sizes), 10)
+        self.assertLessEqual(max(sizes), 30)
+
     @patch.dict("os.environ", {"LEARNING_OBJECT_MAX_WORDS": "14"})
     def test_visual_pdf_line_wrap_never_becomes_a_chunk_boundary(self):
         content = (
@@ -3549,6 +3659,44 @@ class LearningObjectPreservationTests(TestCase):
         self.assertEqual(blocks[0]["text"], "The Sun")
         self.assertEqual(blocks[0]["text_color"], 16711680)
 
+    def test_extract_pdf_text_blocks_uses_visual_reading_order(self):
+        """PDF object order must not put a later section before earlier bullets."""
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
+            path = handle.name
+        try:
+            document = fitz.open()
+            page = document.new_page(width=595, height=842)
+            # Insert the lower heading first to reproduce a PDF whose internal
+            # object order disagrees with what the teacher sees on the page.
+            page.insert_text((60, 300), "Everyday Examples", fontsize=16)
+            page.insert_text((60, 100), "How Flowering Plants Reproduce", fontsize=16)
+            page.insert_text(
+                (80, 140),
+                "Pollination: Pollen is carried from the anther to the stigma.",
+                fontsize=10,
+            )
+            page.insert_text(
+                (80, 180),
+                "Fertilization: A male sex cell joins the egg cell.",
+                fontsize=10,
+            )
+            document.save(path)
+            document.close()
+
+            blocks = extract_pdf_text_blocks(path)
+
+            self.assertEqual(
+                [block["text"] for block in blocks],
+                [
+                    "How Flowering Plants Reproduce",
+                    "Pollination: Pollen is carried from the anther to the stigma.",
+                    "Fertilization: A male sex cell joins the egg cell.",
+                    "Everyday Examples",
+                ],
+            )
+        finally:
+            Path(path).unlink(missing_ok=True)
+
     def test_transcribed_page_text_becomes_learning_blocks(self):
         blocks = _text_blocks_from_transcription(
             "Page 1\nWhat is Matter?\nMatter has mass and occupies space."
@@ -3895,14 +4043,76 @@ class LearningObjectPreservationTests(TestCase):
 
         learning_objects = build_learning_objects_from_pdf_blocks(blocks, [])
         by_title = {item["title"]: item["content"] for item in learning_objects}
+        sections = {item["title"]: item["section_title"] for item in learning_objects}
 
         self.assertNotIn("How Flowering Plants Reproduce", by_title)
         self.assertEqual(list(by_title), ["Pollination", "Fertilization"])
+        self.assertEqual(sections["Pollination"], "How Flowering Plants Reproduce")
+        self.assertEqual(sections["Fertilization"], "How Flowering Plants Reproduce")
         self.assertEqual(by_title["Pollination"], "Pollen is carried from the anther to the stigma.")
         self.assertEqual(
             by_title["Fertilization"],
             "After landing on the stigma, a pollen grain grows a tube down the style into the ovary.",
         )
+
+    def test_wrapped_labeled_bullets_keep_their_plain_section_heading(self):
+        blocks = [
+            {
+                "block_id": 1,
+                "page": 1,
+                "text": "How Flowering Plants Reproduce",
+                "line_count": 1,
+                "is_bold": True,
+                "font_size": 16,
+            },
+            {
+                "block_id": 2,
+                "page": 1,
+                "text": "Pollination: Pollen is carried from the anther to the stigma. This can happen within",
+                "line_count": 1,
+            },
+            {
+                "block_id": 3,
+                "page": 1,
+                "text": "the same flower or between different flowers, with the help of wind, water, insects, or other animals.",
+                "line_count": 1,
+            },
+            {
+                "block_id": 4,
+                "page": 1,
+                "text": "Fertilization: A male sex cell joins the egg cell inside an ovule.",
+                "line_count": 1,
+            },
+            {
+                "block_id": 5,
+                "page": 1,
+                "text": "Seed formation: The fertilized ovule develops into a seed with a young plant and stored food.",
+                "line_count": 1,
+            },
+            {
+                "block_id": 6,
+                "page": 1,
+                "text": "Fruit formation: The ovary grows into a fruit that surrounds and protects the seeds.",
+                "line_count": 1,
+            },
+        ]
+
+        learning_objects = build_learning_objects_from_pdf_blocks(blocks, [])
+        balanced = balance_learning_object_chunks(learning_objects)
+        by_title = {item["title"]: item for item in balanced}
+
+        self.assertEqual(
+            list(by_title),
+            ["Pollination", "Fertilization", "Seed formation", "Fruit formation"],
+        )
+        self.assertTrue(
+            all(
+                item["section_title"] == "How Flowering Plants Reproduce"
+                for item in balanced
+            )
+        )
+        self.assertIn("the same flower", by_title["Pollination"]["content"])
+        self.assertNotIn("How Flowering Plants Reproduce", by_title)
 
     def test_plain_heading_with_bullets_is_preserved_as_learning_object(self):
         blocks = [

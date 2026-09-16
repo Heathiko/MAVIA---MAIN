@@ -1053,7 +1053,7 @@ def _format_image_learning_content(description: str, visible_text: str = "") -> 
 
 def _title_from_teacher_text(content: str, fallback: str = "Untitled content") -> str:
     first_sentence = re.split(r"(?<=[.!?])\s+", (content or "").strip())[0]
-    title = first_sentence[:80].strip(" .")
+    title = first_sentence[:100].strip(" .")
     return (title or fallback)[:255]
 
 
@@ -1130,7 +1130,16 @@ def _definition_split(text: str) -> tuple[str, str] | None:
 
 
 def _followed_by_another_inline_definition(blocks: list[dict], index: int) -> bool:
-    """Return whether this labeled line begins a group of sibling definitions."""
+    """Return whether this labeled line begins a group of sibling definitions.
+
+    A visually wrapped bullet is often several PDF blocks: the first contains
+    ``Pollination: ...`` and the next two contain the rest of its paragraph.
+    Looking only at the very next block therefore misses the following
+    ``Fertilization: ...`` sibling and makes Pollination the section body. Walk
+    through a small, uninterrupted run of body blocks, but stop at every real
+    structural boundary so unrelated later definitions are never pulled in.
+    """
+    continuation_blocks = 0
     for next_block in blocks[index + 1 :]:
         next_text = (next_block.get("text") or "").strip()
         if not next_text or _is_image_caption(next_text):
@@ -1139,7 +1148,13 @@ def _followed_by_another_inline_definition(blocks: list[dict], index: int) -> bo
             return False
         if next_block.get("category") not in {"lesson_content", "needs_review"}:
             return False
-        return _definition_split(next_text) is not None
+        if _definition_split(next_text) is not None:
+            return True
+        if _raw_learning_object_heading_title(next_block):
+            return False
+        continuation_blocks += 1
+        if continuation_blocks >= 8:
+            return False
     return False
 
 
@@ -1940,12 +1955,17 @@ def _append_pdf_text_to_learning_object(item: dict, text: str, block: dict) -> b
 
 
 def _is_short_wrapped_continuation(item: dict, text: str, block: dict) -> bool:
-    """Accept a short spillover block only when the prior sentence is unfinished."""
+    """Accept one visual spillover line when the prior sentence is unfinished."""
     existing = (item.get("content") or "").rstrip()
     text = (text or "").strip()
     if item.get("type") != "lesson_content" or not existing or not text:
         return False
-    if re.search(r"[.!?;:]$", existing) or len(text.split()) > 12:
+    # A normal full-width PDF line commonly carries 13-20 words. The old
+    # twelve-word cap dropped the middle line of wrapped bullets while keeping
+    # their shorter final line. Forty still rejects paragraph-sized blocks;
+    # the lowercase, same-page and unfinished-sentence guards below do the
+    # structural work.
+    if re.search(r"[.!?;:]$", existing) or len(text.split()) > 40:
         return False
     if _is_question_or_activity_text(text) or _is_admin_or_system_support_text(text):
         return False
@@ -2008,6 +2028,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
     # The authored section a following sub-heading belongs to. Kept apart from
     # active_section_title, which serves the inline-definition path only.
     section_parent_title = ""
+    section_parent_font_size = 0.0
     skipping_excluded_section = False
     excluded_section_allows_prose_exit = False
     can_append_to_previous = True
@@ -2021,6 +2042,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             current = None
             active_section_title = ""
             section_parent_title = ""
+            section_parent_font_size = 0.0
             can_append_to_previous = False
             continue
 
@@ -2041,6 +2063,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             current = None
             active_section_title = ""
             section_parent_title = ""
+            section_parent_font_size = 0.0
             skipping_excluded_section = True
             excluded_section_allows_prose_exit = _excluded_section_allows_prose_exit(text)
             can_append_to_previous = False
@@ -2175,6 +2198,24 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
                 section_parent_title = (
                     heading_title if _qualifies_as_section_parent(block) else ""
                 )
+                section_parent_font_size = (
+                    float(block.get("font_size") or 0.0)
+                    if section_parent_title
+                    else 0.0
+                )
+            elif section_parent_title:
+                # A larger plain heading has returned to a higher visual level
+                # and must not inherit the last numbered child as its section.
+                # Smaller plain headings still behave as sub-headings. The
+                # tolerance absorbs harmless fractional PDF font differences.
+                heading_font_size = float(block.get("font_size") or 0.0)
+                if (
+                    heading_font_size
+                    and section_parent_font_size
+                    and heading_font_size > section_parent_font_size + 0.5
+                ):
+                    section_parent_title = ""
+                    section_parent_font_size = 0.0
             current = {
                 "order": len(learning_objects),
                 "section_title": section_parent_title,
@@ -2364,7 +2405,69 @@ def _cohesive_learning_object_units(content: str) -> list[str]:
     return cohesive_units
 
 
-def _split_oversized_learning_object(item: dict, maximum_words: int) -> list[dict]:
+def _balanced_learning_object_groups(
+    units: list[str],
+    target_words: int,
+    maximum_words: int,
+) -> list[list[str]]:
+    """Partition authored units into balanced, readable contiguous groups."""
+    unit_words = [len(re.findall(r"\b\w+\b", unit)) for unit in units]
+    total_words = sum(unit_words)
+    desired_parts = min(len(units), max(2, (total_words + target_words - 1) // target_words))
+    minimum_parts = min(len(units), max(2, (total_words + maximum_words - 1) // maximum_words))
+    minimum_chunk_words = max(1, target_words // 2)
+
+    # Prefer the target number of cards, but use fewer when target-sized cards
+    # would strand a tiny final sentence. Each candidate is globally balanced
+    # rather than greedily filling the first card before considering the rest.
+    for part_count in range(desired_parts, minimum_parts - 1, -1):
+        ideal_words = total_words / part_count
+        states: dict[tuple[int, int], tuple[float, list[tuple[int, int]]]] = {
+            (0, 0): (0.0, [])
+        }
+        for part_number in range(1, part_count + 1):
+            for start in range(len(units)):
+                previous = states.get((part_number - 1, start))
+                if previous is None:
+                    continue
+                chunk_words = 0
+                maximum_end = len(units) - (part_count - part_number)
+                for end in range(start + 1, maximum_end + 1):
+                    chunk_words += unit_words[end - 1]
+                    is_single_cohesive_unit = end == start + 1
+                    if chunk_words > maximum_words and not is_single_cohesive_unit:
+                        break
+                    if chunk_words < minimum_chunk_words and not is_single_cohesive_unit:
+                        continue
+                    if chunk_words < minimum_chunk_words and is_single_cohesive_unit:
+                        # A short authored sentence is allowed only when there
+                        # is no way to combine it safely with a neighbour.
+                        can_join_left = start > 0 and unit_words[start - 1] + chunk_words <= maximum_words
+                        can_join_right = end < len(units) and chunk_words + unit_words[end] <= maximum_words
+                        if can_join_left or can_join_right:
+                            continue
+
+                    score = previous[0] + (chunk_words - ideal_words) ** 2
+                    state_key = (part_number, end)
+                    current = states.get(state_key)
+                    if current is None or score < current[0]:
+                        states[state_key] = (
+                            score,
+                            [*previous[1], (start, end)],
+                        )
+
+        result = states.get((part_count, len(units)))
+        if result is not None:
+            return [units[start:end] for start, end in result[1]]
+
+    return [units]
+
+
+def _split_oversized_learning_object(
+    item: dict,
+    target_words: int,
+    maximum_words: int,
+) -> list[dict]:
     if item.get("type") != "lesson_content" or _learning_object_word_count(item) <= maximum_words:
         return [item]
 
@@ -2372,24 +2475,7 @@ def _split_oversized_learning_object(item: dict, maximum_words: int) -> list[dic
     if len(units) < 2:
         return [item]
 
-    groups: list[list[str]] = []
-    current: list[str] = []
-    current_words = 0
-    for unit in units:
-        unit_words = len(re.findall(r"\b\w+\b", unit))
-        if (
-            current
-            and current_words + unit_words > maximum_words
-            and not current[-1].rstrip().endswith(":")
-            and not _starts_with_continuation_callout(unit)
-        ):
-            groups.append(current)
-            current = []
-            current_words = 0
-        current.append(unit)
-        current_words += unit_words
-    if current:
-        groups.append(current)
+    groups = _balanced_learning_object_groups(units, target_words, maximum_words)
 
     if len(groups) < 2:
         return [item]
@@ -2480,9 +2566,26 @@ def _section_names_one_concept(section: str) -> bool:
     return bool(_specific_normalized_label(section))
 
 
+def _is_authored_labeled_child(item: dict) -> bool:
+    """Return whether the PDF explicitly authored this object as a labeled child.
+
+    ``Seed formation: ...`` and ``Fruit formation: ...`` are complete sibling
+    concepts, not fragments to combine merely because their explanations are
+    short. ``source_excerpt`` retains that original structure after title and
+    body extraction, so this guard needs no subject-specific title list.
+    """
+    definition = _definition_split(item.get("source_excerpt") or "")
+    return bool(
+        definition
+        and _is_same_label(item.get("title") or "", definition[0])
+    )
+
+
 def _can_merge_section_variants(left: dict, right: dict) -> bool:
     section = (left.get("section_title") or "").strip()
     if not section or section != (right.get("section_title") or "").strip():
+        return False
+    if _is_authored_labeled_child(left) or _is_authored_labeled_child(right):
         return False
     if not _section_names_one_concept(section):
         return False
@@ -2615,7 +2718,12 @@ def balance_learning_object_chunks(
     """Balance object size using authored boundaries and adjacent lexical cohesion."""
     outline_context = outline_context or {}
     minimum_words = max(1, int(os.getenv("LEARNING_OBJECT_MIN_WORDS", "8")))
-    maximum_words = max(minimum_words + 1, int(os.getenv("LEARNING_OBJECT_MAX_WORDS", "60")))
+    target_words = max(minimum_words + 1, int(os.getenv("LEARNING_OBJECT_MAX_WORDS", "60")))
+    default_maximum = (target_words * 4 + 2) // 3
+    maximum_words = max(
+        target_words,
+        int(os.getenv("LEARNING_OBJECT_HARD_MAX_WORDS", str(default_maximum))),
+    )
     similarity_threshold = min(
         1.0,
         max(0.0, float(os.getenv("LEARNING_OBJECT_MERGE_COSINE_THRESHOLD", "0.32"))),
@@ -2623,7 +2731,9 @@ def balance_learning_object_chunks(
 
     split_objects = []
     for item in _attach_short_continuation_callouts(learning_objects):
-        split_objects.extend(_split_oversized_learning_object(item, maximum_words))
+        split_objects.extend(
+            _split_oversized_learning_object(item, target_words, maximum_words)
+        )
 
     balanced = []
     index = 0

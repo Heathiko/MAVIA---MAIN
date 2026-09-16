@@ -23,6 +23,7 @@ import {
   publishTopic,
   regenerateImageNarrations,
   rejectLearningObjectMatchSuggestion,
+  reorderLearningObjects,
   assignVersionSlot,
   editVersionText,
   generateObjectVersions,
@@ -3338,6 +3339,7 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
   const [showAudioWarning, setShowAudioWarning] = useState(false);
   const [showDeleteMaterialConfirm, setShowDeleteMaterialConfirm] = useState(false);
   const [learningObjectToDelete, setLearningObjectToDelete] = useState(null);
+  const [dragState, setDragState] = useState({ draggedId: null, overId: null, position: "before" });
   const imageNarrationRepairAttempts = useRef(new Set());
 
   const generatedJson = material.generated_json || {};
@@ -3348,6 +3350,7 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
   const audioCount = lessonPlaylist.filter((item) => item.audio_url).length;
   const canEditLearningObjects = !learningObjectsConfirmed || reviewEditMode;
   const selectedObject = material.learning_objects.find((item) => item.id === selectedId);
+  const selectedIndex = material.learning_objects.findIndex((item) => item.id === selectedId);
   const imagesMissingDescription = material.learning_objects.filter(
     (item) => isImageLearningObject(item) && !item.content?.trim()
   );
@@ -3452,6 +3455,45 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
     } finally {
       setBusyAction("");
     }
+  }
+
+  async function persistLearningObjectOrder(objectIds) {
+    setBusyAction("reorder");
+    onError("");
+    onMessage("");
+    try {
+      const updatedCourse = await reorderLearningObjects(courseId, material.id, objectIds);
+      onCourseChange(updatedCourse);
+      setReviewEditMode(true);
+      onMessage("Learning object order updated. Confirm when the sequence is final.");
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setBusyAction("");
+      setDragState({ draggedId: null, overId: null, position: "before" });
+    }
+  }
+
+  function moveLearningObject(objectId, targetId, position = "before") {
+    if (!canEditLearningObjects || busyAction || objectId === targetId) return;
+    const reordered = material.learning_objects.filter((item) => item.id !== objectId);
+    const targetIndex = reordered.findIndex((item) => item.id === targetId);
+    const moved = material.learning_objects.find((item) => item.id === objectId);
+    if (!moved || targetIndex < 0) return;
+    reordered.splice(targetIndex + (position === "after" ? 1 : 0), 0, moved);
+    const objectIds = reordered.map((item) => item.id);
+    if (objectIds.every((id, index) => id === material.learning_objects[index]?.id)) return;
+    persistLearningObjectOrder(objectIds);
+  }
+
+  function moveSelectedLearningObject(offset) {
+    if (!selectedObject || selectedIndex < 0) return;
+    const targetIndex = selectedIndex + offset;
+    if (targetIndex < 0 || targetIndex >= material.learning_objects.length) return;
+    const reordered = [...material.learning_objects];
+    const [moved] = reordered.splice(selectedIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
+    persistLearningObjectOrder(reordered.map((item) => item.id));
   }
 
   async function confirmObjects() {
@@ -3701,9 +3743,36 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
                         </div>
                       )}
                       <div
-                        className={`generated-item learning-object-card ${sectionTitle && !isSectionParent ? "is-section-child" : ""} ${isImage ? "is-image-object" : ""} ${selectedId === item.id && canEditLearningObjects ? "is-selected" : ""} ${canEditLearningObjects ? "" : "is-locked"}`}
+                        className={`generated-item learning-object-card ${sectionTitle && !isSectionParent ? "is-section-child" : ""} ${isImage ? "is-image-object" : ""} ${selectedId === item.id && canEditLearningObjects ? "is-selected" : ""} ${canEditLearningObjects ? "" : "is-locked"} ${dragState.draggedId === item.id ? "is-dragging" : ""} ${dragState.overId === item.id ? `is-drag-over-${dragState.position}` : ""}`}
                         role={canEditLearningObjects ? "button" : undefined}
                         tabIndex={canEditLearningObjects ? 0 : undefined}
+                        draggable={canEditLearningObjects && editingId !== item.id && !Boolean(busyAction)}
+                        onDragStart={(event) => {
+                          if (!canEditLearningObjects || editingId === item.id || busyAction) {
+                            event.preventDefault();
+                            return;
+                          }
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData("text/plain", String(item.id));
+                          setSelectedId(item.id);
+                          setDragState({ draggedId: item.id, overId: null, position: "before" });
+                        }}
+                        onDragOver={(event) => {
+                          if (!dragState.draggedId || dragState.draggedId === item.id) return;
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                          const bounds = event.currentTarget.getBoundingClientRect();
+                          const position = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+                          setDragState((current) => ({ ...current, overId: item.id, position }));
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          const draggedId = Number(event.dataTransfer.getData("text/plain")) || dragState.draggedId;
+                          const bounds = event.currentTarget.getBoundingClientRect();
+                          const position = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+                          moveLearningObject(draggedId, item.id, position);
+                        }}
+                        onDragEnd={() => setDragState({ draggedId: null, overId: null, position: "before" })}
                         onClick={() => {
                           if (canEditLearningObjects && editingId !== item.id) setSelectedId(item.id);
                         }}
@@ -3727,6 +3796,9 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
                           <>
                             <div className="learning-object-card-header">
                               <div className="learning-object-title">
+                                {canEditLearningObjects && editingId !== item.id && (
+                                  <span className="learning-object-drag-handle" title="Drag to reorder" aria-hidden="true">Drag</span>
+                                )}
                                 <span>{index + 1}</span>
                                 <strong>{item.title}</strong>
                               </div>
@@ -3784,6 +3856,22 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
                     <strong>{selectedObject?.title || "Choose a learning object"}</strong>
                   </div>
                   <div className="generated-item-actions">
+                    <button
+                      className="btn btn-secondary btn-small"
+                      type="button"
+                      disabled={!selectedObject || selectedIndex <= 0 || Boolean(busyAction)}
+                      onClick={() => moveSelectedLearningObject(-1)}
+                    >
+                      Move up
+                    </button>
+                    <button
+                      className="btn btn-secondary btn-small"
+                      type="button"
+                      disabled={!selectedObject || selectedIndex < 0 || selectedIndex >= material.learning_objects.length - 1 || Boolean(busyAction)}
+                      onClick={() => moveSelectedLearningObject(1)}
+                    >
+                      Move down
+                    </button>
                     <button
                       className="btn btn-secondary btn-small"
                       type="button"

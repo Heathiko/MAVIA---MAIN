@@ -77,6 +77,51 @@ class SectionParentTests(SimpleTestCase):
         self.assertIn(("Diagram description", "Liquids"), by_order)
         self.assertNotIn(("Diagram description", "Solids"), by_order)
 
+    def test_larger_plain_heading_does_not_inherit_previous_numbered_child(self):
+        blocks = [
+            block(1, "3. Petals and Sepals (Supporting Parts)", is_bold=True, font_size=12.5),
+            block(
+                2,
+                "The colorful petals attract pollinators, while sepals protect the flower bud.",
+                line_count=2,
+                font_size=11,
+            ),
+            block(3, "Everyday Examples", is_bold=True, font_size=15),
+            block(
+                4,
+                "A hibiscus shows the flower parts clearly and is often used in class.",
+                line_count=2,
+                font_size=11,
+            ),
+        ]
+
+        sections = self.sections(build_learning_objects_from_pdf_blocks(blocks, []))
+
+        self.assertEqual(sections.get("Petals and Sepals (Supporting Parts)"), "Petals and Sepals (Supporting Parts)")
+        self.assertEqual(sections.get("Everyday Examples"), "")
+
+    def test_smaller_plain_heading_still_inherits_numbered_parent(self):
+        blocks = [
+            block(1, "2. Solids", is_bold=True, font_size=19),
+            block(
+                2,
+                "A solid has a definite shape and a definite volume.",
+                line_count=2,
+                font_size=11,
+            ),
+            block(3, "Particle Motion", is_bold=True, font_size=14),
+            block(
+                4,
+                "Particles remain close together and vibrate in fixed positions.",
+                line_count=2,
+                font_size=11,
+            ),
+        ]
+
+        sections = self.sections(build_learning_objects_from_pdf_blocks(blocks, []))
+
+        self.assertEqual(sections.get("Particle Motion"), "Solids")
+
 
 class SectionParentEligibilityTests(SimpleTestCase):
     """A numbered heading is not automatically a section.

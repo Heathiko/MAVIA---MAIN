@@ -4,6 +4,7 @@ from datetime import timedelta
 import threading
 from time import perf_counter
 
+from django.db import transaction
 from django.db.models import Max, Prefetch
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
@@ -58,6 +59,7 @@ from .serializers import (
     CourseListSerializer,
     LearningMaterialSerializer,
     LearningObjectMutationSerializer,
+    LearningObjectReorderSerializer,
     LearningObjectMatchSuggestionSerializer,
     LearningObjectSerializer,
     OutlineNodeMutationSerializer,
@@ -1875,6 +1877,44 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             order=serializer.validated_data.get("order", (max_order or 0) + 1 if max_order is not None else 0),
         )
         self._set_learning_objects_confirmed(material, False)
+
+        return self._serialize_course_detail(course, request)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"materials/(?P<material_id>[^/.]+)/reorder-learning-objects",
+    )
+    def reorder_learning_objects(self, request, pk=None, material_id=None):
+        course = self.get_object()
+        material = self._get_course_material(course, material_id)
+        if material is None:
+            return Response(
+                {"detail": "Learning material not found for this course."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = LearningObjectReorderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        requested_ids = serializer.validated_data["object_ids"]
+
+        with transaction.atomic():
+            learning_objects = list(
+                material.learning_objects.select_for_update().order_by("order", "id")
+            )
+            existing_ids = {item.id for item in learning_objects}
+            if len(requested_ids) != len(learning_objects) or set(requested_ids) != existing_ids:
+                return Response(
+                    {"detail": "Provide every learning object from this material exactly once."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            by_id = {item.id: item for item in learning_objects}
+            reordered = [by_id[object_id] for object_id in requested_ids]
+            for index, learning_object in enumerate(reordered):
+                learning_object.order = index
+            LearningObject.objects.bulk_update(reordered, ["order"])
+            self._set_learning_objects_confirmed(material, False)
 
         return self._serialize_course_detail(course, request)
 
