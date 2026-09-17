@@ -54,6 +54,8 @@ ASSESSMENT_HEADING_LABELS = {
     "exercise",
     "exercises",
     "practice questions",
+    "quick check",
+    "quick checks",
     "quiz",
     "quizzes",
     "review questions",
@@ -63,6 +65,7 @@ ASSESSMENT_HEADING_LABELS = {
     "knowledge check",
     "comprehension check",
     "self check",
+    "self check quiz",
     "ask",
     "worksheet",
     "worksheets",
@@ -85,11 +88,31 @@ def _is_question_or_assessment(text: str) -> bool:
         return False
     if label in ASSESSMENT_HEADING_LABELS:
         return True
-    if re.search(r"\b(?:questions?|quizzes?|tests?|assessments?|exercises?|worksheets?)$", label):
+    if re.search(r"\b(?:questions?|quiz(?:zes)?|tests?|assessments?|exercises?|worksheets?)$", label):
+        return True
+    # Authored worksheets commonly identify exercises with a letter or Roman
+    # numeral and then put the activity name after a colon. Those headings are
+    # still assessment boundaries, not lesson concepts (for example,
+    # "Exercise A: Map the Plot").
+    if re.match(
+        r"^(?:practice\s+)?exercises?\s+(?:\d+|[a-z]|[ivxlcdm]+)(?:\b|$)",
+        label,
+    ):
         return True
     if re.match(r"^\s*[QA]\s*:", stripped, flags=re.IGNORECASE):
         return True
     if stripped.endswith("?"):
+        return True
+    # A prompt can contain a question followed by a direction, so checking only
+    # the final character misses text such as "How does culture shape the
+    # story? Use examples in your answer."
+    if re.search(
+        r"(?:^|[?\u2022\u25cf\u25aa\-*]\s*)"
+        r"(?:how|why|what|which|who|where|when|do|does|did|is|are|can|could|should|would)\b"
+        r"[^?]{1,500}\?",
+        stripped,
+        flags=re.IGNORECASE,
+    ):
         return True
     if re.search(r"_{3,}", stripped):
         return True
@@ -360,7 +383,18 @@ def extract_pdf_text_blocks(file_path: str) -> list[dict]:
     document = fitz.open(file_path)
     try:
         for page_index, page in enumerate(document, start=1):
-            page_dict = page.get_text("dict")
+            # PDF storage order is not necessarily visual reading order. A
+            # writer can draw a later section first, then go back and draw the
+            # bullets that visually sit under an earlier heading. Following
+            # that storage order loses the heading -> child relationship.
+            # PyMuPDF's sorted dictionary restores top-to-bottom/left-to-right
+            # order before the structural classifier sees bullets, numbering,
+            # or labelled definitions. The fallback keeps light-weight test
+            # doubles and older compatible page implementations working.
+            try:
+                page_dict = page.get_text("dict", sort=True)
+            except TypeError:
+                page_dict = page.get_text("dict")
             figure_regions = find_captioned_figure_regions(page, page_dict)
             page_rect = getattr(page, "rect", None)
             for block_index, block in enumerate(page_dict.get("blocks", [])):

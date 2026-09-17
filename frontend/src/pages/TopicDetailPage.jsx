@@ -23,6 +23,7 @@ import {
   publishTopic,
   regenerateImageNarrations,
   rejectLearningObjectMatchSuggestion,
+  reorderLearningObjects,
   assignVersionSlot,
   editVersionText,
   generateObjectVersions,
@@ -1082,6 +1083,7 @@ function QuestionGenerationTool({
   async function handleGenerateObject(item) {
     if (!item.canGenerate) return;
     setGeneratingKey(`object-${item.id}`);
+    setRunEvents([]);
     // Named but uncounted. There is one concept, so a percentage would only be
     // theatre -- and the run's own events report "1 of 1", which reads as
     // finished from the first moment.
@@ -1094,6 +1096,7 @@ function QuestionGenerationTool({
       onResourcesChange(await fetchLearningResources(courseId, topicId));
       onMessage(`Questions for “${item.title}” were generated, classified as LOTS/HOTS, and saved.`);
     } catch (err) {
+      onMessage("");
       onError(err.message);
     } finally {
       setGeneratingKey("");
@@ -1104,6 +1107,7 @@ function QuestionGenerationTool({
     const eligibleObjects = learningObjects.filter((item) => item.canGenerate);
     if (!eligibleObjects.length) return;
     setGeneratingKey("all");
+    setRunEvents([]);
     onError("");
     onMessage("Generating one question bank from the Normal version of each concept.");
     try {
@@ -1114,12 +1118,13 @@ function QuestionGenerationTool({
           total: eligibleObjects.length,
           label: item.conceptLabel,
         });
-        const started = await startQuestionGeneration(item.material, item.id);
+        const started = await startQuestionGeneration(item.material, item.id, true);
         await waitForGeneration(started.run_id);
       }
       onResourcesChange(await fetchLearningResources(courseId, topicId));
       onMessage("One LOTS/HOTS question bank was generated for each concept from its Normal version.");
     } catch (err) {
+      onMessage("");
       onError(err.message);
     } finally {
       setGeneratingKey("");
@@ -1150,10 +1155,15 @@ function QuestionGenerationTool({
           running={Boolean(generatingKey)}
           runningLabel="Generating questions"
           doneLabel="Generation finished"
+          failedLabel="Generation failed"
           unit="concept"
           // The run in flight covers one concept and always reports "1 of 1".
           // What the teacher is waiting on is the walk across every concept.
-          index={outerProgress?.index ?? null}
+          index={
+            outerProgress?.index == null
+              ? null
+              : Math.max(0, outerProgress.index - (generatingKey ? 1 : 0))
+          }
           total={outerProgress?.total ?? null}
           current={
             outerProgress?.label
@@ -1512,9 +1522,9 @@ function RunProgress({
   running,
   runningLabel,
   doneLabel,
-  // Shown instead of doneLabel when the run reported problems, so a run that
-  // ended without doing its job never reads as "finished".
-  failedLabel = "",
+  // Callers can provide a workflow-specific message (for example,
+  // "Not published"); otherwise a failed run still must not read as done.
+  failedLabel = "Task failed",
   unit = "step",
   // When a caller drives several runs in sequence, the events belong to the
   // run in flight and describe only that one -- "1 of 1", finished, 100%, over
@@ -1544,6 +1554,7 @@ function RunProgress({
     (event) =>
       event.event_type === "error" || (event.event_type || "").endsWith("_failed"),
   );
+  const failed = !running && failures.length > 0;
   // A caller-supplied position describes the loop the teacher is waiting on;
   // the events describe only the run in flight. Prefer the caller's -- and when
   // a caller names what it is working on without counting it, respect that
@@ -1554,7 +1565,7 @@ function RunProgress({
   const total = callerReports ? totalOverride : progress?.data?.total;
   // Indeterminate until the first counter arrives -- a bar pinned at zero
   // reads as "nothing is happening", which is the opposite of the truth.
-  const percent = total ? Math.round((index / total) * 100) : null;
+  const percent = !failed && total ? Math.round((index / total) * 100) : null;
   const currentLine = currentOverride || latest?.message || "Starting…";
 
   if (dismissed && !running) return null;
@@ -1575,13 +1586,13 @@ function RunProgress({
       >
         <div className="run-progress-head">
           <div>
-            <span className={`connection-eyebrow ${endedWithProblems ? "is-problem" : ""}`.trim()}>
-              {running ? "Working" : endedWithProblems ? "Needs attention" : "Finished"}
+            <span className={`connection-eyebrow ${failed ? "is-problem" : ""}`.trim()}>
+              {running ? "Working" : failed ? "Failed" : "Finished"}
             </span>
             <h3>{heading}</h3>
           </div>
           <div className="run-progress-head-side">
-            {total ? (
+            {total && !failed ? (
               <span className="run-progress-count">
                 {unit} {index} of {total}
               </span>
@@ -1600,15 +1611,17 @@ function RunProgress({
           </div>
         </div>
 
-        <div
-          className={`publish-trace-bar${percent === null ? " is-indeterminate" : ""}`}
-          role="progressbar"
-          aria-valuenow={percent === null ? undefined : percent}
-          aria-valuemin={0}
-          aria-valuemax={100}
-        >
-          <span style={percent === null ? undefined : { width: `${percent}%` }} />
-        </div>
+        {!failed && (
+          <div
+            className={`publish-trace-bar${percent === null ? " is-indeterminate" : ""}`}
+            role="progressbar"
+            aria-valuenow={percent === null ? undefined : percent}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <span style={percent === null ? undefined : { width: `${percent}%` }} />
+          </div>
+        )}
 
         {/* The step being worked on right now -- the one thing worth reading
             while waiting. Everything else is available in the trace below. */}
@@ -2008,6 +2021,7 @@ function LearningObjectConnections({
   onCourseChange,
   onError,
   onMessage,
+  onNotice,
 }) {
   const [resources, setResources] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -2422,11 +2436,21 @@ function LearningObjectConnections({
     onError("");
     onMessage("Classifying existing PDF source variants in the background.");
     try {
-      const started = await generateAllObjectVersions(courseId, topicId);
+      let runId;
+      try {
+        const started = await generateAllObjectVersions(courseId, topicId);
+        runId = started.run_id;
+      } catch (err) {
+        if (err.status !== 409 || !err.data?.run_id) throw err;
+        runId = err.data.run_id;
+        onError("");
+        onMessage("");
+        onNotice("Classification is already running. Reconnected to its progress.");
+      }
       let after = 0;
       let allEvents = [];
       while (true) {
-        const payload = await fetchGenerationRunEvents(started.run_id, after);
+        const payload = await fetchGenerationRunEvents(runId, after);
         const incoming = payload.events || [];
         if (incoming.length) {
           after = incoming[incoming.length - 1].seq;
@@ -2981,6 +3005,7 @@ function LearningObjectConnections({
           busyAction={busyAction}
           onReviewStepChange={onReviewStepChange}
           onResourcesChange={setResources}
+          onCourseChange={onCourseChange}
           onError={onError}
           onMessage={onMessage}
         />
@@ -3001,6 +3026,7 @@ function LearningPathReviewPanel({
   busyAction,
   onReviewStepChange,
   onResourcesChange,
+  onCourseChange,
   onError,
   onMessage,
 }) {
@@ -3097,10 +3123,18 @@ function LearningPathReviewPanel({
         } else {
           onMessage("Published.");
         }
-        try {
-          onResourcesChange(await fetchLearningResources(courseId, topicId));
-        } catch {
-          // The run is what matters; a stale panel is recoverable by reloading.
+        const [resourcesResult, courseResult] = await Promise.allSettled([
+          fetchLearningResources(courseId, topicId),
+          fetchCourse(courseId),
+        ]);
+        if (resourcesResult.status === "fulfilled") {
+          onResourcesChange(resourcesResult.value);
+        }
+        if (courseResult.status === "fulfilled") {
+          // Publishing updates the topic inside the course hierarchy. Refresh
+          // that hierarchy so the button and last-published timestamp do not
+          // keep showing the pre-publish state after the progress dialog closes.
+          onCourseChange(courseResult.value);
         }
         return;
       }
@@ -3305,6 +3339,7 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
   const [showAudioWarning, setShowAudioWarning] = useState(false);
   const [showDeleteMaterialConfirm, setShowDeleteMaterialConfirm] = useState(false);
   const [learningObjectToDelete, setLearningObjectToDelete] = useState(null);
+  const [dragState, setDragState] = useState({ draggedId: null, overId: null, position: "before" });
   const imageNarrationRepairAttempts = useRef(new Set());
 
   const generatedJson = material.generated_json || {};
@@ -3315,6 +3350,7 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
   const audioCount = lessonPlaylist.filter((item) => item.audio_url).length;
   const canEditLearningObjects = !learningObjectsConfirmed || reviewEditMode;
   const selectedObject = material.learning_objects.find((item) => item.id === selectedId);
+  const selectedIndex = material.learning_objects.findIndex((item) => item.id === selectedId);
   const imagesMissingDescription = material.learning_objects.filter(
     (item) => isImageLearningObject(item) && !item.content?.trim()
   );
@@ -3419,6 +3455,45 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
     } finally {
       setBusyAction("");
     }
+  }
+
+  async function persistLearningObjectOrder(objectIds) {
+    setBusyAction("reorder");
+    onError("");
+    onMessage("");
+    try {
+      const updatedCourse = await reorderLearningObjects(courseId, material.id, objectIds);
+      onCourseChange(updatedCourse);
+      setReviewEditMode(true);
+      onMessage("Learning object order updated. Confirm when the sequence is final.");
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setBusyAction("");
+      setDragState({ draggedId: null, overId: null, position: "before" });
+    }
+  }
+
+  function moveLearningObject(objectId, targetId, position = "before") {
+    if (!canEditLearningObjects || busyAction || objectId === targetId) return;
+    const reordered = material.learning_objects.filter((item) => item.id !== objectId);
+    const targetIndex = reordered.findIndex((item) => item.id === targetId);
+    const moved = material.learning_objects.find((item) => item.id === objectId);
+    if (!moved || targetIndex < 0) return;
+    reordered.splice(targetIndex + (position === "after" ? 1 : 0), 0, moved);
+    const objectIds = reordered.map((item) => item.id);
+    if (objectIds.every((id, index) => id === material.learning_objects[index]?.id)) return;
+    persistLearningObjectOrder(objectIds);
+  }
+
+  function moveSelectedLearningObject(offset) {
+    if (!selectedObject || selectedIndex < 0) return;
+    const targetIndex = selectedIndex + offset;
+    if (targetIndex < 0 || targetIndex >= material.learning_objects.length) return;
+    const reordered = [...material.learning_objects];
+    const [moved] = reordered.splice(selectedIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
+    persistLearningObjectOrder(reordered.map((item) => item.id));
   }
 
   async function confirmObjects() {
@@ -3668,9 +3743,36 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
                         </div>
                       )}
                       <div
-                        className={`generated-item learning-object-card ${sectionTitle && !isSectionParent ? "is-section-child" : ""} ${isImage ? "is-image-object" : ""} ${selectedId === item.id && canEditLearningObjects ? "is-selected" : ""} ${canEditLearningObjects ? "" : "is-locked"}`}
+                        className={`generated-item learning-object-card ${sectionTitle && !isSectionParent ? "is-section-child" : ""} ${isImage ? "is-image-object" : ""} ${selectedId === item.id && canEditLearningObjects ? "is-selected" : ""} ${canEditLearningObjects ? "" : "is-locked"} ${dragState.draggedId === item.id ? "is-dragging" : ""} ${dragState.overId === item.id ? `is-drag-over-${dragState.position}` : ""}`}
                         role={canEditLearningObjects ? "button" : undefined}
                         tabIndex={canEditLearningObjects ? 0 : undefined}
+                        draggable={canEditLearningObjects && editingId !== item.id && !Boolean(busyAction)}
+                        onDragStart={(event) => {
+                          if (!canEditLearningObjects || editingId === item.id || busyAction) {
+                            event.preventDefault();
+                            return;
+                          }
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData("text/plain", String(item.id));
+                          setSelectedId(item.id);
+                          setDragState({ draggedId: item.id, overId: null, position: "before" });
+                        }}
+                        onDragOver={(event) => {
+                          if (!dragState.draggedId || dragState.draggedId === item.id) return;
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                          const bounds = event.currentTarget.getBoundingClientRect();
+                          const position = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+                          setDragState((current) => ({ ...current, overId: item.id, position }));
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          const draggedId = Number(event.dataTransfer.getData("text/plain")) || dragState.draggedId;
+                          const bounds = event.currentTarget.getBoundingClientRect();
+                          const position = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+                          moveLearningObject(draggedId, item.id, position);
+                        }}
+                        onDragEnd={() => setDragState({ draggedId: null, overId: null, position: "before" })}
                         onClick={() => {
                           if (canEditLearningObjects && editingId !== item.id) setSelectedId(item.id);
                         }}
@@ -3694,6 +3796,9 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
                           <>
                             <div className="learning-object-card-header">
                               <div className="learning-object-title">
+                                {canEditLearningObjects && editingId !== item.id && (
+                                  <span className="learning-object-drag-handle" title="Drag to reorder" aria-hidden="true">Drag</span>
+                                )}
                                 <span>{index + 1}</span>
                                 <strong>{item.title}</strong>
                               </div>
@@ -3751,6 +3856,22 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
                     <strong>{selectedObject?.title || "Choose a learning object"}</strong>
                   </div>
                   <div className="generated-item-actions">
+                    <button
+                      className="btn btn-secondary btn-small"
+                      type="button"
+                      disabled={!selectedObject || selectedIndex <= 0 || Boolean(busyAction)}
+                      onClick={() => moveSelectedLearningObject(-1)}
+                    >
+                      Move up
+                    </button>
+                    <button
+                      className="btn btn-secondary btn-small"
+                      type="button"
+                      disabled={!selectedObject || selectedIndex < 0 || selectedIndex >= material.learning_objects.length - 1 || Boolean(busyAction)}
+                      onClick={() => moveSelectedLearningObject(1)}
+                    >
+                      Move down
+                    </button>
                     <button
                       className="btn btn-secondary btn-small"
                       type="button"
@@ -3971,10 +4092,17 @@ export default function TopicDetailPage() {
   const [course, setCourse] = useState(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [notice, setNotice] = useState("");
   const [uploading, setUploading] = useState(false);
   const [activeSource, setActiveSource] = useState(uploadedMaterialId || "connections");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [connectionReviewStep, setConnectionReviewStep] = useState("objects");
+
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timeoutId = window.setTimeout(() => setNotice(""), 4000);
+    return () => window.clearTimeout(timeoutId);
+  }, [notice]);
 
   // Only a genuine change of URL should move the teacher. This used to run on
   // every re-render caused by refreshed resources, so generating versions --
@@ -4126,6 +4254,11 @@ export default function TopicDetailPage() {
 
   return (
     <section className={`topic-workspace-shell ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}>
+      {notice && (
+        <div className="topic-toast" role="status" aria-live="polite">
+          {notice}
+        </div>
+      )}
       <aside className="card lesson-pdf-sidebar" aria-label="Uploaded PDF navigation">
         <div className="lesson-sidebar-brand-row">
           <Link to="/courses" className="lesson-sidebar-brand" title="Mavia home">
@@ -4300,6 +4433,7 @@ export default function TopicDetailPage() {
             onCourseChange={setCourse}
             onError={setError}
             onMessage={setMessage}
+            onNotice={setNotice}
           />
         ) : selectedMaterial ? (
           <div className="topic-material-list">

@@ -251,6 +251,18 @@ class LearningObjectMutationSerializer(serializers.ModelSerializer):
         return value.strip()
 
 
+class LearningObjectReorderSerializer(serializers.Serializer):
+    object_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+    )
+
+    def validate_object_ids(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError("Each learning object may appear only once.")
+        return value
+
+
 class LearningMaterialSerializer(serializers.ModelSerializer):
     learning_objects = serializers.SerializerMethodField()
     filename = serializers.SerializerMethodField()

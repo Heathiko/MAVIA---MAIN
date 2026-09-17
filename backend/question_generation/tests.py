@@ -9,10 +9,12 @@ from lessons.services.audio_generator import generate_material_audio_playlist
 
 from .models import GeneratedQuestion, GenerationRun
 from .services.pipeline import (
+    _draft_questions_for_node,
     finalize_node_questions,
     QUESTION_DISTRIBUTION,
     generate_questions_for_material,
 )
+from .services.question_generator import question_bank_fingerprint
 
 
 class _StubClassifier:
@@ -116,6 +118,145 @@ class QuestionGenerationScopeTests(TestCase):
         self.assertEqual(
             list(self.second_node.generated_questions.values_list("id", flat=True)),
             [self.existing_second_question.id],
+        )
+
+    def _complete_current_bank(self, node):
+        fingerprint = question_bank_fingerprint(node.content, QUESTION_DISTRIBUTION)
+        questions = []
+        for thinking_order in ("LOT", "HOT"):
+            for index in range(3):
+                questions.append(GeneratedQuestion.objects.create(
+                    node=node,
+                    question_text=f"{thinking_order} question {index}?",
+                    question_format="TF",
+                    correct_answer="True",
+                    bloom_level="remember" if thinking_order == "LOT" else "analyze",
+                    thinking_order=thinking_order,
+                    category="Facts and Information",
+                    status="final",
+                    generation_fingerprint=fingerprint,
+                ))
+        return questions
+
+    def test_generate_all_reuses_complete_unchanged_bank(self):
+        expected = self._complete_current_bank(self.first_node)
+        with patch(
+            "question_generation.services.pipeline.generate_questions_for_node"
+        ) as generate_node, patch(
+            "question_generation.services.pipeline._get_classifier"
+        ) as classifier:
+            result = generate_questions_for_material(
+                self.material,
+                node_ids=[self.first_node.id],
+                skip_complete=True,
+            )
+
+        self.assertEqual([q.id for q in result], [q.id for q in expected])
+        generate_node.assert_not_called()
+        classifier.assert_not_called()
+
+    def test_changed_content_invalidates_complete_bank(self):
+        self._complete_current_bank(self.first_node)
+        self.first_node.content += " Updated source content."
+        self.first_node.save(update_fields=["content"])
+
+        with patch(
+            "question_generation.services.pipeline.generate_questions_for_node",
+            return_value=[],
+        ) as generate_node, patch(
+            "question_generation.services.pipeline._get_classifier",
+            return_value=Mock(),
+        ):
+            generate_questions_for_material(
+                self.material,
+                node_ids=[self.first_node.id],
+                skip_complete=True,
+            )
+
+        generate_node.assert_called_once()
+
+    def test_explicit_generation_does_not_skip_complete_bank(self):
+        self._complete_current_bank(self.first_node)
+        with patch(
+            "question_generation.services.pipeline.generate_questions_for_node",
+            return_value=[],
+        ) as generate_node, patch(
+            "question_generation.services.pipeline._get_classifier",
+            return_value=Mock(),
+        ):
+            generate_questions_for_material(
+                self.material,
+                node_ids=[self.first_node.id],
+                skip_complete=False,
+            )
+
+        generate_node.assert_called_once()
+
+    def test_interrupted_generation_resumes_saved_drafts_and_only_calls_missing_order(self):
+        fingerprint = question_bank_fingerprint(
+            self.first_node.content,
+            QUESTION_DISTRIBUTION,
+        )
+        lot_questions = [
+            {
+                "question": f"LOT question {index}?",
+                "format": "MCQ" if index < 2 else "TF",
+                "choices": (
+                    {"A": "One", "B": "Two", "C": "Three", "D": "Four"}
+                    if index < 2 else None
+                ),
+                "correct_answer": "A" if index < 2 else "True",
+                "explanation": "Because the source says so.",
+            }
+            for index in range(3)
+        ]
+        hot_questions = [
+            {
+                "question": f"HOT question {index}?",
+                "format": "MCQ",
+                "choices": {"A": "One", "B": "Two", "C": "Three", "D": "Four"},
+                "correct_answer": "A",
+                "explanation": "Because the source says so.",
+            }
+            for index in range(3)
+        ]
+        classifier = _StubClassifier({})
+
+        with patch(
+            "question_generation.services.pipeline.generate_questions",
+            side_effect=[lot_questions, TimeoutError("interrupted")],
+        ):
+            with self.assertRaises(TimeoutError):
+                _draft_questions_for_node(
+                    self.first_node,
+                    classifier,
+                    generation_fingerprint=fingerprint,
+                )
+
+        saved_ids = list(self.first_node.generated_questions.values_list("id", flat=True))
+        self.assertEqual(len(saved_ids), 3)
+        self.assertEqual(
+            set(self.first_node.generated_questions.values_list("thinking_order", flat=True)),
+            {"LOT"},
+        )
+
+        with patch(
+            "question_generation.services.pipeline.generate_questions",
+            return_value=hot_questions,
+        ) as generate:
+            draft_count = _draft_questions_for_node(
+                self.first_node,
+                classifier,
+                generation_fingerprint=fingerprint,
+            )
+
+        self.assertEqual(generate.call_count, 1)
+        self.assertEqual(generate.call_args.kwargs["thinking_order"], "HOT")
+        self.assertEqual(draft_count, 6)
+        self.assertTrue(
+            set(saved_ids).issubset(
+                set(self.first_node.generated_questions.values_list("id", flat=True))
+            )
         )
 
     def test_finalize_labels_drafts_with_thinking_order_and_promotes_them(self):
@@ -337,7 +478,25 @@ class StartGenerationViewScopeTests(TestCase):
         self.assertEqual(response.data["node_id"], self.first_node.id)
         run = GenerationRun.objects.get(id=response.data["run_id"])
         self.assertEqual(run.node_id, self.first_node.id)
-        self.assertEqual(mock_thread.call_args.kwargs["args"], (run.id, self.material.id, [self.first_node.id]))
+        self.assertEqual(
+            mock_thread.call_args.kwargs["args"],
+            (run.id, self.material.id, [self.first_node.id], False),
+        )
+
+    @patch("question_generation.views.threading.Thread")
+    def test_generate_all_node_request_can_skip_complete_bank(self, mock_thread):
+        response = self.client.post(
+            f"/api/generation/materials/{self.material.id}/nodes/{self.first_node.id}/start/",
+            {"skip_complete": True},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        run = GenerationRun.objects.get(id=response.data["run_id"])
+        self.assertEqual(
+            mock_thread.call_args.kwargs["args"],
+            (run.id, self.material.id, [self.first_node.id], True),
+        )
 
     @patch("question_generation.views.assign_group_versions")
     @patch("question_generation.views.threading.Thread")
@@ -401,7 +560,7 @@ class StartGenerationViewScopeTests(TestCase):
         run = GenerationRun.objects.get(id=response.data["run_id"])
         self.assertEqual(
             mock_thread.call_args.kwargs["args"],
-            (run.id, self.material.id, [self.first_node.id]),
+            (run.id, self.material.id, [self.first_node.id], True),
         )
 
     @patch("question_generation.views.threading.Thread")
@@ -424,4 +583,7 @@ class StartGenerationViewScopeTests(TestCase):
         self.assertEqual(response.data["node_id"], image_node.id)
         run = GenerationRun.objects.get(id=response.data["run_id"])
         self.assertEqual(run.node_id, image_node.id)
-        self.assertEqual(mock_thread.call_args.kwargs["args"], (run.id, self.material.id, [image_node.id]))
+        self.assertEqual(
+            mock_thread.call_args.kwargs["args"],
+            (run.id, self.material.id, [image_node.id], False),
+        )

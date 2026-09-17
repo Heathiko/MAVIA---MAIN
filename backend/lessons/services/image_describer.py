@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -30,9 +31,11 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 _SKIP = "SKIP"
+_MIN_NARRATION_SENTENCES = 3
+_MAX_NARRATION_SENTENCES = 10
 _MAX_VISIBLE_TEXT = 400
 _MAX_NEARBY_TEXT = 600
-_CACHE_VERSION = "1"
+_CACHE_VERSION = "2"
 _CACHE_SKIP = "__SKIP__"
 _cache_lock = threading.Lock()
 _reachability_lock = threading.Lock()
@@ -165,7 +168,13 @@ def build_prompt(
         "describe the visual layout: no colours, arrows, shapes, positions, "
         "or labels like \"diagram\", \"chart\", \"graph\", or \"photo\". Give "
         "the student the understanding a sighted classmate would take from "
-        "looking at it. Write 2 to 4 plain sentences meant to be heard aloud. "
+        "looking at it. Write one natural spoken paragraph of 3 to 10 plain "
+        "sentences. Choose the length from the amount of instructional meaning "
+        "in the figure: use 3 sentences for one simple idea; use 4 to 6 for a "
+        "moderate comparison, relationship, or short process; and use 7 to 10 "
+        "only for a complex table, multi-step process, or information-rich "
+        "figure. Do not add detail merely to make the narration longer. Always "
+        "write at least 3 complete sentences and never more than 10. "
         f'If the figure is decorative, a logo, or too unclear to explain, '
         f'reply with exactly "{_SKIP}" and nothing else.'
     )
@@ -174,6 +183,24 @@ def build_prompt(
 
 def _looks_like_skip(text: str) -> bool:
     return text.strip().upper().strip(".!\"' ") == _SKIP
+
+
+def _spoken_sentences(text: str) -> list[str]:
+    """Return complete prose sentences while preserving their punctuation."""
+    cleaned = " ".join((text or "").split()).strip()
+    if not cleaned:
+        return []
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", cleaned)
+        if sentence.strip()
+    ]
+    return sentences or [cleaned]
+
+
+def _cap_narration_length(text: str) -> str:
+    """Honor the spoken-audio ceiling even if the model overruns it."""
+    return " ".join(_spoken_sentences(text)[:_MAX_NARRATION_SENTENCES]).strip()
 
 
 def describe_image_for_lesson(
@@ -210,7 +237,12 @@ def describe_image_for_lesson(
         "prompt": prompt,
         "images": [base64.b64encode(image_bytes).decode("ascii")],
         "stream": False,
-        "options": {"temperature": 0.2},
+        "options": {
+            "temperature": 0.2,
+            # Enough room for ten concise spoken sentences without allowing an
+            # unexpectedly verbose response to run indefinitely.
+            "num_predict": 768,
+        },
     }
     try:
         response = requests.post(
@@ -233,6 +265,7 @@ def describe_image_for_lesson(
     if _looks_like_skip(text):
         _store_cached_description(cache_key, _CACHE_SKIP)
         return ""
+    text = _cap_narration_length(text)
     _store_cached_description(cache_key, text)
     return text
 

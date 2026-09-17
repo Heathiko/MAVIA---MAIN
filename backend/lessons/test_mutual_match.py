@@ -91,6 +91,35 @@ class MutualBestMatchTests(SimpleTestCase):
         self.assertIs(args[0], self.candidate.material)
         self.assertEqual(kwargs["source_object_id"], self.candidate.id)
 
+    def test_grouped_candidate_can_be_checked_without_changing_the_default(self):
+        matcher = self._matcher_returning(self.source)
+
+        self.assertTrue(
+            _is_mutual_best_match(
+                matcher,
+                self.candidate,
+                self.source,
+                {},
+                allow_grouped_candidate=True,
+            )
+        )
+
+        self.assertIs(matcher.call_args.kwargs["allow_grouped_source"], True)
+
+    def test_grouped_and_ordinary_lookups_have_separate_cache_entries(self):
+        matcher = self._matcher_returning(self.source)
+        cache = {}
+
+        _nominated_candidate(matcher, self.candidate, cache)
+        _nominated_candidate(
+            matcher,
+            self.candidate,
+            cache,
+            allow_grouped_source=True,
+        )
+
+        self.assertEqual(matcher.call_count, 2)
+
     def test_an_ambiguous_rival_nomination_does_not_veto_the_pair(self):
         """Three PDFs carrying the same concept: the candidate's pick between
         two equally good partners is arbitrary, so it is not evidence against

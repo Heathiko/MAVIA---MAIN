@@ -338,3 +338,27 @@ from before and have not been reviewed.
 
 **Not verified:** content-version generation, publish, and any teacher review of
 the grouping results.
+
+---
+
+## Follow-up: silent medium-confidence drops fixed (2026-09-14)
+
+**Trace:** `_nominated_candidate()` and `_is_mutual_best_match()` in
+`backend/lessons/services/learning_resource_linker.py`; the
+`allow_grouped_source` read-only path in
+`backend/lessons/services/semantic_grouping.py`.
+
+The silent-drop mechanism described above is now fixed. During a reciprocal
+check, a candidate already in an established group may be evaluated with its
+current group excluded. If it nominates the new object's group back, the match
+is saved as a **pending teacher-review suggestion**. Nothing is automatically
+moved or merged by this medium-confidence path.
+
+The existing safeguards remain in force: thresholds and winner margins still
+apply, a decisive rival nomination still blocks the suggestion, teacher
+rejections remain authoritative, and background refresh does not break an
+existing multi-member group. Regression tests cover both the rescued review
+suggestion and the decisive-rival rejection case.
+
+The other design questions in "Still worth being wary of" remain unresolved;
+this follow-up changes only the confirmed silent-drop defect.
