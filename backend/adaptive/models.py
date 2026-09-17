@@ -142,6 +142,15 @@ class LearningState(models.Model):
     # back past every step they had ever answered, arriving at the end
     # without being taught anything. See services._step_answered_ids.
     attempt_started_at = models.DateTimeField(default=timezone.now)
+    # Knowledge per concept, alongside the single course-wide `mastery` above
+    # (which is unchanged and still what reports read). Same BKT update, applied
+    # only to what the answered question was about. Keys are namespaced because
+    # the two modes count different things and their ids can collide:
+    #   "concept:<LearningObjectGroup id>" -- path mode, one learning-path concept
+    #   "topic:<OutlineNode id>"           -- legacy mode, one flat topic
+    # A key is absent until its first answer; its prior is the configured
+    # starting mastery.
+    concept_mastery = models.JSONField(default=dict, blank=True)
     mastery = models.FloatField(default=0.30)
     attempts = models.PositiveIntegerField(default=0)
     completed = models.BooleanField(default=False)
@@ -157,6 +166,21 @@ class LearningState(models.Model):
 
 
 class StudentResponse(models.Model):
+    class Action(models.TextChoices):
+        # Correct, and the concept still has a question left to ask.
+        NEXT_QUESTION = "next_question", "Next question in the concept"
+        # Moved on to the next concept or topic.
+        ADVANCE = "advance", "Advanced"
+        # Returned to the concept a prerequisite detour left from.
+        RESUME = "resume", "Resumed after a detour"
+        COMPLETE = "complete", "Completed the course"
+        ESCALATE_VARIANT = "escalate_variant", "Re-taught one explanation level along"
+        DETOUR_PREREQUISITE = "detour_prerequisite", "Detoured through a prerequisite"
+        SWITCH_SOURCE = "switch_source", "Switched to another source's explanation"
+        SECOND_PASS = "second_pass", "Taught the concept again from the top"
+        # Legacy mode: missed, same question again.
+        RETRY = "retry", "Asked again"
+
     learning_state = models.ForeignKey(
         LearningState,
         on_delete=models.CASCADE,
@@ -173,6 +197,40 @@ class StudentResponse(models.Model):
     selected_answer = models.CharField(max_length=255)
     is_correct = models.BooleanField()
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # --- decision log -------------------------------------------------------
+    # One row is one full transition: where the learner was and what they were
+    # shown when they answered, what the engine decided, and where that left
+    # them. Everything below is nullable so rows from before logging existed
+    # stay valid. Written by SubmitResponseView; nothing reads it back yet.
+    #
+    # Before the answer:
+    step_position = models.PositiveIntegerField(null=True, blank=True)
+    variant = models.CharField(max_length=10, blank=True)
+    chunk = models.ForeignKey(
+        LearningObject, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    # Attempts at this question within the current try, this one included.
+    # Resets when the learner leaves the question (a detour, a new concept).
+    # A second attempt at a True/False question right after a miss has only one
+    # option left, so anything scoring answers should weigh attempt 1 apart.
+    attempt_number = models.PositiveIntegerField(null=True, blank=True)
+    # How many prerequisite detours were open.
+    remediation_depth = models.PositiveSmallIntegerField(null=True, blank=True)
+    # The concept (or legacy topic) the question was about -- see
+    # LearningState.concept_mastery for the key format -- and its mastery
+    # either side of this answer.
+    concept_key = models.CharField(max_length=40, blank=True)
+    concept_mastery_before = models.FloatField(null=True, blank=True)
+    concept_mastery_after = models.FloatField(null=True, blank=True)
+    # What the engine did about it.
+    action = models.CharField(max_length=24, choices=Action.choices, blank=True)
+    # After the answer:
+    next_step_position = models.PositiveIntegerField(null=True, blank=True)
+    next_variant = models.CharField(max_length=10, blank=True)
+    next_chunk = models.ForeignKey(
+        LearningObject, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
 
     class Meta:
         ordering = ["created_at", "id"]

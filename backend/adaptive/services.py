@@ -29,6 +29,8 @@ from adaptive_config.models import AdaptiveConfig
 from learning_path.services import get_published_path
 from question_generation.models import GeneratedQuestion
 
+from .models import StudentResponse
+
 # Bayesian Knowledge Tracing parameters (unchanged from the Jean branch).
 P_GUESS = 0.20
 P_SLIP = 0.10
@@ -531,6 +533,21 @@ def resolve_learning_start(course):
 # engine
 # ---------------------------------------------------------------------------
 
+def _update_concept_mastery(learning_state, key, is_correct):
+    """Apply the BKT update to one concept's own mastery. Returns ``(before, after)``.
+
+    Runs beside, not instead of, the course-wide update on
+    ``learning_state.mastery``; see ``LearningState.concept_mastery``.
+    """
+    before = learning_state.concept_mastery.get(key)
+    if before is None:
+        before = AdaptiveConfig.load().starting_mastery
+    after = _bkt_update(before, is_correct)
+    # A new dict rather than an in-place write, so the change is unmistakable.
+    learning_state.concept_mastery = {**learning_state.concept_mastery, key: after}
+    return before, after
+
+
 def _bkt_update(prior_mastery, is_correct):
     config = AdaptiveConfig.load()
     if is_correct:
@@ -551,6 +568,8 @@ class AdaptiveEngine:
         is_correct = answer_is_correct(question, selected_answer)
 
         learning_state.mastery = _bkt_update(learning_state.mastery, is_correct)
+        concept_key = f"topic:{learning_state.current_lesson_node_id}"
+        mastery_before, mastery_after = _update_concept_mastery(learning_state, concept_key, is_correct)
         learning_state.attempts += 1
 
         advance = is_correct
@@ -567,10 +586,14 @@ class AdaptiveEngine:
             if next_question is None:
                 learning_state.completed = True
                 learning_state.current_question = None
+                action = StudentResponse.Action.COMPLETE
             else:
                 learning_state.current_module = next_module
                 learning_state.current_lesson_node = next_node
                 learning_state.current_question = next_question
+                action = StudentResponse.Action.ADVANCE
+        else:
+            action = StudentResponse.Action.RETRY
 
         learning_state.save()
 
@@ -581,6 +604,11 @@ class AdaptiveEngine:
             "next_module": learning_state.current_module_id,
             "next_lesson_node": learning_state.current_lesson_node_id,
             "next_question": learning_state.current_question_id,
+            # Decision log -- recorded on StudentResponse, not sent to devices.
+            "action": action,
+            "concept_key": concept_key,
+            "concept_mastery_before": mastery_before,
+            "concept_mastery_after": mastery_after,
         }
 
     # -----------------------------------------------------------------------
@@ -608,9 +636,11 @@ class AdaptiveEngine:
         giving up. See ``_reroute`` and ``adaptive/PATH_MODE.md``.
         """
         is_correct = path_answer_is_correct(question, selected_answer)
-        learning_state.mastery = _bkt_update(learning_state.mastery, is_correct)
-        learning_state.attempts += 1
         current_step = _step_by_position(path, learning_state.current_step_position)
+        learning_state.mastery = _bkt_update(learning_state.mastery, is_correct)
+        concept_key = f"concept:{current_step['concept_id']}"
+        mastery_before, mastery_after = _update_concept_mastery(learning_state, concept_key, is_correct)
+        learning_state.attempts += 1
 
         if is_correct:
             learning_state.current_question_attempts = 0
@@ -620,8 +650,9 @@ class AdaptiveEngine:
 
             if next_question is not None:
                 learning_state.current_generated_question_id = next_question["id"]
+                action = StudentResponse.Action.NEXT_QUESTION
             else:
-                AdaptiveEngine._resume_or_advance(
+                action = AdaptiveEngine._resume_or_advance(
                     learning_state, path, learning_state.current_step_position
                 )
         else:
@@ -630,8 +661,9 @@ class AdaptiveEngine:
                 # Cheapest remedy first: re-explain the same question's
                 # content one rung plainer/richer before anything structural.
                 learning_state.current_variant = _escalate_variant(learning_state.current_variant)
+                action = StudentResponse.Action.ESCALATE_VARIANT
             else:
-                AdaptiveEngine._reroute(learning_state, path, current_step)
+                action = AdaptiveEngine._reroute(learning_state, path, current_step)
 
         learning_state.save()
 
@@ -656,6 +688,11 @@ class AdaptiveEngine:
                 learning_state.current_generated_question_id
                 or learning_state.current_question_id
             ),
+            # Decision log -- recorded on StudentResponse, not sent to devices.
+            "action": action,
+            "concept_key": concept_key,
+            "concept_mastery_before": mastery_before,
+            "concept_mastery_after": mastery_after,
         }
 
     @staticmethod
@@ -713,7 +750,7 @@ class AdaptiveEngine:
                 learning_state.current_variant = "normal"
                 learning_state.current_question_attempts = 0
                 learning_state.current_generated_question_id = target_question["id"]
-                return
+                return StudentResponse.Action.DETOUR_PREREQUISITE
 
         alternates = current_step.get("alternates") or []
         alternate = _unused_alternate(current_step, learning_state.current_chunk_id)
@@ -726,7 +763,7 @@ class AdaptiveEngine:
                 learning_state.current_variant = "normal"
                 learning_state.current_question_attempts = 0
                 learning_state.current_generated_question_id = alt_question["id"]
-                return
+                return StudentResponse.Action.SWITCH_SOURCE
 
         # Nothing structural was ever available for this step: no prerequisite
         # to send the learner back through, and no second book's telling of the
@@ -740,10 +777,10 @@ class AdaptiveEngine:
                 # Deliberately *not* resetting current_question_attempts: it is
                 # what counts the passes.
                 learning_state.current_variant = "normal"
-                return
+                return StudentResponse.Action.SECOND_PASS
 
         learning_state.current_question_attempts = 0
-        AdaptiveEngine._resume_or_advance(learning_state, path, learning_state.current_step_position)
+        return AdaptiveEngine._resume_or_advance(learning_state, path, learning_state.current_step_position)
 
     @staticmethod
     def _resume_or_advance(learning_state, path, position):
@@ -790,13 +827,12 @@ class AdaptiveEngine:
                 learning_state.current_variant = resume_variant
                 learning_state.current_question_attempts = 0
                 learning_state.current_generated_question_id = resume_question["id"]
-                return
+                return StudentResponse.Action.RESUME
             # The struggled-on step is fully cleared too (e.g. from an
             # earlier pass) -- nothing left to resume there; keep unwinding.
-            AdaptiveEngine._resume_or_advance(learning_state, path, frame["position"])
-            return
+            return AdaptiveEngine._resume_or_advance(learning_state, path, frame["position"])
 
-        AdaptiveEngine._advance_past(learning_state, path, position)
+        return AdaptiveEngine._advance_past(learning_state, path, position)
 
     @staticmethod
     def _advance_past(learning_state, path, position):
@@ -814,7 +850,7 @@ class AdaptiveEngine:
             learning_state.current_question_attempts = 0
             question = _next_question_in_step(next_step, _step_answered_ids(learning_state, next_step))
             learning_state.current_generated_question = GeneratedQuestion.objects.get(pk=question["id"])
-            return learning_state
+            return StudentResponse.Action.ADVANCE
 
         next_node = _next_topic_with_content(learning_state.course, learning_state.current_lesson_node)
         if next_node is None:
@@ -825,7 +861,7 @@ class AdaptiveEngine:
             learning_state.current_chunk_id = None
             learning_state.remediation_stack = []
             learning_state.remediated_positions = []
-            return learning_state
+            return StudentResponse.Action.COMPLETE
 
         mode, next_step, next_question = _enter_topic(next_node)
         learning_state.current_lesson_node = next_node
@@ -843,4 +879,4 @@ class AdaptiveEngine:
             learning_state.current_step_position = None
             learning_state.current_generated_question = None
             learning_state.current_question = next_question
-        return learning_state
+        return StudentResponse.Action.ADVANCE

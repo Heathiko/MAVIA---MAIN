@@ -60,6 +60,38 @@ def _current_step_payload(state):
     return student_safe_step(step) if step else None
 
 
+# Fields `evaluate` / `evaluate_path` return only for the decision log. They
+# are stored on StudentResponse and removed before the reply goes to a device.
+_DECISION_LOG_KEYS = ("action", "concept_key", "concept_mastery_before", "concept_mastery_after")
+
+
+def _before_answer(state):
+    """Where the learner is, captured before the engine moves them."""
+    return {
+        "step_position": state.current_step_position,
+        "variant": state.current_variant,
+        "chunk_id": state.current_chunk_id,
+        "attempt_number": state.current_question_attempts + 1,
+        "remediation_depth": len(state.remediation_stack),
+    }
+
+
+def _decision_log(before, state, result):
+    """One full transition for StudentResponse. Pops the log-only keys off
+    ``result`` so the device reply stays exactly as it was."""
+    logged = {key: result.pop(key, None) for key in _DECISION_LOG_KEYS}
+    return {
+        **before,
+        "action": logged["action"] or "",
+        "concept_key": logged["concept_key"] or "",
+        "concept_mastery_before": logged["concept_mastery_before"],
+        "concept_mastery_after": logged["concept_mastery_after"],
+        "next_step_position": state.current_step_position,
+        "next_variant": state.current_variant,
+        "next_chunk_id": state.current_chunk_id,
+    }
+
+
 class StartLearningView(APIView):
     permission_classes = [IsStudent]
 
@@ -151,12 +183,14 @@ class SubmitResponseView(APIView):
             ]
             question = next(q for q in all_questions if q["id"] == data["question_id"])
 
+            before = _before_answer(state)
             result = AdaptiveEngine.evaluate_path(state, path, question, data["selected_answer"])
             StudentResponse.objects.create(
                 learning_state=state,
                 generated_question_id=data["question_id"],
                 selected_answer=data["selected_answer"],
                 is_correct=result["is_correct"],
+                **_decision_log(before, state, result),
             )
             result["current_step"] = _current_step_payload(state)
         else:
@@ -164,12 +198,14 @@ class SubmitResponseView(APIView):
                 return Response({"detail": "Answer the currently assigned question."}, status=400)
             question = get_object_or_404(Question, pk=data["question_id"])
 
+            before = _before_answer(state)
             result = AdaptiveEngine.evaluate(state, question, data["selected_answer"])
             StudentResponse.objects.create(
                 learning_state=state,
                 question=question,
                 selected_answer=data["selected_answer"],
                 is_correct=result["is_correct"],
+                **_decision_log(before, state, result),
             )
             result["current_step"] = _current_step_payload(state)
 
