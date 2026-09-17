@@ -57,6 +57,16 @@ function findTopLevelNode(topic, allTopics) {
   return current;
 }
 
+const MERGE_CONFIRMATION =
+  "Merging replaces these objects with one. Their Simplified and Elaborated versions and audio "
+  + "will be regenerated, and a published topic will be unpublished. Continue?";
+
+function withUnpublishedNote(message, data) {
+  return data?.unpublished
+    ? `${message} The topic was unpublished; republish it when ready.`
+    : message;
+}
+
 function isImageLearningObject(item) {
   return item?.kind === "image" || Boolean(item?.image_url);
 }
@@ -2282,6 +2292,7 @@ function LearningObjectConnections({
 
   async function mergeSelected() {
     if (reviewStep !== "objects" || !canMergeSelected) return;
+    if (!window.confirm(MERGE_CONFIRMATION)) return;
     setBusyAction("merge");
     onError("");
     onMessage("");
@@ -2289,7 +2300,7 @@ function LearningObjectConnections({
       const data = await mergeLearningObjects(courseId, topicId, selectedIds);
       setResources(data);
       setSelectedIds([]);
-      onMessage("Selected objects were merged into one. Use “Split back” to undo.");
+      onMessage(withUnpublishedNote("Selected objects were merged into one. Use “Split back” to undo.", data));
     } catch (err) {
       onError(err.message);
     } finally {
@@ -2305,7 +2316,7 @@ function LearningObjectConnections({
     try {
       const data = await splitLearningObject(courseId, topicId, item.id);
       setResources(data);
-      onMessage(`“${item.title}” was split back into ${item.merged_parts.length} objects.`);
+      onMessage(withUnpublishedNote(`“${item.title}” was split back into ${item.merged_parts.length} objects.`, data));
     } catch (err) {
       onError(err.message);
     } finally {
@@ -2314,6 +2325,8 @@ function LearningObjectConnections({
   }
 
   async function reviewMatchSuggestion(suggestion, decision) {
+    const mergesUnits = suggestion.source_extra_ids?.length > 0 || suggestion.candidate_extra_ids?.length > 0;
+    if (decision === "accept" && mergesUnits && !window.confirm(MERGE_CONFIRMATION)) return;
     setBusyAction(`suggestion-${decision}-${suggestion.id}`);
     onError("");
     onMessage("");
@@ -2347,7 +2360,7 @@ function LearningObjectConnections({
       setResources(data);
       onMessage(
         decision === "accept"
-          ? "Suggested learning objects were connected."
+          ? withUnpublishedNote("Suggested learning objects were connected.", data)
           : "Suggested connection was rejected and the objects remain separate.",
       );
     } catch (err) {
