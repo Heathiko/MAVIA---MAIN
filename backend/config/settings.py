@@ -175,6 +175,7 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-repl
 #     moondream, qwen2-vl, llama3.2-vision …). Must be pulled: `ollama pull …`
 #   IMAGE_DESCRIPTION_ENABLED=False turns the feature off outright.
 # ---------------------------------------------------------------------------
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 IMAGE_DESCRIPTION_ENABLED = os.getenv("IMAGE_DESCRIPTION_ENABLED", "True").lower() in (
     "1",
@@ -182,7 +183,17 @@ IMAGE_DESCRIPTION_ENABLED = os.getenv("IMAGE_DESCRIPTION_ENABLED", "True").lower
     "yes",
 )
 IMAGE_DESCRIPTION_MODEL = os.getenv("IMAGE_DESCRIPTION_MODEL", "gemma3:4b")
-IMAGE_DESCRIPTION_TIMEOUT = int(os.getenv("IMAGE_DESCRIPTION_TIMEOUT", "120"))
+IMAGE_DESCRIPTION_TIMEOUT = int(os.getenv("IMAGE_DESCRIPTION_TIMEOUT", "300"))
+IMAGE_DESCRIPTION_REACHABILITY_TTL = int(
+    os.getenv("IMAGE_DESCRIPTION_REACHABILITY_TTL", "15")
+)
+IMAGE_DESCRIPTION_CACHE_ENABLED = os.getenv(
+    "IMAGE_DESCRIPTION_CACHE_ENABLED", "True"
+).lower() in ("1", "true", "yes")
+IMAGE_DESCRIPTION_CACHE_PATH = os.getenv(
+    "IMAGE_DESCRIPTION_CACHE_PATH",
+    str(BASE_DIR / "image_description_cache" / "descriptions.sqlite3"),
+)
 
 # ---------------------------------------------------------------------------
 # course / question_generation / learning_path (ported from Milestone1-Jean,
@@ -190,7 +201,9 @@ IMAGE_DESCRIPTION_TIMEOUT = int(os.getenv("IMAGE_DESCRIPTION_TIMEOUT", "120"))
 # OLLAMA_MODEL is the text model these use (separate from the vision model).
 # ---------------------------------------------------------------------------
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", OLLAMA_MODEL)
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "240"))
+OLLAMA_VISION_TIMEOUT = int(os.getenv("OLLAMA_VISION_TIMEOUT", str(OLLAMA_TIMEOUT)))
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
 
 # Questions generated per learning object, per thinking order. Lower these
@@ -226,6 +239,10 @@ CONTENT_VERSION_LLM_AUTO_THRESHOLD = float(
 
 # Model for question generation (separate from the content generation model)
 QUESTION_LLM_MODEL = os.getenv("QUESTION_LLM_MODEL", "llama3.2:3b")
+QUESTION_LLM_KEEP_ALIVE = os.getenv("QUESTION_LLM_KEEP_ALIVE", "30m")
+QUESTION_OVERGENERATION_FACTOR = float(
+    os.getenv("QUESTION_OVERGENERATION_FACTOR", "1.0")
+)
 
 # Quiet the dev server's per-request access log; application diagnostics use
 # the standard Python logging system instead. INFO reports each step of every

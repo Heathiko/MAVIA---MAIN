@@ -51,6 +51,15 @@ class MaterialDeletedDuringGeneration(RuntimeError):
     pass
 
 
+class LearningMaterialValidationError(ValueError):
+    """The uploaded PDF is readable, but is not valid lesson material here.
+
+    This is deliberately separate from extraction, model, and database errors.
+    Upload workflows may safely discard a rejected source document while still
+    retaining genuine processing failures for diagnosis and retry.
+    """
+
+
 def _material_exists(material: LearningMaterial) -> bool:
     return bool(material.pk) and LearningMaterial.objects.filter(pk=material.pk).exists()
 
@@ -214,6 +223,64 @@ def build_fallback_learning_objects_from_text(cleaned_text: str) -> list[dict]:
     return learning_objects
 
 
+def _merge_adjacent_embedded_image_fragments(page, images: list[dict]) -> list[dict]:
+    """Join raster tiles that are really one image on a PDF page.
+
+    Some PDF writers store the upper/lower (or left/right) portions of one
+    visual as separate image blocks.  The alignment and tiny-gap requirements
+    are deliberately strict so nearby independent figures remain independent.
+    """
+    merged = [dict(image) for image in images]
+    changed = True
+    while changed:
+        changed = False
+        for left_index, left in enumerate(merged):
+            left_bbox = fitz.Rect(left.get("bbox") or (0, 0, 0, 0))
+            for right_index in range(left_index + 1, len(merged)):
+                right = merged[right_index]
+                right_bbox = fitz.Rect(right.get("bbox") or (0, 0, 0, 0))
+                vertical_gap = max(right_bbox.y0 - left_bbox.y1, left_bbox.y0 - right_bbox.y1)
+                horizontal_gap = max(right_bbox.x0 - left_bbox.x1, left_bbox.x0 - right_bbox.x1)
+                vertically_tiled = (
+                    -1.0 <= vertical_gap <= 3.0
+                    and abs(left_bbox.x0 - right_bbox.x0) <= 2.0
+                    and abs(left_bbox.x1 - right_bbox.x1) <= 2.0
+                )
+                horizontally_tiled = (
+                    -1.0 <= horizontal_gap <= 3.0
+                    and abs(left_bbox.y0 - right_bbox.y0) <= 2.0
+                    and abs(left_bbox.y1 - right_bbox.y1) <= 2.0
+                )
+                if not (vertically_tiled or horizontally_tiled):
+                    continue
+
+                bbox = left_bbox | right_bbox
+                try:
+                    image_bytes = page.get_pixmap(clip=bbox, dpi=150, alpha=False).tobytes("png")
+                except (RuntimeError, ValueError):
+                    continue
+                combined = {
+                    **left,
+                    "width": int(bbox.width),
+                    "height": int(bbox.height),
+                    "area": int(bbox.get_area()),
+                    "extension": "png",
+                    "image_bytes": image_bytes,
+                    "bbox": tuple(float(value) for value in bbox),
+                    "fragment_block_indexes": [
+                        *(left.get("fragment_block_indexes") or [left.get("block_index")]),
+                        *(right.get("fragment_block_indexes") or [right.get("block_index")]),
+                    ],
+                }
+                merged[left_index] = combined
+                del merged[right_index]
+                changed = True
+                break
+            if changed:
+                break
+    return merged
+
+
 def extract_meaningful_pdf_images(file_path: str, max_images: int | None = None) -> list[dict]:
     images = []
     max_images = max_images or int(os.getenv("MAX_PDF_IMAGES_FOR_VISION", "4"))
@@ -227,6 +294,7 @@ def extract_meaningful_pdf_images(file_path: str, max_images: int | None = None)
             page_rect = page.rect
             page_area = max(page_rect.width * page_rect.height, 1)
             page_dict = page.get_text("dict")
+            page_image_start = len(images)
             for block_index, block in enumerate(page_dict.get("blocks", [])):
                 if block.get("type") != 1:
                     continue
@@ -274,6 +342,11 @@ def extract_meaningful_pdf_images(file_path: str, max_images: int | None = None)
                         "bbox": tuple(float(value) for value in bbox),
                     }
                 )
+
+            images[page_image_start:] = _merge_adjacent_embedded_image_fragments(
+                page,
+                images[page_image_start:],
+            )
 
             for region in find_captioned_figure_regions(page, page_dict):
                 bbox = fitz.Rect(region["bbox"])
@@ -339,12 +412,48 @@ def _instructional_table_rows(rows: list[list[str | None]]) -> bool:
     useful_rows = sum(sum(bool(cell) for cell in row) >= 2 for row in cleaned_rows)
     header_cells = sum(bool(cell) for cell in cleaned_rows[0])
     cell_word_counts = [len(cell.split()) for row in cleaned_rows for cell in row if cell]
+    # PyMuPDF's text-based table detector can turn fully justified prose into
+    # many artificial columns, even splitting individual words at column
+    # boundaries (for example, ``Spore d | ispersal``).  A real instructional
+    # table may contain lowercase cells, but it should not repeatedly split
+    # words across several long rows.  Reject that paragraph-shaped false
+    # positive before the region is rasterized and its source text is removed.
+    fragmented_prose_rows = 0
+    fragmented_boundaries = 0
+    comparable_boundaries = 0
+    for row in cleaned_rows:
+        row_fragmented_boundaries = 0
+        for left, right in zip(row, row[1:]):
+            if not left or not right:
+                continue
+            left_fragment = re.search(r"([A-Za-z]+)\s*$", left)
+            right_fragment = re.match(r"^\s*([a-z]+)", right)
+            if not left_fragment or not right_fragment:
+                continue
+            comparable_boundaries += 1
+            left_word = left_fragment.group(1)
+            right_word = right_fragment.group(1)
+            if (
+                not re.search(r"[.!?;:)]\s*$", left)
+                and (len(left_word) <= 4 or len(right_word) <= 3)
+            ):
+                row_fragmented_boundaries += 1
+                fragmented_boundaries += 1
+        if row_fragmented_boundaries >= 2 and sum(len(cell.split()) for cell in row) >= 8:
+            fragmented_prose_rows += 1
+
+    looks_like_fragmented_prose = bool(
+        fragmented_prose_rows >= 2
+        and fragmented_boundaries >= 5
+        and fragmented_boundaries / max(comparable_boundaries, 1) >= 0.25
+    )
     return bool(
         header_cells >= 2
         and useful_rows >= max(3, int(len(cleaned_rows) * 0.60))
         and occupancy >= 0.45
         and cell_word_counts
         and max(cell_word_counts) <= 40
+        and not looks_like_fragmented_prose
     )
 
 
@@ -430,7 +539,45 @@ def _borderless_table_regions(page_dict: dict, page_rect: fitz.Rect) -> list[dic
         for row in group[1:]:
             bbox |= row["bbox"]
         regions.append({"rows": rows, "bbox": bbox})
-    return regions
+    return _merge_adjacent_table_fragments(regions, page_rect)
+
+
+def _merge_adjacent_table_fragments(regions: list[dict], page_rect: fitz.Rect) -> list[dict]:
+    """Reassemble one table that the borderless detector split vertically.
+
+    A larger row gap inside a table can make it appear to be two regions.  We
+    join only same-width, nearly touching regions on the same page. Distinct
+    stacked tables normally have a heading or a materially larger gap and are
+    therefore left alone.
+    """
+    ordered = sorted(regions, key=lambda region: (fitz.Rect(region["bbox"]).y0, fitz.Rect(region["bbox"]).x0))
+    merged: list[dict] = []
+    maximum_gap = max(18.0, page_rect.height * 0.03)
+    for region in ordered:
+        current = {**region, "bbox": fitz.Rect(region["bbox"]), "rows": list(region["rows"])}
+        if not merged:
+            merged.append(current)
+            continue
+        previous = merged[-1]
+        previous_bbox = fitz.Rect(previous["bbox"])
+        current_bbox = fitz.Rect(current["bbox"])
+        gap = current_bbox.y0 - previous_bbox.y1
+        width_ratio = min(previous_bbox.width, current_bbox.width) / max(
+            previous_bbox.width,
+            current_bbox.width,
+            1,
+        )
+        same_columns = (
+            abs(previous_bbox.x0 - current_bbox.x0) <= 8.0
+            and abs(previous_bbox.x1 - current_bbox.x1) <= 8.0
+            and width_ratio >= 0.95
+        )
+        if 0 <= gap <= maximum_gap and same_columns:
+            previous["rows"].extend(current["rows"])
+            previous["bbox"] = previous_bbox | current_bbox
+        else:
+            merged.append(current)
+    return merged
 
 
 def _nearest_table_title(page, table_bbox: fitz.Rect, page_height: float) -> str:
@@ -954,7 +1101,7 @@ def _format_image_learning_content(description: str, visible_text: str = "") -> 
 
 def _title_from_teacher_text(content: str, fallback: str = "Untitled content") -> str:
     first_sentence = re.split(r"(?<=[.!?])\s+", (content or "").strip())[0]
-    title = first_sentence[:80].strip(" .")
+    title = first_sentence[:100].strip(" .")
     return (title or fallback)[:255]
 
 
@@ -1031,7 +1178,16 @@ def _definition_split(text: str) -> tuple[str, str] | None:
 
 
 def _followed_by_another_inline_definition(blocks: list[dict], index: int) -> bool:
-    """Return whether this labeled line begins a group of sibling definitions."""
+    """Return whether this labeled line begins a group of sibling definitions.
+
+    A visually wrapped bullet is often several PDF blocks: the first contains
+    ``Pollination: ...`` and the next two contain the rest of its paragraph.
+    Looking only at the very next block therefore misses the following
+    ``Fertilization: ...`` sibling and makes Pollination the section body. Walk
+    through a small, uninterrupted run of body blocks, but stop at every real
+    structural boundary so unrelated later definitions are never pulled in.
+    """
+    continuation_blocks = 0
     for next_block in blocks[index + 1 :]:
         next_text = (next_block.get("text") or "").strip()
         if not next_text or _is_image_caption(next_text):
@@ -1040,8 +1196,57 @@ def _followed_by_another_inline_definition(blocks: list[dict], index: int) -> bo
             return False
         if next_block.get("category") not in {"lesson_content", "needs_review"}:
             return False
-        return _definition_split(next_text) is not None
+        if _definition_split(next_text) is not None:
+            return True
+        if _raw_learning_object_heading_title(next_block):
+            return False
+        continuation_blocks += 1
+        if continuation_blocks >= 8:
+            return False
     return False
+
+
+def _split_numbered_definition_run(text: str) -> list[str]:
+    """Split one PDF block containing sequential numbered definitions.
+
+    The split is accepted only when every numbered item is independently a
+    labelled definition and the numbers are sequential. This keeps ordinary
+    numbered procedures and prose references out of this path.
+    """
+    candidates = [
+        candidate.strip()
+        for candidate in re.split(r"(?m)(?=^\s*\d+[.)]\s+[A-Z])", text or "")
+        if candidate.strip()
+    ]
+    if len(candidates) < 2:
+        return []
+    numbers = [_enumerated_item_number(candidate) for candidate in candidates]
+    if any(number is None for number in numbers):
+        return []
+    if any(right != left + 1 for left, right in zip(numbers, numbers[1:])):
+        return []
+    if any(_inline_definition_split(candidate) is None for candidate in candidates):
+        return []
+    return candidates
+
+
+def _descriptive_structural_title(title: str, content: str) -> str:
+    """Use an authored description instead of a bare ``Figure 1`` label.
+
+    PDF authors often write a structural label and its real heading on one line,
+    for example ``Figure 1 — Parts of a Fern``.  The label is useful source
+    text, but the descriptive phrase is the meaningful learning-object title.
+    """
+    if not re.fullmatch(
+        r"(?:figure|diagram|table|illustration)\s+\d+[A-Za-z]?",
+        (title or "").strip(),
+        re.IGNORECASE,
+    ):
+        return ""
+    description = re.sub(r"\s+", " ", content or "").strip()
+    if not description or len(description.split()) > 16 or re.search(r"[.!?]$", description):
+        return ""
+    return description[:255]
 
 
 def _split_embedded_heading_blocks(blocks: list[dict]) -> list[dict]:
@@ -1063,6 +1268,20 @@ def _split_embedded_heading_blocks(blocks: list[dict]) -> list[dict]:
             ),
         }
         lines = [line.strip() for line in normalized_text.splitlines() if line.strip()]
+        numbered_definitions = _split_numbered_definition_run(normalized_text)
+        if numbered_definitions:
+            # Keep the source run together until the section builder can see
+            # whether it belongs to a shared parent.  Without that context the
+            # three short definitions below one figure were incorrectly turned
+            # into three tiny learning objects.
+            expanded.append(
+                {
+                    **block,
+                    "numbered_definition_items": numbered_definitions,
+                }
+            )
+            continue
+
         first_line = lines[0] if lines else ""
         letters = re.sub(r"[^A-Za-z]+", "", first_line)
         heading_like = (
@@ -1381,7 +1600,14 @@ def _starts_excluded_section(text: str) -> bool:
         "other topics",
         "probing questions to think about",
         "projects and activities",
+        "quick check",
+        "quick checks",
         "spark",
+        "a student handout and study guide",
+        "student handout",
+        "student handout and study guide",
+        "study tip",
+        "study tips",
         "unit materials",
         "using the internet",
         "vocabulary",
@@ -1393,6 +1619,31 @@ def _starts_excluded_section(text: str) -> bool:
         return True
     if label.startswith("lesson ") and ":" in text:
         return True
+    return False
+
+
+def _starts_contextual_excluded_section(blocks: list[dict], index: int) -> bool:
+    """Recognize ambiguous support headings only when their body is a prompt.
+
+    ``Reflection`` can name a real concept in subjects such as physics, so it
+    must not be globally excluded by title. In a student handout, however, a
+    Reflection heading immediately followed by a question is an activity
+    boundary and should not become a learning object.
+    """
+    text = (blocks[index].get("text") or "").strip()
+    if _starts_excluded_section(text):
+        return True
+    if _normalized_heading_label(text) != "reflection":
+        return False
+
+    for following in blocks[index + 1 :]:
+        following_text = (following.get("text") or "").strip()
+        if not following_text or _is_image_caption(following_text):
+            continue
+        return bool(
+            following.get("category") == "assessment"
+            or _is_question_or_activity_text(following_text)
+        )
     return False
 
 
@@ -1617,6 +1868,8 @@ def _is_question_or_activity_text(text: str) -> bool:
         "practice",
         "practice exercise",
         "practice exercises",
+        "quick check",
+        "quick checks",
         "practice task",
         "practice tasks",
         "check your understanding",
@@ -1625,6 +1878,7 @@ def _is_question_or_activity_text(text: str) -> bool:
         "knowledge check",
         "comprehension check",
         "self check",
+        "self check quiz",
         "ask",
         "test yourself",
         "try this",
@@ -1646,6 +1900,11 @@ def _is_question_or_activity_text(text: str) -> bool:
     }
     if label in section_labels:
         return True
+    if re.match(
+        r"^(?:practice\s+)?exercises?\s+(?:\d+|[a-z]|[ivxlcdm]+)(?:\b|$)",
+        label,
+    ):
+        return True
     if any(re.fullmatch(rf"{re.escape(section)}\s+\d+", label) for section in section_labels):
         return True
     if any(
@@ -1654,6 +1913,14 @@ def _is_question_or_activity_text(text: str) -> bool:
     ):
         return True
     if stripped.endswith("?"):
+        return True
+    if re.search(
+        r"(?:^|[?\u2022\u25cf\u25aa\-*]\s*)"
+        r"(?:how|why|what|which|who|where|when|do|does|did|is|are|can|could|should|would)\b"
+        r"[^?]{1,500}\?",
+        stripped,
+        flags=re.IGNORECASE,
+    ):
         return True
     if re.search(r"_{3,}", stripped):
         return True
@@ -1807,7 +2074,24 @@ def _is_image_caption(text: str) -> bool:
 
 
 def _format_section_content(parts: list[str]) -> str:
-    return "\n".join(part.strip() for part in parts if part and part.strip()).strip()
+    normalized_parts = [
+        normalized
+        for part in parts
+        if part and part.strip()
+        for normalized in [_normalize_pdf_content_part(part)]
+        if normalized
+    ]
+    formatted_parts: list[str] = []
+    for normalized in normalized_parts:
+        if (
+            formatted_parts
+            and not re.search(r"[.!?;:]\s*$", formatted_parts[-1])
+            and re.match(r"^[a-z(]", normalized.lstrip())
+        ):
+            formatted_parts[-1] = f"{formatted_parts[-1].rstrip()} {normalized.lstrip()}"
+        else:
+            formatted_parts.append(normalized)
+    return "\n".join(formatted_parts).strip()
 
 
 def _append_pdf_text_to_learning_object(item: dict, text: str, block: dict) -> bool:
@@ -1825,18 +2109,62 @@ def _append_pdf_text_to_learning_object(item: dict, text: str, block: dict) -> b
 
 
 def _is_short_wrapped_continuation(item: dict, text: str, block: dict) -> bool:
-    """Accept a short spillover block only when the prior sentence is unfinished."""
+    """Accept one visual spillover line when the prior sentence is unfinished."""
     existing = (item.get("content") or "").rstrip()
     text = (text or "").strip()
     if item.get("type") != "lesson_content" or not existing or not text:
         return False
-    if re.search(r"[.!?;:]$", existing) or len(text.split()) > 12:
+    # A normal full-width PDF line commonly carries 13-20 words. The old
+    # twelve-word cap dropped the middle line of wrapped bullets while keeping
+    # their shorter final line. Forty still rejects paragraph-sized blocks;
+    # the lowercase, same-page and unfinished-sentence guards below do the
+    # structural work.
+    if re.search(r"[.!?;:]$", existing) or len(text.split()) > 40:
         return False
     if _is_question_or_activity_text(text) or _is_admin_or_system_support_text(text):
         return False
     if item.get("source_page") and block.get("page") and item["source_page"] != block["page"]:
         return False
     return bool(re.match(r"^[a-z(]", text))
+
+
+def _short_definition_run_belongs_to_current(
+    current: dict | None,
+    definition_items: list[str],
+    source_text: str,
+    block: dict,
+) -> bool:
+    """Return whether short sibling definitions should remain one parent object.
+
+    This is based on document structure and size, not subject-specific words:
+    the definitions must be consecutive, individually short, directly follow an
+    active parent, and keep the completed object within a readable size.
+    """
+    if not current or not current.get("parts") or not (2 <= len(definition_items) <= 6):
+        return False
+    if current.get("from_inline_definition") and not current.get("from_structural_label"):
+        return False
+    if (
+        current.get("source_page") is not None
+        and block.get("page") is not None
+        and current.get("source_page") != block.get("page")
+    ):
+        return False
+
+    per_item_limit = max(
+        12,
+        int(os.getenv("LEARNING_OBJECT_SHORT_DEFINITION_MAX_WORDS", "45")),
+    )
+    combined_limit = max(
+        per_item_limit,
+        int(os.getenv("LEARNING_OBJECT_COHESIVE_SECTION_MAX_WORDS", "170")),
+    )
+    if any(len(re.findall(r"\b\w+\b", item)) > per_item_limit for item in definition_items):
+        return False
+
+    parent_text = _format_section_content(current.get("parts") or [])
+    combined_text = _format_section_content([parent_text, source_text])
+    return len(re.findall(r"\b\w+\b", combined_text)) <= combined_limit
 
 
 def build_section_learning_objects(classified_blocks: list[dict], image_descriptions: list[dict]) -> list[dict]:
@@ -1893,6 +2221,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
     # The authored section a following sub-heading belongs to. Kept apart from
     # active_section_title, which serves the inline-definition path only.
     section_parent_title = ""
+    section_parent_font_size = 0.0
     skipping_excluded_section = False
     excluded_section_allows_prose_exit = False
     can_append_to_previous = True
@@ -1906,6 +2235,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             current = None
             active_section_title = ""
             section_parent_title = ""
+            section_parent_font_size = 0.0
             can_append_to_previous = False
             continue
 
@@ -1921,11 +2251,12 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
         ):
             continue
 
-        if _starts_excluded_section(text):
+        if _starts_contextual_excluded_section(classified_blocks, index):
             _finalize_current_learning_object(current, learning_objects)
             current = None
             active_section_title = ""
             section_parent_title = ""
+            section_parent_font_size = 0.0
             skipping_excluded_section = True
             excluded_section_allows_prose_exit = _excluded_section_allows_prose_exit(text)
             can_append_to_previous = False
@@ -1940,12 +2271,58 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             )
             if _ends_excluded_section(block, classified_blocks, index) or prose_exit:
                 skipping_excluded_section = False
-                if _starts_excluded_section(text):
+                if _starts_contextual_excluded_section(classified_blocks, index):
                     skipping_excluded_section = True
                     excluded_section_allows_prose_exit = _excluded_section_allows_prose_exit(text)
                     continue
             else:
                 continue
+
+        numbered_definition_items = block.get("numbered_definition_items") or []
+        if numbered_definition_items:
+            if _short_definition_run_belongs_to_current(
+                current,
+                numbered_definition_items,
+                text,
+                block,
+            ):
+                current["parts"].append(_normalize_pdf_content_part(text))
+                current["chunk_operation"] = "preserved_shared_definition_group"
+                if not current.get("source_excerpt"):
+                    current["source_excerpt"] = text
+                can_append_to_previous = True
+                continue
+
+            # Without a suitable shared parent, retain the previous behavior:
+            # each independently labelled definition becomes its own object,
+            # while its complete numbered source sentence remains untouched.
+            child_section_title = active_section_title or section_parent_title
+            if current is not None:
+                child_section_title = current.get("title") or child_section_title
+                if current.get("parts"):
+                    current["section_title"] = child_section_title
+                    _finalize_current_learning_object(current, learning_objects)
+                current = None
+            for definition in numbered_definition_items:
+                split_definition = _inline_definition_split(definition)
+                if not split_definition:
+                    continue
+                definition_title, _definition_content = split_definition
+                learning_objects.append(
+                    {
+                        "order": len(learning_objects),
+                        "section_title": child_section_title,
+                        "title": definition_title,
+                        "type": "lesson_content",
+                        "content": _normalize_pdf_content_part(definition),
+                        "source": "teacher_pdf",
+                        "source_page": block.get("page"),
+                        "source_block_id": block.get("block_id"),
+                        "source_excerpt": definition,
+                    }
+                )
+            can_append_to_previous = True
+            continue
 
         item_number = _enumerated_item_number(text)
         expected_item_number = current.get("expected_enumerated_item") if current else None
@@ -1974,7 +2351,20 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             inline_definition = _definition_split(text)
         if inline_definition:
             title, content = inline_definition
-            if current is not None and _current_concept_accepts_supporting_component(current, title):
+            structural_title = _descriptive_structural_title(title, content)
+            if structural_title:
+                title = structural_title
+                # Copying a title must not delete it from the source content.
+                # Retain the complete authored structural-heading line.
+                content = _normalize_pdf_content_part(text)
+            preserve_definition_source = bool(block.get("preserve_definition_source"))
+            if preserve_definition_source:
+                content = _normalize_pdf_content_part(text)
+            if (
+                not preserve_definition_source
+                and current is not None
+                and _current_concept_accepts_supporting_component(current, title)
+            ):
                 current["parts"].append(f"{title}:\n{content}")
                 current["has_supporting_components"] = True
                 if not current.get("source_excerpt"):
@@ -1982,6 +2372,13 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
                 can_append_to_previous = True
                 continue
             followed_by_sibling = _followed_by_another_inline_definition(classified_blocks, index)
+            if structural_title:
+                # ``Figure 1 — Descriptive heading`` opens a parent object; a
+                # numbered definition run below it consists of children, not
+                # peer definitions of the bare Figure label.
+                followed_by_sibling = False
+                if current is not None and current.get("title"):
+                    active_section_title = current["title"]
             if current is not None:
                 if followed_by_sibling:
                     if current.get("from_inline_definition"):
@@ -2020,7 +2417,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
                 "source_block_id": block.get("block_id"),
                 "source_excerpt": text,
             }
-            if followed_by_sibling or active_section_title:
+            if (followed_by_sibling or active_section_title) and not structural_title:
                 learning_objects.append(inline_item)
             else:
                 current = {
@@ -2028,6 +2425,7 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
                     "content": "",
                     "parts": [content],
                     "from_inline_definition": True,
+                    "from_structural_label": bool(structural_title),
                 }
                 can_append_to_previous = True
             continue
@@ -2060,6 +2458,24 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
                 section_parent_title = (
                     heading_title if _qualifies_as_section_parent(block) else ""
                 )
+                section_parent_font_size = (
+                    float(block.get("font_size") or 0.0)
+                    if section_parent_title
+                    else 0.0
+                )
+            elif section_parent_title:
+                # A larger plain heading has returned to a higher visual level
+                # and must not inherit the last numbered child as its section.
+                # Smaller plain headings still behave as sub-headings. The
+                # tolerance absorbs harmless fractional PDF font differences.
+                heading_font_size = float(block.get("font_size") or 0.0)
+                if (
+                    heading_font_size
+                    and section_parent_font_size
+                    and heading_font_size > section_parent_font_size + 0.5
+                ):
+                    section_parent_title = ""
+                    section_parent_font_size = 0.0
             current = {
                 "order": len(learning_objects),
                 "section_title": section_parent_title,
@@ -2173,6 +2589,14 @@ def _learning_object_word_count(item: dict) -> int:
     return len(re.findall(r"\b[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)?\b", item.get("content") or ""))
 
 
+def _starts_authored_list_item(text: str) -> bool:
+    stripped = (text or "").lstrip()
+    return bool(
+        _enumerated_item_number(stripped) is not None
+        or re.match(r"^(?:[\u2022\u25cf\u25aa\u25e6\-*])\s+\S", stripped)
+    )
+
+
 def _learning_object_units(content: str) -> list[str]:
     """Reconstruct visual wraps while retaining authored list boundaries."""
     paragraphs = []
@@ -2184,6 +2608,19 @@ def _learning_object_units(content: str) -> list[str]:
                 paragraphs.append(" ".join(current_lines))
                 current_lines = []
             continue
+
+        if current_lines:
+            previous_line = current_lines[-1]
+            current_starts_list_item = _starts_authored_list_item(current_lines[0])
+            next_starts_list_item = _starts_authored_list_item(line)
+            # A list marker starts a new authored unit only after another list
+            # item is already in progress. PDF visual wrapping can place a
+            # reference number at the start of the next line, as in
+            # ``Figure\n1. Mosses ...``. Flushing every line that begins with
+            # ``1.`` would turn a source wrap into a false content boundary.
+            if current_starts_list_item and next_starts_list_item:
+                paragraphs.append(" ".join(current_lines))
+                current_lines = []
 
         if current_lines:
             previous_line = current_lines[-1]
@@ -2205,7 +2642,6 @@ def _learning_object_units(content: str) -> list[str]:
             re.search(r"[.!?][\"')\]]?$", line)
             or line.endswith(":")
             or _is_symbolic_relation_text(line)
-            or _enumerated_item_number(line) is not None
         ):
             paragraphs.append(" ".join(current_lines))
             current_lines = []
@@ -2218,6 +2654,55 @@ def _learning_object_units(content: str) -> list[str]:
         sentences = re.split(r"(?<!\d\.)(?<=[.!?])\s+(?=[A-Z0-9])", paragraph)
         units.extend(sentence.strip() for sentence in sentences if sentence.strip())
     return units
+
+
+def _normalize_pdf_content_part(content: str) -> str:
+    """Remove visual PDF wraps while retaining authored content structure.
+
+    PDF lines reflect page width, not paragraph intent. Ordinary prose should
+    therefore flow naturally at the web page's width. Bullets, numbered items,
+    labels, blank-line paragraphs, and short label-led lists keep their
+    structural line breaks.
+    """
+    normalized_paragraphs: list[str] = []
+    for raw_paragraph in re.split(r"\n\s*\n", content or ""):
+        units = _learning_object_units(raw_paragraph)
+        if not units:
+            continue
+
+        output_lines: list[str] = []
+        prose_units: list[str] = []
+        follows_label = False
+
+        def flush_prose() -> None:
+            if prose_units:
+                output_lines.append(" ".join(prose_units))
+                prose_units.clear()
+
+        for unit in units:
+            stripped = unit.strip()
+            if not stripped:
+                continue
+            is_label = stripped.endswith(":") and len(stripped.split()) <= 10
+            is_list_item = _starts_authored_list_item(stripped)
+            is_short_labelled_entry = bool(
+                follows_label
+                and len(stripped.split()) <= 8
+                and not re.search(r"[.!?][\"')\]]?$", stripped)
+            )
+            if is_label or is_list_item or is_short_labelled_entry:
+                flush_prose()
+                output_lines.append(stripped)
+                follows_label = is_label or (follows_label and is_short_labelled_entry)
+                continue
+            prose_units.append(stripped)
+            follows_label = False
+
+        flush_prose()
+        if output_lines:
+            normalized_paragraphs.append("\n".join(output_lines))
+
+    return "\n\n".join(normalized_paragraphs).strip()
 
 
 def _cohesive_learning_object_units(content: str) -> list[str]:
@@ -2249,32 +2734,90 @@ def _cohesive_learning_object_units(content: str) -> list[str]:
     return cohesive_units
 
 
-def _split_oversized_learning_object(item: dict, maximum_words: int) -> list[dict]:
-    if item.get("type") != "lesson_content" or _learning_object_word_count(item) <= maximum_words:
+def _balanced_learning_object_groups(
+    units: list[str],
+    target_words: int,
+    maximum_words: int,
+) -> list[list[str]]:
+    """Partition authored units into balanced, readable contiguous groups."""
+    unit_words = [len(re.findall(r"\b\w+\b", unit)) for unit in units]
+    total_words = sum(unit_words)
+    desired_parts = min(len(units), max(2, (total_words + target_words - 1) // target_words))
+    minimum_parts = min(len(units), max(2, (total_words + maximum_words - 1) // maximum_words))
+    minimum_chunk_words = max(1, target_words // 2)
+
+    # Prefer the target number of cards, but use fewer when target-sized cards
+    # would strand a tiny final sentence. Each candidate is globally balanced
+    # rather than greedily filling the first card before considering the rest.
+    for part_count in range(desired_parts, minimum_parts - 1, -1):
+        ideal_words = total_words / part_count
+        states: dict[tuple[int, int], tuple[float, list[tuple[int, int]]]] = {
+            (0, 0): (0.0, [])
+        }
+        for part_number in range(1, part_count + 1):
+            for start in range(len(units)):
+                previous = states.get((part_number - 1, start))
+                if previous is None:
+                    continue
+                chunk_words = 0
+                maximum_end = len(units) - (part_count - part_number)
+                for end in range(start + 1, maximum_end + 1):
+                    chunk_words += unit_words[end - 1]
+                    is_single_cohesive_unit = end == start + 1
+                    if chunk_words > maximum_words and not is_single_cohesive_unit:
+                        break
+                    if chunk_words < minimum_chunk_words and not is_single_cohesive_unit:
+                        continue
+                    if chunk_words < minimum_chunk_words and is_single_cohesive_unit:
+                        # A short authored sentence is allowed only when there
+                        # is no way to combine it safely with a neighbour.
+                        can_join_left = start > 0 and unit_words[start - 1] + chunk_words <= maximum_words
+                        can_join_right = end < len(units) and chunk_words + unit_words[end] <= maximum_words
+                        if can_join_left or can_join_right:
+                            continue
+
+                    score = previous[0] + (chunk_words - ideal_words) ** 2
+                    state_key = (part_number, end)
+                    current = states.get(state_key)
+                    if current is None or score < current[0]:
+                        states[state_key] = (
+                            score,
+                            [*previous[1], (start, end)],
+                        )
+
+        result = states.get((part_count, len(units)))
+        if result is not None:
+            return [units[start:end] for start, end in result[1]]
+
+    return [units]
+
+
+def _split_oversized_learning_object(
+    item: dict,
+    target_words: int,
+    maximum_words: int,
+) -> list[dict]:
+    word_count = _learning_object_word_count(item)
+    cohesive_section_limit = max(
+        maximum_words,
+        int(os.getenv("LEARNING_OBJECT_COHESIVE_SECTION_MAX_WORDS", "170")),
+    )
+    preserves_shared_definition_group = (
+        item.get("chunk_operation") == "preserved_shared_definition_group"
+        and word_count <= cohesive_section_limit
+    )
+    if (
+        item.get("type") != "lesson_content"
+        or word_count <= maximum_words
+        or preserves_shared_definition_group
+    ):
         return [item]
 
     units = _cohesive_learning_object_units(item.get("content") or "")
     if len(units) < 2:
         return [item]
 
-    groups: list[list[str]] = []
-    current: list[str] = []
-    current_words = 0
-    for unit in units:
-        unit_words = len(re.findall(r"\b\w+\b", unit))
-        if (
-            current
-            and current_words + unit_words > maximum_words
-            and not current[-1].rstrip().endswith(":")
-            and not _starts_with_continuation_callout(unit)
-        ):
-            groups.append(current)
-            current = []
-            current_words = 0
-        current.append(unit)
-        current_words += unit_words
-    if current:
-        groups.append(current)
+    groups = _balanced_learning_object_groups(units, target_words, maximum_words)
 
     if len(groups) < 2:
         return [item]
@@ -2365,9 +2908,26 @@ def _section_names_one_concept(section: str) -> bool:
     return bool(_specific_normalized_label(section))
 
 
+def _is_authored_labeled_child(item: dict) -> bool:
+    """Return whether the PDF explicitly authored this object as a labeled child.
+
+    ``Seed formation: ...`` and ``Fruit formation: ...`` are complete sibling
+    concepts, not fragments to combine merely because their explanations are
+    short. ``source_excerpt`` retains that original structure after title and
+    body extraction, so this guard needs no subject-specific title list.
+    """
+    definition = _definition_split(item.get("source_excerpt") or "")
+    return bool(
+        definition
+        and _is_same_label(item.get("title") or "", definition[0])
+    )
+
+
 def _can_merge_section_variants(left: dict, right: dict) -> bool:
     section = (left.get("section_title") or "").strip()
     if not section or section != (right.get("section_title") or "").strip():
+        return False
+    if _is_authored_labeled_child(left) or _is_authored_labeled_child(right):
         return False
     if not _section_names_one_concept(section):
         return False
@@ -2500,7 +3060,12 @@ def balance_learning_object_chunks(
     """Balance object size using authored boundaries and adjacent lexical cohesion."""
     outline_context = outline_context or {}
     minimum_words = max(1, int(os.getenv("LEARNING_OBJECT_MIN_WORDS", "8")))
-    maximum_words = max(minimum_words + 1, int(os.getenv("LEARNING_OBJECT_MAX_WORDS", "60")))
+    target_words = max(minimum_words + 1, int(os.getenv("LEARNING_OBJECT_MAX_WORDS", "60")))
+    default_maximum = (target_words * 4 + 2) // 3
+    maximum_words = max(
+        target_words,
+        int(os.getenv("LEARNING_OBJECT_HARD_MAX_WORDS", str(default_maximum))),
+    )
     similarity_threshold = min(
         1.0,
         max(0.0, float(os.getenv("LEARNING_OBJECT_MERGE_COSINE_THRESHOLD", "0.32"))),
@@ -2508,7 +3073,9 @@ def balance_learning_object_chunks(
 
     split_objects = []
     for item in _attach_short_continuation_callouts(learning_objects):
-        split_objects.extend(_split_oversized_learning_object(item, maximum_words))
+        split_objects.extend(
+            _split_oversized_learning_object(item, target_words, maximum_words)
+        )
 
     balanced = []
     index = 0
@@ -2916,7 +3483,11 @@ def apply_classification_override(
     return material
 
 
-def generate_material_outputs(material: LearningMaterial) -> LearningMaterial:
+def generate_material_outputs(
+    material: LearningMaterial,
+    *,
+    propagate_validation_error: bool = False,
+) -> LearningMaterial:
     import time as _time
     _t0 = _time.monotonic()
 
@@ -2925,13 +3496,18 @@ def generate_material_outputs(material: LearningMaterial) -> LearningMaterial:
 
     try:
         _trace("start: extracting PDF text")
-        text = extract_pdf_text(material.pdf_file.path)
+        try:
+            text = extract_pdf_text(material.pdf_file.path)
+        except (fitz.FileDataError, fitz.EmptyFileError) as exc:
+            raise LearningMaterialValidationError(
+                "The uploaded file is not a readable PDF."
+            ) from exc
         is_image_only_pdf = not _has_enough_embedded_pdf_text(text)
         if is_image_only_pdf:
             _trace("embedded text is sparse; using deterministic PDF page extraction fallback")
             transcribed_text = transcribe_image_only_pdf_pages(material.pdf_file.path)
             if not transcribed_text.strip():
-                raise ValueError("No readable text was found in the PDF.")
+                raise LearningMaterialValidationError("No readable text was found in the PDF.")
             text = transcribed_text
             extracted_blocks = _text_blocks_from_transcription(transcribed_text)
         else:
@@ -2939,9 +3515,11 @@ def generate_material_outputs(material: LearningMaterial) -> LearningMaterial:
 
         cleaned_preserved_text = clean_pdf_text_for_extraction(text, limit=None)
         if not cleaned_preserved_text.strip():
-            raise ValueError("No meaningful lesson text was found in the PDF.")
+            raise LearningMaterialValidationError(
+                "No meaningful lesson text was found in the PDF."
+            )
         if is_course_outline_document(cleaned_preserved_text):
-            raise ValueError(
+            raise LearningMaterialValidationError(
                 "This PDF appears to be a course outline, not lesson material. "
                 "Upload it through Course outline extraction."
             )
@@ -2959,11 +3537,11 @@ def generate_material_outputs(material: LearningMaterial) -> LearningMaterial:
         )
         if matched_node is None:
             if selected_node is not None:
-                raise ValueError(
+                raise LearningMaterialValidationError(
                     f'This PDF does not match the selected topic "{selected_node.title}" '
                     "or any sufficiently confident topic in the approved course outline."
                 )
-            raise ValueError(
+            raise LearningMaterialValidationError(
                 "This PDF does not match any topic in the approved course outline."
             )
 
@@ -3086,6 +3664,16 @@ def generate_material_outputs(material: LearningMaterial) -> LearningMaterial:
         _trace(f"done: status={material.status}")
     except MaterialDeletedDuringGeneration as exc:
         _trace(f"stopped: {exc}")
+    except LearningMaterialValidationError as exc:
+        _trace(f"REJECTED: {exc}")
+        if propagate_validation_error:
+            raise
+        material.status = LearningMaterial.Status.FAILED
+        material.error_message = str(exc)
+        try:
+            _save_material_update(material, ["status", "error_message"])
+        except MaterialDeletedDuringGeneration as deleted_exc:
+            _trace(f"stopped while saving rejection state: {deleted_exc}")
     except Exception as exc:
         _trace(f"FAILED: {type(exc).__name__}: {exc}")
         material.status = LearningMaterial.Status.FAILED

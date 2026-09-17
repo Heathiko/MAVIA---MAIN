@@ -1,9 +1,13 @@
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+import fitz
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
-from unittest.mock import patch
 
 
 def authenticated_api_client():
@@ -35,6 +39,7 @@ from .models import (
 )
 from .serializers import CourseDetailSerializer, LearningMaterialSerializer
 from .services.content_generator import (
+    LearningMaterialValidationError,
     _text_blocks_from_transcription,
     is_structural_metadata_label,
     remove_structural_metadata_learning_objects,
@@ -42,9 +47,15 @@ from .services.content_generator import (
     build_narration_script_from_learning_objects,
     build_section_learning_objects,
     balance_learning_object_chunks,
+    _learning_object_word_count,
     _borderless_table_regions,
+    _format_section_content,
     _instructional_table_rows,
+    _merge_adjacent_embedded_image_fragments,
+    _merge_adjacent_table_fragments,
+    _normalize_pdf_content_part,
     _plausible_table_bbox,
+    _split_numbered_definition_run,
     describe_pdf_images,
     exclude_text_blocks_inside_tables,
     extract_meaningful_pdf_images,
@@ -70,6 +81,7 @@ from .services.learning_resource_linker import (
 )
 from .features.pdf_processing.use_cases import (
     PdfProcessingUseCaseError,
+    RejectedLearningMaterialError,
     upload_course_outline,
     upload_course_pdf,
     upload_learning_material,
@@ -208,6 +220,93 @@ class CumulativeCourseOutlineTests(TestCase):
             pdf_file=uploaded,
             title="Matter lesson",
         )
+
+    @patch("lessons.features.pdf_processing.use_cases.generate_material_outputs")
+    def test_rejected_lesson_material_is_not_stored(self, generate_outputs):
+        generate_outputs.side_effect = LearningMaterialValidationError(
+            "No meaningful lesson text was found in the PDF."
+        )
+        course = CourseGroup.objects.create(title="Science")
+        topic = OutlineNode.objects.create(
+            course=course,
+            title="Matter",
+            order=0,
+            depth=0,
+        )
+
+        with tempfile.TemporaryDirectory() as media_root:
+            with self.settings(MEDIA_ROOT=media_root):
+                with self.assertRaisesMessage(
+                    PdfProcessingUseCaseError,
+                    "automatically deleted and was not stored",
+                ):
+                    upload_learning_material(
+                        course=course,
+                        pdf_file=SimpleUploadedFile(
+                            "not-a-lesson.pdf",
+                            b"%PDF-1.4 invalid lesson",
+                        ),
+                        outline_node_id=topic.id,
+                    )
+
+                self.assertFalse(course.materials.exists())
+                stored_files = [path for path in Path(media_root).rglob("*") if path.is_file()]
+                self.assertEqual(stored_files, [])
+                generate_outputs.assert_called_once()
+                self.assertTrue(
+                    generate_outputs.call_args.kwargs["propagate_validation_error"]
+                )
+
+    @patch("lessons.features.pdf_processing.use_cases.upload_learning_material")
+    @patch("lessons.features.pdf_processing.use_cases.is_course_outline_pdf", return_value=False)
+    def test_unified_upload_explains_rejected_document_type(
+        self,
+        _is_outline,
+        upload_material,
+    ):
+        upload_material.side_effect = RejectedLearningMaterialError(
+            "No meaningful lesson text was found in the PDF."
+        )
+        course = CourseGroup.objects.create(title="Science")
+
+        with self.assertRaisesMessage(
+            PdfProcessingUseCaseError,
+            "neither a valid course outline nor valid lesson material",
+        ):
+            upload_course_pdf(
+                course=course,
+                pdf_file=SimpleUploadedFile(
+                    "unrelated.pdf",
+                    b"%PDF-1.4 unrelated",
+                ),
+            )
+
+    def test_unreadable_pdf_is_deleted_instead_of_becoming_failed_material(self):
+        course = CourseGroup.objects.create(title="Science")
+        topic = OutlineNode.objects.create(
+            course=course,
+            title="Matter",
+            order=0,
+            depth=0,
+        )
+
+        with tempfile.TemporaryDirectory() as media_root:
+            with self.settings(MEDIA_ROOT=media_root):
+                with self.assertRaisesMessage(
+                    RejectedLearningMaterialError,
+                    "not a readable PDF",
+                ):
+                    upload_learning_material(
+                        course=course,
+                        pdf_file=SimpleUploadedFile(
+                            "fake.pdf",
+                            b"this is not actually a PDF",
+                        ),
+                        outline_node_id=topic.id,
+                    )
+
+                self.assertFalse(course.materials.exists())
+                self.assertFalse(any(Path(media_root).rglob("*.pdf")))
 
     def test_later_outline_merges_children_and_appends_new_roots(self):
         course = CourseGroup.objects.create(title="Science")
@@ -1219,6 +1318,7 @@ class LearningResourceRelationshipTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(first.group_id, second.group_id)
         self.assertEqual(first.group.label, "Shape concept")
+        self.assertTrue(first.group.version_selection["label_locked"])
 
     def test_teacher_can_accept_a_pending_match_suggestion(self):
         first_material = self._material("first")
@@ -1443,6 +1543,63 @@ class LearningResourceRelationshipTests(TestCase):
 
 
 class ConfirmLearningObjectsTests(TestCase):
+    def test_learning_objects_can_be_reordered_before_confirmation(self):
+        client = authenticated_api_client()
+        course = CourseGroup.objects.create(title="Science 7")
+        material = LearningMaterial.objects.create(
+            course=course,
+            title="Matter PDF",
+            pdf_file=SimpleUploadedFile("matter.pdf", b"%PDF-1.4"),
+            generated_json={"learning_objects_confirmed": True},
+            status=LearningMaterial.Status.COMPLETED,
+        )
+        first = LearningObject.objects.create(material=material, title="First", content="First concept.", order=0)
+        second = LearningObject.objects.create(material=material, title="Second", content="Second concept.", order=1)
+        third = LearningObject.objects.create(material=material, title="Third", content="Third concept.", order=2)
+
+        response = client.post(
+            f"/api/courses/{course.id}/materials/{material.id}/reorder-learning-objects/",
+            {"object_ids": [third.id, first.id, second.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        material.refresh_from_db()
+        self.assertEqual(
+            list(material.learning_objects.values_list("id", flat=True)),
+            [third.id, first.id, second.id],
+        )
+        self.assertEqual(
+            [item["learning_object_id"] for item in material.generated_json["learning_objects"]],
+            [third.id, first.id, second.id],
+        )
+        self.assertFalse(material.generated_json["learning_objects_confirmed"])
+
+    def test_reorder_rejects_an_incomplete_learning_object_list(self):
+        client = authenticated_api_client()
+        course = CourseGroup.objects.create(title="Science 7")
+        material = LearningMaterial.objects.create(
+            course=course,
+            title="Matter PDF",
+            pdf_file=SimpleUploadedFile("matter.pdf", b"%PDF-1.4"),
+            generated_json={},
+            status=LearningMaterial.Status.COMPLETED,
+        )
+        first = LearningObject.objects.create(material=material, title="First", content="First concept.", order=0)
+        second = LearningObject.objects.create(material=material, title="Second", content="Second concept.", order=1)
+
+        response = client.post(
+            f"/api/courses/{course.id}/materials/{material.id}/reorder-learning-objects/",
+            {"object_ids": [second.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            list(material.learning_objects.values_list("id", flat=True)),
+            [first.id, second.id],
+        )
+
     def test_learning_object_edit_updates_database_and_material_snapshot(self):
         client = authenticated_api_client()
         course = CourseGroup.objects.create(title="Science 7")
@@ -2455,6 +2612,67 @@ class LearningObjectPreservationTests(TestCase):
         self.assertEqual(len(regions), 1)
         self.assertEqual(len(regions[0]["rows"]), 3)
 
+    def test_adjacent_same_width_table_fragments_are_reassembled(self):
+        import fitz
+
+        regions = [
+            {
+                "bbox": fitz.Rect(74.3, 360.3, 343.8, 456.2),
+                "rows": [
+                    ["Property", "Solid", "Liquid", "Gas"],
+                    ["Shape", "Definite", "Not definite", "Not definite"],
+                    ["Volume", "Definite", "Definite", "Not definite"],
+                ],
+            },
+            {
+                "bbox": fitz.Rect(74.3, 472.1, 343.9, 568.2),
+                "rows": [
+                    ["Particle movement", "Vibrate", "Slide", "Move freely"],
+                    ["Can flow?", "No", "Yes", "Yes"],
+                    ["Example", "Rock", "Water", "Air"],
+                ],
+            },
+        ]
+
+        merged = _merge_adjacent_table_fragments(regions, fitz.Rect(0, 0, 600, 800))
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(len(merged[0]["rows"]), 6)
+        self.assertEqual(tuple(round(value, 1) for value in merged[0]["bbox"]), (74.3, 360.3, 343.9, 568.2))
+
+    def test_separate_stacked_tables_are_not_merged(self):
+        import fitz
+
+        regions = [
+            {"bbox": fitz.Rect(70, 100, 340, 200), "rows": [["A", "B"]] * 3},
+            {"bbox": fitz.Rect(70, 260, 340, 360), "rows": [["C", "D"]] * 3},
+        ]
+
+        merged = _merge_adjacent_table_fragments(regions, fitz.Rect(0, 0, 600, 800))
+
+        self.assertEqual(len(merged), 2)
+
+    def test_touching_embedded_image_tiles_become_one_visual(self):
+        class FakePixmap:
+            def tobytes(self, _extension):
+                return b"combined-image"
+
+        class FakePage:
+            def get_pixmap(self, **_kwargs):
+                return FakePixmap()
+
+        fragments = [
+            {"bbox": (50, 100, 350, 220), "block_index": 2, "image_bytes": b"top"},
+            {"bbox": (50, 221, 350, 340), "block_index": 3, "image_bytes": b"bottom"},
+        ]
+
+        merged = _merge_adjacent_embedded_image_fragments(FakePage(), fragments)
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["bbox"], (50.0, 100.0, 350.0, 340.0))
+        self.assertEqual(merged[0]["image_bytes"], b"combined-image")
+        self.assertEqual(merged[0]["fragment_block_indexes"], [2, 3])
+
     def test_nearly_full_page_text_alignment_is_not_accepted_as_a_table(self):
         import fitz
 
@@ -2609,6 +2827,62 @@ class LearningObjectPreservationTests(TestCase):
         self.assertEqual(learning_objects[0]["content"], "")
         self.assertTrue(learning_objects[0]["is_table"])
 
+    def test_justified_prose_split_across_fake_columns_is_not_a_table(self):
+        rows = [
+            [
+                "2. Spore d",
+                "ispersal:",
+                "When spores",
+                "are re",
+                "ady, the spor",
+                "angia ope",
+                "n and release th",
+                "em. Wind,",
+            ],
+            [
+                "water,",
+                "or animals",
+                "carry the sp",
+                "ores aw",
+                "ay from the",
+                "parent pl",
+                "ant.",
+                "",
+            ],
+            [
+                "3. Germin",
+                "ation and",
+                "growth: If a",
+                "spore l",
+                "ands on a mo",
+                "ist, shad",
+                "ed surface, it can",
+                "germinate",
+            ],
+            [
+                "and gro",
+                "w into a n",
+                "ew, tiny plan",
+                "t, whic",
+                "h eventually",
+                "develops",
+                "into a mature fe",
+                "rn.",
+            ],
+        ]
+
+        self.assertFalse(_instructional_table_rows(rows))
+
+    def test_multi_column_instructional_table_is_not_rejected_as_fragmented_prose(self):
+        rows = [
+            ["Property", "Fern", "Moss", "Flowering plant"],
+            ["Reproductive unit", "Spore", "Spore", "Seed"],
+            ["Needs pollination", "No", "No", "Yes"],
+            ["Common habitat", "Moist shade", "Damp ground", "Many habitats"],
+        ]
+
+        self.assertTrue(_instructional_table_rows(rows))
+
     def test_table_image_is_ordered_at_its_pdf_position(self):
         blocks = [
             {
@@ -2754,6 +3028,57 @@ class LearningObjectPreservationTests(TestCase):
             content,
         )
 
+    @patch.dict(
+        "os.environ",
+        {
+            "LEARNING_OBJECT_MAX_WORDS": "60",
+            "LEARNING_OBJECT_HARD_MAX_WORDS": "80",
+        },
+    )
+    def test_coherent_object_above_target_but_below_hard_limit_stays_whole(self):
+        content = (
+            "Flowering plants reproduce sexually, which means a new plant begins when a male sex "
+            "cell joins a female sex cell. "
+            "Most of this activity happens inside the flower, which is the reproductive part of the plant. "
+            "A single flower can contain both male and female parts, and these parts work together so that "
+            "seeds can form. "
+            "Seeds later grow into new plants, allowing the species to continue."
+        )
+
+        balanced = balance_learning_object_chunks(
+            [{"type": "lesson_content", "title": "Reproduction in Flowering Plants", "content": content}]
+        )
+
+        self.assertGreater(_learning_object_word_count(balanced[0]), 60)
+        self.assertEqual(len(balanced), 1)
+        self.assertEqual(balanced[0]["title"], "Reproduction in Flowering Plants")
+
+    @patch.dict(
+        "os.environ",
+        {
+            "LEARNING_OBJECT_MAX_WORDS": "20",
+            "LEARNING_OBJECT_HARD_MAX_WORDS": "30",
+        },
+    )
+    def test_required_split_balances_all_parts_instead_of_leaving_a_tiny_tail(self):
+        sentences = [
+            "Alpha concept has enough supporting words to form one complete authored sentence.",
+            "Beta concept also has enough supporting words to form another complete sentence.",
+            "Gamma concept provides another complete explanation with useful supporting words.",
+            "The final idea has useful context too.",
+        ]
+        content = " ".join(sentences)
+
+        balanced = balance_learning_object_chunks(
+            [{"type": "lesson_content", "title": "Balanced concept", "content": content}]
+        )
+        sizes = [_learning_object_word_count(item) for item in balanced]
+
+        self.assertGreater(len(balanced), 1)
+        self.assertEqual("\n".join(item["content"] for item in balanced), "\n".join(sentences))
+        self.assertGreaterEqual(min(sizes), 10)
+        self.assertLessEqual(max(sizes), 30)
+
     @patch.dict("os.environ", {"LEARNING_OBJECT_MAX_WORDS": "14"})
     def test_visual_pdf_line_wrap_never_becomes_a_chunk_boundary(self):
         content = (
@@ -2782,6 +3107,187 @@ class LearningObjectPreservationTests(TestCase):
         self.assertFalse(any(chunk.rstrip().endswith("into") for chunk in chunks))
         self.assertFalse(any(chunk.lstrip().startswith("that holds it") for chunk in chunks))
         self.assertFalse(any(chunk.lstrip().startswith("a bowl") for chunk in chunks))
+
+    def test_visual_pdf_line_wraps_are_removed_from_saved_prose(self):
+        content = (
+            "Flowering plants rely on pollination - pollen must travel from the anther to the stigma before\n"
+            "fertilization can occur, eventually producing a seed inside a fruit. Non-flowering plants such as\n"
+            "ferns skip pollination entirely: spores are released directly from the sporangium and can grow\n"
+            "into a new plant on their own, without needing a partner flower. Both strategies achieve the\n"
+            "same goal - producing new plants - but through different structures and processes."
+        )
+
+        normalized = _normalize_pdf_content_part(content)
+
+        self.assertNotIn("\n", normalized)
+        self.assertIn("stigma before fertilization can occur", normalized)
+        self.assertIn("plants such as ferns skip pollination", normalized)
+        self.assertIn("strategies achieve the same goal", normalized)
+
+    def test_authored_lists_keep_their_line_structure_during_wrap_cleanup(self):
+        content = (
+            "Key stages:\n"
+            "1. Spore formation begins in the sporangium\n"
+            "and produces many spores.\n"
+            "2. Spore dispersal carries the spores away\n"
+            "from the parent plant."
+        )
+
+        normalized = _normalize_pdf_content_part(content)
+
+        self.assertEqual(
+            normalized,
+            "Key stages:\n"
+            "1. Spore formation begins in the sporangium and produces many spores.\n"
+            "2. Spore dispersal carries the spores away from the parent plant.",
+        )
+
+    def test_lowercase_continuation_in_adjacent_pdf_block_is_rejoined(self):
+        normalized = _format_section_content(
+            [
+                "When spores are ready, the sporangia open and release them. Wind,",
+                "water, or animals carry the spores away from the parent plant.",
+            ]
+        )
+
+        self.assertEqual(
+            normalized,
+            "When spores are ready, the sporangia open and release them. "
+            "Wind, water, or animals carry the spores away from the parent plant.",
+        )
+
+    def test_numbered_definition_titles_are_copied_without_removing_source_content(self):
+        source = (
+            "1. Sporangium (spore case) - a small case, usually grouped in clusters called sori, that\n"
+            "produces and holds spores until they are ready for release.\n"
+            "2. Spores - tiny reproductive cells, light enough to be carried away by wind, water, or passing\n"
+            "animals.\n"
+            "3. Rhizoids - thread-like structures that anchor a young fern plant to a surface and absorb\n"
+            "water, similar in function to roots."
+        )
+        blocks = [
+            {
+                "block_id": 12,
+                "page": 1,
+                "category": "lesson_content",
+                "include_in_narration": True,
+                "line_count": 6,
+                "text": source,
+            }
+        ]
+
+        split_items = _split_numbered_definition_run(source)
+        learning_objects = build_section_learning_objects(blocks, [])
+
+        self.assertEqual(len(split_items), 3)
+        self.assertEqual(
+            [item["title"] for item in learning_objects],
+            ["Sporangium (spore case)", "Spores", "Rhizoids"],
+        )
+        self.assertEqual(
+            learning_objects[0]["content"],
+            "1. Sporangium (spore case) - a small case, usually grouped in clusters called sori, "
+            "that produces and holds spores until they are ready for release.",
+        )
+        self.assertEqual(
+            learning_objects[1]["content"],
+            "2. Spores - tiny reproductive cells, light enough to be carried away by wind, water, "
+            "or passing animals.",
+        )
+        self.assertEqual(
+            learning_objects[2]["content"],
+            "3. Rhizoids - thread-like structures that anchor a young fern plant to a surface and "
+            "absorb water, similar in function to roots.",
+        )
+
+    def test_short_numbered_definitions_stay_with_their_shared_parent(self):
+        definition_source = (
+            "1. Sporangium (spore case) - a small case that produces and holds spores.\n"
+            "2. Spores - tiny reproductive cells carried by wind, water, or animals.\n"
+            "3. Rhizoids - thread-like structures that anchor a young fern and absorb water."
+        )
+        blocks = [
+            {
+                "block_id": 10,
+                "page": 1,
+                "category": "needs_review",
+                "include_in_narration": True,
+                "line_count": 1,
+                "text": "Figure 1 - Text Description of a Fern's Reproductive Structures",
+            },
+            {
+                "block_id": 11,
+                "page": 1,
+                "category": "lesson_content",
+                "include_in_narration": True,
+                "line_count": 2,
+                "text": "A mature fern frond has sori, sporangia, spores, and rhizoids.",
+            },
+            {
+                "block_id": 12,
+                "page": 1,
+                "category": "lesson_content",
+                "include_in_narration": True,
+                "line_count": 3,
+                "text": definition_source,
+            },
+        ]
+
+        learning_objects = build_section_learning_objects(blocks, [])
+
+        self.assertEqual(len(learning_objects), 1)
+        self.assertEqual(
+            learning_objects[0]["title"],
+            "Text Description of a Fern's Reproductive Structures",
+        )
+        self.assertIn(
+            "Figure 1 - Text Description of a Fern's Reproductive Structures",
+            learning_objects[0]["content"],
+        )
+        self.assertIn("1. Sporangium (spore case)", learning_objects[0]["content"])
+        self.assertIn("2. Spores", learning_objects[0]["content"])
+        self.assertIn("3. Rhizoids", learning_objects[0]["content"])
+
+        balanced = balance_learning_object_chunks(learning_objects)
+        self.assertEqual(len(balanced), 1)
+        self.assertNotIn("(Part ", balanced[0]["title"])
+
+    @patch.dict(
+        "os.environ",
+        {
+            "LEARNING_OBJECT_MAX_WORDS": "60",
+            "LEARNING_OBJECT_HARD_MAX_WORDS": "80",
+        },
+    )
+    def test_wrapped_figure_number_does_not_cut_an_example_mid_sentence(self):
+        content = (
+            "Ferns are common in shaded, moist areas across the Philippines, including pako (vegetable\n"
+            "fern), which many families recognize from local markets and home gardens. If you look under a\n"
+            "mature pako frond, you can often see small brown dots - these are the sori described in Figure\n"
+            "1. Mosses are another familiar non-flowering plant; they grow low to the ground on damp soil,\n"
+            "rocks, or tree trunks, and release their spores from small capsules that rise above the leafy\n"
+            "moss mat. In both cases, spores must land somewhere moist and shaded before they can grow\n"
+            "into a new plant, which is why ferns and mosses are so common in rainy, shaded environments."
+        )
+
+        balanced = balance_learning_object_chunks(
+            [{"type": "lesson_content", "title": "Everyday Examples", "content": content}]
+        )
+        chunks = [item["content"] for item in balanced]
+        reconstructed = "\n".join(chunks)
+        normalized = " ".join(reconstructed.split())
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(balanced[0]["title"], "Everyday Examples")
+        self.assertIn("sori described in Figure 1.", normalized)
+        self.assertIn(
+            "they grow low to the ground on damp soil, rocks, or tree trunks, "
+            "and release their spores from small capsules that rise above the leafy moss mat.",
+            normalized,
+        )
+        self.assertFalse(any(chunk.rstrip().endswith("damp soil,") for chunk in chunks))
+        self.assertFalse(any(chunk.lstrip().startswith("rocks, or tree trunks") for chunk in chunks))
+        self.assertTrue(all(chunk.rstrip().endswith((".", "!", "?", '")', "')", "]")) for chunk in chunks))
 
     @patch.dict("os.environ", {"LEARNING_OBJECT_MAX_WORDS": "12"})
     def test_short_authored_list_lines_remain_separate_when_chunked(self):
@@ -3245,7 +3751,7 @@ class LearningObjectPreservationTests(TestCase):
         self.assertNotIn("\uf06c", str(learning_objects))
         self.assertEqual(
             learning_objects[1]["content"],
-            "Solids and liquids have definite volume; gases expand to fill available\nspace.",
+            "Solids and liquids have definite volume; gases expand to fill available space.",
         )
 
     def test_non_instructional_front_matter_does_not_create_learning_objects(self):
@@ -3395,6 +3901,44 @@ class LearningObjectPreservationTests(TestCase):
         self.assertEqual(blocks[0]["text"], "The Sun")
         self.assertEqual(blocks[0]["text_color"], 16711680)
 
+    def test_extract_pdf_text_blocks_uses_visual_reading_order(self):
+        """PDF object order must not put a later section before earlier bullets."""
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
+            path = handle.name
+        try:
+            document = fitz.open()
+            page = document.new_page(width=595, height=842)
+            # Insert the lower heading first to reproduce a PDF whose internal
+            # object order disagrees with what the teacher sees on the page.
+            page.insert_text((60, 300), "Everyday Examples", fontsize=16)
+            page.insert_text((60, 100), "How Flowering Plants Reproduce", fontsize=16)
+            page.insert_text(
+                (80, 140),
+                "Pollination: Pollen is carried from the anther to the stigma.",
+                fontsize=10,
+            )
+            page.insert_text(
+                (80, 180),
+                "Fertilization: A male sex cell joins the egg cell.",
+                fontsize=10,
+            )
+            document.save(path)
+            document.close()
+
+            blocks = extract_pdf_text_blocks(path)
+
+            self.assertEqual(
+                [block["text"] for block in blocks],
+                [
+                    "How Flowering Plants Reproduce",
+                    "Pollination: Pollen is carried from the anther to the stigma.",
+                    "Fertilization: A male sex cell joins the egg cell.",
+                    "Everyday Examples",
+                ],
+            )
+        finally:
+            Path(path).unlink(missing_ok=True)
+
     def test_transcribed_page_text_becomes_learning_blocks(self):
         blocks = _text_blocks_from_transcription(
             "Page 1\nWhat is Matter?\nMatter has mass and occupies space."
@@ -3512,7 +4056,7 @@ class LearningObjectPreservationTests(TestCase):
         self.assertNotIn("Relate observable properties", all_text)
         self.assertEqual(
             by_title["Solid"],
-            "A solid has a definite shape. Its particles are packed\n"
+            "A solid has a definite shape. Its particles are packed "
             "closely together and mainly vibrate in fixed positions.\n"
             "Examples include a stone, pencil, wooden block, and ice cube.",
         )
@@ -3741,14 +4285,76 @@ class LearningObjectPreservationTests(TestCase):
 
         learning_objects = build_learning_objects_from_pdf_blocks(blocks, [])
         by_title = {item["title"]: item["content"] for item in learning_objects}
+        sections = {item["title"]: item["section_title"] for item in learning_objects}
 
         self.assertNotIn("How Flowering Plants Reproduce", by_title)
         self.assertEqual(list(by_title), ["Pollination", "Fertilization"])
+        self.assertEqual(sections["Pollination"], "How Flowering Plants Reproduce")
+        self.assertEqual(sections["Fertilization"], "How Flowering Plants Reproduce")
         self.assertEqual(by_title["Pollination"], "Pollen is carried from the anther to the stigma.")
         self.assertEqual(
             by_title["Fertilization"],
             "After landing on the stigma, a pollen grain grows a tube down the style into the ovary.",
         )
+
+    def test_wrapped_labeled_bullets_keep_their_plain_section_heading(self):
+        blocks = [
+            {
+                "block_id": 1,
+                "page": 1,
+                "text": "How Flowering Plants Reproduce",
+                "line_count": 1,
+                "is_bold": True,
+                "font_size": 16,
+            },
+            {
+                "block_id": 2,
+                "page": 1,
+                "text": "Pollination: Pollen is carried from the anther to the stigma. This can happen within",
+                "line_count": 1,
+            },
+            {
+                "block_id": 3,
+                "page": 1,
+                "text": "the same flower or between different flowers, with the help of wind, water, insects, or other animals.",
+                "line_count": 1,
+            },
+            {
+                "block_id": 4,
+                "page": 1,
+                "text": "Fertilization: A male sex cell joins the egg cell inside an ovule.",
+                "line_count": 1,
+            },
+            {
+                "block_id": 5,
+                "page": 1,
+                "text": "Seed formation: The fertilized ovule develops into a seed with a young plant and stored food.",
+                "line_count": 1,
+            },
+            {
+                "block_id": 6,
+                "page": 1,
+                "text": "Fruit formation: The ovary grows into a fruit that surrounds and protects the seeds.",
+                "line_count": 1,
+            },
+        ]
+
+        learning_objects = build_learning_objects_from_pdf_blocks(blocks, [])
+        balanced = balance_learning_object_chunks(learning_objects)
+        by_title = {item["title"]: item for item in balanced}
+
+        self.assertEqual(
+            list(by_title),
+            ["Pollination", "Fertilization", "Seed formation", "Fruit formation"],
+        )
+        self.assertTrue(
+            all(
+                item["section_title"] == "How Flowering Plants Reproduce"
+                for item in balanced
+            )
+        )
+        self.assertIn("the same flower", by_title["Pollination"]["content"])
+        self.assertNotIn("How Flowering Plants Reproduce", by_title)
 
     def test_plain_heading_with_bullets_is_preserved_as_learning_object(self):
         blocks = [
@@ -3873,6 +4479,103 @@ class LearningObjectPreservationTests(TestCase):
         self.assertNotIn("Classify the following", all_content)
         self.assertNotIn("Write your answers", all_content)
         self.assertNotIn("What happened", all_content)
+
+    def test_handout_support_sections_do_not_become_learning_objects(self):
+        blocks = [
+            {"block_id": 100, "page": 1, "text": "A Student Handout and Study Guide", "line_count": 1},
+            {
+                "block_id": 101,
+                "page": 1,
+                "text": "This handout covers the lesson and can be used alongside class discussion.",
+                "line_count": 1,
+            },
+            {"block_id": 1, "page": 1, "text": "Point of View", "line_count": 1},
+            {
+                "block_id": 2,
+                "page": 1,
+                "text": "Point of view is the perspective from which a story is narrated.",
+                "line_count": 1,
+            },
+            {"block_id": 3, "page": 2, "text": "Practice Exercises", "line_count": 1},
+            {"block_id": 4, "page": 2, "text": "Exercise A: Map the Plot", "line_count": 1},
+            {
+                "block_id": 5,
+                "page": 2,
+                "text": "Choose one story and label each of its six plot parts.",
+                "line_count": 1,
+            },
+            {"block_id": 6, "page": 2, "text": "Exercise B: Identify the Conflict", "line_count": 1},
+            {
+                "block_id": 7,
+                "page": 2,
+                "text": "What is the main conflict? Use one scene to prove your answer.",
+                "line_count": 1,
+            },
+            {"block_id": 8, "page": 2, "text": "Self-Check Quiz", "line_count": 1},
+            {"block_id": 9, "page": 2, "text": "Fill in the blank with the correct term.", "line_count": 1},
+            {"block_id": 10, "page": 2, "text": "Answer Key", "line_count": 1},
+            {"block_id": 11, "page": 2, "text": "1. Plot 2. Conflict", "line_count": 1},
+            {"block_id": 12, "page": 2, "text": "Reflection", "line_count": 1},
+            {
+                "block_id": 13,
+                "page": 2,
+                "text": "Why does point of view matter? Explain using an example.",
+                "line_count": 1,
+            },
+            {"block_id": 14, "page": 2, "text": "Study Tips", "line_count": 1},
+            {
+                "block_id": 15,
+                "page": 2,
+                "text": "Underline the narrator's pronouns before answering the quiz.",
+                "line_count": 1,
+            },
+            {"block_id": 16, "page": 3, "text": "Theme", "line_count": 1},
+            {
+                "block_id": 17,
+                "page": 3,
+                "text": "A theme is the central message or insight communicated by a story.",
+                "line_count": 1,
+            },
+        ]
+
+        learning_objects = build_learning_objects_from_pdf_blocks(blocks, [])
+        by_title = {item["title"]: item["content"] for item in learning_objects}
+        all_text = "\n".join(f'{item["title"]}\n{item["content"]}' for item in learning_objects)
+
+        self.assertEqual(
+            by_title["Point of View"],
+            "Point of view is the perspective from which a story is narrated.",
+        )
+        self.assertEqual(
+            by_title["Theme"],
+            "A theme is the central message or insight communicated by a story.",
+        )
+        for excluded in (
+            "Student Handout",
+            "Exercise A",
+            "Exercise B",
+            "Self-Check",
+            "Reflection",
+            "Study Tips",
+        ):
+            self.assertNotIn(excluded, all_text)
+
+    def test_reflection_remains_a_learning_object_when_it_is_a_real_concept(self):
+        blocks = [
+            {"block_id": 1, "page": 1, "text": "Reflection", "line_count": 1},
+            {
+                "block_id": 2,
+                "page": 1,
+                "text": "Reflection occurs when light strikes a surface and bounces back.",
+                "line_count": 1,
+            },
+        ]
+
+        learning_objects = build_learning_objects_from_pdf_blocks(blocks, [])
+
+        self.assertEqual(len(learning_objects), 1)
+        self.assertEqual(learning_objects[0]["title"], "Reflection")
+        self.assertIn("light strikes a surface", learning_objects[0]["content"])
 
     def test_choose_outline_node_for_material_prefers_deeper_topic(self):
         course = CourseGroup.objects.create(title="Science 7")

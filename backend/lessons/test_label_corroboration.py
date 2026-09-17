@@ -288,6 +288,91 @@ class LabelCorroborationTests(TestCase):
 
         self.assertEqual(decision["confidence"], "medium")
 
+    @patch.dict(
+        os.environ,
+        {**LABEL_ENV, "SEMANTIC_GROUPING_LABEL_CORROBORATION": "False"},
+    )
+    def test_medium_match_to_established_group_reaches_teacher_review(self):
+        """A grouped reciprocal candidate must not make a valid match vanish."""
+        third_material = self.material("Third lesson")
+        companion = self.object(
+            third_material,
+            self.twin_group,
+            "State properties",
+            "A related explanation from another confirmed PDF.",
+        )
+        self.source.title = "Source concept"
+        self.twin.title = "Candidate concept"
+        self.source.save(update_fields=["title"])
+        self.twin.save(update_fields=["title"])
+
+        with patch.object(
+            semantic,
+            "runtime",
+            return_value=FakeRuntime({
+                self.source.content: .40,
+                self.twin.content: .40,
+                companion.content: .40,
+            }),
+        ):
+            refresh_learning_object_match_suggestions(self.source_material)
+
+        suggestion = LearningObjectMatchSuggestion.objects.get()
+        self.source.refresh_from_db()
+        self.assertEqual(suggestion.status, LearningObjectMatchSuggestion.Status.PENDING)
+        self.assertEqual(suggestion.confidence, LearningObjectMatchSuggestion.Confidence.MEDIUM)
+        self.assertEqual(suggestion.source_learning_object_id, self.source.id)
+        self.assertEqual(suggestion.candidate_learning_object.group_id, self.twin_group.id)
+        self.assertEqual(self.source.group_id, self.source_group.id)
+        self.assertEqual(
+            LearningObject.objects.filter(group=self.twin_group).count(),
+            2,
+        )
+
+    @patch.dict(
+        os.environ,
+        {**LABEL_ENV, "SEMANTIC_GROUPING_LABEL_CORROBORATION": "False"},
+    )
+    def test_grouped_candidate_with_decisive_rival_stays_out_of_review(self):
+        """The fix must retain reciprocal matching's false-positive guard."""
+        third_material = self.material("Third lesson")
+        companion = self.object(
+            third_material,
+            self.twin_group,
+            "State properties",
+            "A related explanation from another confirmed PDF.",
+        )
+        rival_material = self.material("Fourth lesson")
+        rival_group = LearningObjectGroup.objects.create(outline_node=self.topic)
+        rival = self.object(
+            rival_material,
+            rival_group,
+            "Rival concept",
+            "A candidate that the grouped object clearly prefers.",
+        )
+        self.source.title = "Source concept"
+        self.twin.title = "Candidate concept"
+        self.source.save(update_fields=["title"])
+        self.twin.save(update_fields=["title"])
+
+        class DirectionalRuntime(FakeRuntime):
+            def pair_scores(runtime_self, pairs):
+                scores = {
+                    (self.source.content, self.twin.content): .40,
+                    (self.source.content, companion.content): .40,
+                    (self.source.content, rival.content): .20,
+                    (self.twin.content, self.source.content): .40,
+                    (self.twin.content, rival.content): .55,
+                }
+                return [scores.get(pair, .20) for pair in pairs]
+
+        with patch.object(semantic, "runtime", return_value=DirectionalRuntime()):
+            refresh_learning_object_match_suggestions(self.source_material)
+
+        self.assertFalse(LearningObjectMatchSuggestion.objects.exists())
+        self.source.refresh_from_db()
+        self.assertEqual(self.source.group_id, self.source_group.id)
+
     def _split_twin_into_parts(self, section="SOLID", total=2, sections=None):
         """Replace the twin with `total` consecutive pieces of one heading."""
         self.twin.title = f"solid (Part 1 of {total})"

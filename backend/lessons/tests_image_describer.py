@@ -34,6 +34,20 @@ class BuildPromptTests(TestCase):
         self.assertIn("colours", prompt)
         self.assertIn("Photosynthesis", prompt)
         self.assertIn("light-dependent reactions", prompt)
+        self.assertIn("3 to 10", prompt)
+        self.assertIn("3 sentences for one simple idea", prompt)
+        self.assertIn("4 to 6", prompt)
+        self.assertIn("7 to 10", prompt)
+        self.assertIn("Do not add detail merely", prompt)
+
+    def test_narration_is_capped_at_ten_sentences(self):
+        narration = " ".join(f"Sentence {number}." for number in range(1, 13))
+
+        capped = image_describer._cap_narration_length(narration)
+
+        self.assertEqual(len(image_describer._spoken_sentences(capped)), 10)
+        self.assertIn("Sentence 10.", capped)
+        self.assertNotIn("Sentence 11.", capped)
 
 
 class DescribeImageTests(TestCase):
@@ -63,6 +77,40 @@ class DescribeImageTests(TestCase):
         sent = mock_post.call_args.kwargs["json"]
         self.assertEqual(len(sent["images"]), 1)
         self.assertNotIn(PNG, sent["images"])
+        self.assertEqual(sent["options"]["num_predict"], 768)
+
+    @patch("lessons.services.image_describer.requests.post")
+    @patch("lessons.services.image_describer.requests.get")
+    def test_identical_request_reuses_cached_description(self, mock_get, mock_post):
+        mock_get.return_value = _ok_response({})
+        mock_post.return_value = _ok_response(
+            {"response": "Particles in a solid remain close together and vibrate in place."}
+        )
+
+        first = image_describer.describe_image_for_lesson(
+            PNG, lesson_title="States of matter", caption="Solid particles"
+        )
+        second = image_describer.describe_image_for_lesson(
+            PNG, lesson_title="States of matter", caption="Solid particles"
+        )
+
+        self.assertEqual(second, first)
+        mock_get.assert_called_once()
+        mock_post.assert_called_once()
+
+    @patch("lessons.services.image_describer.requests.post")
+    @patch("lessons.services.image_describer.requests.get")
+    def test_successful_reachability_check_is_reused_for_different_images(
+        self, mock_get, mock_post
+    ):
+        mock_get.return_value = _ok_response({})
+        mock_post.return_value = _ok_response({"response": "A useful explanation."})
+
+        image_describer.describe_image_for_lesson(PNG, caption="First figure")
+        image_describer.describe_image_for_lesson(PNG + b"2", caption="Second figure")
+
+        mock_get.assert_called_once()
+        self.assertEqual(mock_post.call_count, 2)
 
     @patch("lessons.services.image_describer.requests.post")
     @patch("lessons.services.image_describer.requests.get")

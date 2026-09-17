@@ -579,12 +579,13 @@ def semantic_decision(
 ):
     """The best group for this content, with the confidence to act on it.
 
-    ``allow_grouped_source`` exists for one caller: the teacher-triggered review
-    of edited objects. Background matching must never take a member away from
-    its companions, so by default a grouped source is refused outright. When a
-    teacher has asked where an edited object now belongs, the source's *current*
-    group is left out of the candidates instead -- the question is whether it
-    fits somewhere else, and its old group is judged separately.
+    ``allow_grouped_source`` is used only for read-only decisions: the
+    teacher-triggered review of edited objects and the reciprocal check for a
+    medium-confidence candidate already in an established group. Background
+    matching must never take a member away from its companions, so by default a
+    grouped source is refused outright. In the explicit paths its *current*
+    group is left out of the candidates and this function only reports whether
+    it fits somewhere else; it never changes group membership itself.
     """
     from lessons.models import LearningObject, LearningObjectMatchSuggestion
     current_group_id = None

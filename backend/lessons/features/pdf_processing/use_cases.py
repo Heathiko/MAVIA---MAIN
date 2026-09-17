@@ -7,7 +7,10 @@ from django.db import transaction
 from django.utils import timezone
 
 from lessons.models import CourseGroup, CourseOutline, LearningMaterial, OutlineNode
-from lessons.services.content_generator import generate_material_outputs
+from lessons.services.content_generator import (
+    LearningMaterialValidationError,
+    generate_material_outputs,
+)
 from lessons.services.outline_parser import (
     build_dag_from_outline,
     is_course_outline_pdf,
@@ -17,6 +20,25 @@ from lessons.services.outline_parser import (
 
 class PdfProcessingUseCaseError(Exception):
     """A presentation-independent business error raised by a PDF use case."""
+
+
+class RejectedLearningMaterialError(PdfProcessingUseCaseError):
+    """A persisted lesson-material upload that failed document validation."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(
+            "This PDF was rejected because it could not be validated as lesson "
+            "material for this course. It was automatically deleted and was not "
+            f"stored. Reason: {reason}"
+        )
+
+
+def _discard_rejected_material(material: LearningMaterial) -> None:
+    """Remove both the rejected upload row and its persisted source file."""
+    if material.pdf_file:
+        material.pdf_file.delete(save=False)
+    material.delete()
 
 
 @contextmanager
@@ -145,11 +167,18 @@ def upload_course_pdf(
         _course, reused = upload_course_outline(course=course, outline_file=pdf_file)
         return "outline", None, reused
 
-    material, reused = upload_learning_material(
-        course=course,
-        pdf_file=pdf_file,
-        title=title,
-    )
+    try:
+        material, reused = upload_learning_material(
+            course=course,
+            pdf_file=pdf_file,
+            title=title,
+        )
+    except RejectedLearningMaterialError as exc:
+        raise PdfProcessingUseCaseError(
+            "This PDF was rejected because it is neither a valid course outline "
+            "nor valid lesson material for this course. It was automatically "
+            f"deleted and was not stored. Reason: {exc.reason}"
+        ) from exc
     return "lesson_material", material, reused
 
 
@@ -262,7 +291,11 @@ def upload_learning_material(
         pdf_file=pdf_file,
         file_sha256=fingerprint,
     )
-    generate_material_outputs(material)
+    try:
+        generate_material_outputs(material, propagate_validation_error=True)
+    except LearningMaterialValidationError as exc:
+        _discard_rejected_material(material)
+        raise RejectedLearningMaterialError(str(exc)) from exc
     return material, False
 
 
