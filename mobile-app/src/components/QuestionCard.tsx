@@ -3,6 +3,8 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-nati
 
 import { useNarration } from "@/hooks/useNarration";
 import { useBrailleKeypad } from "@/input/useBrailleKeypad";
+import { letterForTapCount, useTapCounter } from "@/input/tapAnswers";
+import { useScreenReaderEnabled } from "@/hooks/useScreenReaderEnabled";
 import { colors, radii, spacing } from "@/theme";
 
 // Mirrors lessons.Question from the API.
@@ -184,8 +186,35 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
     { enabled: !openEnded }
   );
 
-  return (
-    <View style={styles.card}>
+  // Tap answering, for when the keypad is not at hand: tap the question once
+  // for A, twice for B, three times for C, four for D (src/input/tapAnswers.ts).
+  // Off under a screen reader, where a tap only moves focus and the option
+  // buttons below are the way to answer.
+  const screenReaderOn = useScreenReaderEnabled();
+  const tapMode = !openEnded && !screenReaderOn;
+  const onQuestionTap = useTapCounter({
+    onTap: (count) => {
+      if (choosingRef.current || answered || submitting) return;
+      if (count > options.length) {
+        narration.speak(
+          options.length === 1 ? "There is only one option." : `There are only ${options.length} options.`
+        );
+        return;
+      }
+      // The running count, spoken as it lands, so it can be heard, not guessed.
+      narration.speak(options[count - 1].key.toUpperCase());
+    },
+    onSettled: (count) => {
+      if (choosingRef.current || answered || submitting) return;
+      const letter = letterForTapCount(count);
+      const option = letter ? options.find((o) => o.key === letter) : undefined;
+      // Too many taps was already announced; nothing is submitted.
+      if (option) choose(option.key);
+    },
+  });
+
+  const content = (
+    <>
       <Text style={styles.counter}>
         Question {index + 1} of {total}
       </Text>
@@ -204,23 +233,36 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
             const isCorrect =
               answered && option.key.toLowerCase() === question.correct_answer.trim().toLowerCase();
             const isWrongPick = answered && option.key === selected && !isCorrect;
-            return (
+            const rowStyle = [
+              styles.option,
+              option.key === selected && !answered && styles.optionSelected,
+              isCorrect && styles.optionCorrect,
+              isWrongPick && styles.optionWrong,
+            ];
+            const row = (
+              <>
+                <View style={styles.optionKey}>
+                  <Text style={styles.optionKeyText}>{option.key.toUpperCase()}</Text>
+                </View>
+                <Text style={styles.optionLabel}>{option.label}</Text>
+              </>
+            );
+            // In tap mode an option is a label, not a button: every tap on the
+            // card counts, wherever it lands. A child cannot see where the
+            // buttons are, and a stray touch on one must not answer outright.
+            return tapMode ? (
+              <View key={option.key} style={rowStyle}>
+                {row}
+              </View>
+            ) : (
               <Pressable
                 key={option.key}
                 disabled={answered || submitting}
                 onPress={() => choose(option.key)}
                 accessibilityRole="button"
-                style={[
-                  styles.option,
-                  option.key === selected && !answered && styles.optionSelected,
-                  isCorrect && styles.optionCorrect,
-                  isWrongPick && styles.optionWrong,
-                ]}
+                style={rowStyle}
               >
-                <View style={styles.optionKey}>
-                  <Text style={styles.optionKeyText}>{option.key.toUpperCase()}</Text>
-                </View>
-                <Text style={styles.optionLabel}>{option.label}</Text>
+                {row}
               </Pressable>
             );
           })}
@@ -237,11 +279,26 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
           </Text>
         </View>
       )}
-    </View>
+    </>
+  );
+
+  // In tap mode the whole card is the tap pad, stretched to fill the screen
+  // below the concept header -- the back button stays outside it.
+  return tapMode ? (
+    <Pressable
+      style={[styles.card, styles.tapPad]}
+      onPress={onQuestionTap}
+      accessibilityLabel="Tap once for A, twice for B, three times for C, four times for D."
+    >
+      {content}
+    </Pressable>
+  ) : (
+    <View style={styles.card}>{content}</View>
   );
 }
 
 const styles = StyleSheet.create({
+  tapPad: { flexGrow: 1 },
   card: {
     backgroundColor: colors.surface,
     borderRadius: radii.md,

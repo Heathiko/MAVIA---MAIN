@@ -495,7 +495,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   headerTitle: { flex: 1, textAlign: "center", fontSize: 15, fontWeight: "800", color: colors.ink },
-  body: { paddingBottom: spacing.xl, gap: spacing.xs },
+  body: { flexGrow: 1, paddingBottom: spacing.xl, gap: spacing.xs },
   notice: {
     flexDirection: "row",
     alignItems: "center",
