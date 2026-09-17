@@ -9,13 +9,14 @@ only model involved is the sentence encoder already loaded for grouping, so the
 same concepts always produce the same votes.
 """
 
+import math
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from lessons.services.semantic_grouping import runtime as semantic_runtime
 
 from .concepts import is_structural, resolve_concept
-from .text_signals import mentions, normalize
+from .text_signals import MIN_TERM_LENGTH, STOP_WORDS, mentions, normalize, singular
 
 # ACE's methodology windows the dependent's text rather than embedding it whole,
 # so a single sentence referring to another concept is not diluted by a long
@@ -35,6 +36,23 @@ MAX_IOL = 1e6
 # How much more foundational one concept must be before the ratio counts as
 # evidence rather than as noise. See `inbound_outbound`.
 MIN_IOL_MARGIN = 0.25
+
+# RefD (Liang et al., 2015): A is a prerequisite of B when B refers to A more
+# than A refers to B. A concept is referred to through its *key terms* -- its
+# name plus the terms it introduces. The previous measure compared the
+# embedding of A's name with B's text, which is similarity, not reference:
+# measured on two real lessons, 7 of 8 misses were reversed.
+
+# A term used by more than this share of a topic's concepts belongs to none of
+# them ("particles" in a states-of-matter lesson).
+REF_MAX_DF_RATIO = 0.34
+
+# How much more B must refer to A than A to B for the vote to count.
+REF_MARGIN = 0.05
+
+# ACE (Aytekin & Saygin, 2024) link: a multi-word name phrased differently
+# ("change of state") still counts when a text window is this close to it.
+PHRASE_COSINE = 0.80
 
 
 def _windows(text):
@@ -65,62 +83,126 @@ def concept_names(concepts):
     return {concept.id: resolve_concept(concept) for concept in concepts}
 
 
-def reference_matrix(concepts, runtime_instance=None):
-    """``{(a, b): CSR(a, b)}`` -- how strongly b's text refers to a.
+def concept_text(concept):
+    """All of a concept's wording: every member PDF when known, else its own text."""
+    return getattr(concept, "member_text", "") or concept.content or ""
 
-    The source spec sums the per-window cosines. A sum grows with the number of
-    windows, so a long concept would outscore a short one regardless of how
-    related they are, and these concepts run from nine words to several hundred.
-    The mean measures the same thing without the length bias; recorded as a
-    deviation rather than made silently.
+
+def _terms(text):
+    return [
+        singular(word) for word in normalize(text).split()
+        if word not in STOP_WORDS and len(word) >= MIN_TERM_LENGTH
+    ]
+
+
+def key_terms(concepts):
+    """``{concept id: {term: weight}}`` -- what a concept can be referred to by.
+
+    A distinctive term (used by at most ``REF_MAX_DF_RATIO`` of the concepts)
+    belongs to the concept that *introduces* it -- the earliest concept using
+    it -- and weighs its inverse document frequency. Ownership by densest use
+    was rejected: "The anther makes pollen" introduces pollen, but Pollination
+    uses it more densely, which made Stamen -> Pollination a tie. Words of any concept's name are left
+    to the name itself. The name weighs as much as all the concept's terms
+    together: naming a concept is the plainest reference to it.
     """
-    engine = runtime_instance or semantic_runtime()
+    concepts = list(concepts)
     names = concept_names(concepts)
-
-    named = [concept for concept in concepts if names[concept.id]]
-    windowed = {
-        concept.id: _windows(concept.content) for concept in concepts
+    name_words = {
+        singular(word) for name in names.values() if name for word in name.split()
     }
+    counts = {concept.id: Counter(_terms(concept_text(concept))) for concept in concepts}
+    order = {concept.id: concept.order for concept in concepts}
+    total = len(concepts)
+    frequency = Counter(term for bag in counts.values() for term in bag)
+    limit = max(1, math.floor(total * REF_MAX_DF_RATIO))
 
-    # One encode call for everything: names first, then every window.
-    payload = [names[concept.id] for concept in named]
-    offsets = {}
+    weights = {concept.id: {} for concept in concepts}
+    for term, document_frequency in frequency.items():
+        if document_frequency > limit or term in name_words:
+            continue
+        owner = min(
+            (concept_id for concept_id, bag in counts.items() if bag[term]),
+            key=lambda concept_id: (order[concept_id], concept_id),
+        )
+        weights[owner][term] = math.log(total / document_frequency) if total > 1 else 1.0
+
     for concept in concepts:
-        offsets[concept.id] = (len(payload), len(windowed[concept.id]))
+        name = names[concept.id]
+        if name:
+            weights[concept.id][name] = max(sum(weights[concept.id].values()), 1.0)
+    return {concept_id: terms for concept_id, terms in weights.items() if terms}
+
+
+def _phrase_hits(concepts, phrases, texts, runtime_instance):
+    """``{(holder id, phrase)}`` -- multi-word names a text says in other words."""
+    engine = runtime_instance or semantic_runtime()
+    windowed = {concept.id: _windows(concept_text(concept)) for concept in concepts}
+    payload = list(phrases)
+    for concept in concepts:
         payload.extend(windowed[concept.id])
-    if not payload:
-        return {}
-
     vectors = engine.embeddings(payload)
-    name_vectors = {
-        concept.id: vectors[index] for index, concept in enumerate(named)
-    }
+    phrase_vectors = dict(zip(phrases, vectors[:len(phrases)]))
 
-    matrix = {}
-    for target in named:
-        name_vector = name_vectors[target.id]
+    hits, cursor = set(), len(phrases)
+    for concept in concepts:
+        count = len(windowed[concept.id])
+        window_vectors = vectors[cursor:cursor + count]
+        cursor += count
+        for phrase, phrase_vector in phrase_vectors.items():
+            if mentions(texts[concept.id], phrase):
+                continue
+            if any(
+                sum(left * right for left, right in zip(phrase_vector, window)) >= PHRASE_COSINE
+                for window in window_vectors
+            ):
+                hits.add((concept.id, phrase))
+    return hits
+
+
+def reference_details(concepts, runtime_instance=None):
+    """``(matrix, matched)`` -- ``matrix[(a, b)]`` is how strongly b's text refers to a.
+
+    The score is the weighted share of a's key terms that b's text uses. Only
+    concepts with key terms get rows: a concept that owns nothing cannot be
+    referred to, so no comparison involving it is a measurement.
+    """
+    concepts = list(concepts)
+    terms = key_terms(concepts)
+    names = concept_names(concepts)
+    texts = {concept.id: normalize(concept_text(concept)) for concept in concepts}
+    phrases = sorted({
+        names[concept_id] for concept_id in terms
+        if names.get(concept_id) and len(names[concept_id].split()) > 1
+    })
+    phrase_hits = _phrase_hits(concepts, phrases, texts, runtime_instance) if phrases else set()
+
+    matrix, matched = {}, {}
+    for target_id, weights in terms.items():
+        total = sum(weights.values())
         for holder in concepts:
-            if holder.id == target.id:
+            if holder.id == target_id:
                 continue
-            start, count = offsets[holder.id]
-            if not count:
-                matrix[(target.id, holder.id)] = 0.0
-                continue
-            # Vectors come back normalised, so the dot product is the cosine.
-            total = 0.0
-            for index in range(start, start + count):
-                window = vectors[index]
-                total += sum(left * right for left, right in zip(name_vector, window))
-            matrix[(target.id, holder.id)] = total / count
-    return matrix
+            found = [
+                term for term in weights
+                if mentions(texts[holder.id], term) or (holder.id, term) in phrase_hits
+            ]
+            matrix[(target_id, holder.id)] = sum(weights[term] for term in found) / total
+            matched[(target_id, holder.id)] = sorted(found)
+    return matrix, matched
+
+
+def reference_matrix(concepts, runtime_instance=None):
+    """``{(a, b): score}`` -- how strongly b's text refers to a. See ``reference_details``."""
+    return reference_details(concepts, runtime_instance)[0]
 
 
 def inbound_outbound_ratios(concepts, matrix):
     """``{concept id: IOL}`` -- referenced a lot, referring little, is foundational.
 
-    **Only nameable concepts get a ratio.** Inbound reference is how strongly
-    other text refers to a concept's *name*, so a concept with no name has an
-    inbound of zero by construction, not by measurement. Giving it a ratio of 0
+    **Only concepts with key terms get a ratio.** Inbound reference is how
+    strongly other text refers to a concept's *key terms*, so a concept with
+    none has an inbound of zero by construction, not by measurement. Giving it a ratio of 0
     made every named concept look more foundational than it -- measured on real
     content, 55 verdicts came from nothing but that. The matrix only holds rows
     for nameable targets, so those are exactly the concepts measured here.
@@ -170,7 +252,7 @@ def semantic_reference(a, b, matrix):
     forward, backward = matrix[forward_key], matrix[backward_key]
     if forward <= 0.0 and backward <= 0.0:
         return 0
-    return 1 if forward > backward else 0
+    return 1 if forward - backward > REF_MARGIN else 0
 
 
 def inbound_outbound(a, b, ratios):
@@ -194,19 +276,20 @@ def inbound_outbound(a, b, ratios):
     return 1 if ratios[a.id] > ratios[b.id] * (1.0 + MIN_IOL_MARGIN) else 0
 
 
-def cast_votes(a, b, matrix, ratios):
+def cast_votes(a, b, matrix, ratios, matched=None):
     """Every criterion's vote for "a comes before b", plus the numbers behind it."""
+    matched = matched or {}
     forward = matrix.get((a.id, b.id), 0.0)
     backward = matrix.get((b.id, a.id), 0.0)
     return {
         "temporal_order": temporal_order(a, b),
         "semantic_reference": semantic_reference(a, b, matrix),
         "inbound_outbound": inbound_outbound(a, b, ratios),
-        "csr_forward": round(forward, 6),
-        "csr_backward": round(backward, 6),
-        # Stored even though the vote is binary: moving to a margin-based score
-        # later needs these and nothing else, so no re-derivation.
-        "csr_margin": round(forward - backward, 6),
+        "ref_forward": round(forward, 6),
+        "ref_backward": round(backward, 6),
+        "ref_margin": round(forward - backward, 6),
+        "terms_forward": matched.get((a.id, b.id), []),
+        "terms_backward": matched.get((b.id, a.id), []),
         "iol_prerequisite": round(ratios.get(a.id, 0.0), 6),
         "iol_dependent": round(ratios.get(b.id, 0.0), 6),
     }
@@ -249,7 +332,8 @@ def decide(votes):
 # recognises contrast (NLI) would generalise; it was not adopted because it adds
 # a model and slows the build, and whether contrast causes wrong edges in
 # practice had not yet been measured.
-_CONTRAST = re.compile(r"\b(while|whereas|unlike|but not|although|however)\b", re.I)
+# "than" added 2026-09-17: "more energy than in a solid" compares, it does not build on solids.
+_CONTRAST = re.compile(r"\b(while|whereas|unlike|but not|although|however|than)\b", re.I)
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 
 
@@ -302,7 +386,7 @@ def vetoed(a, b, names):
     a_name, b_name = names.get(a.id), names.get(b.id)
     if a_name and a_name == b_name:
         return True
-    if a_name and only_contrastive_mentions(a_name, b.content):
+    if a_name and only_contrastive_mentions(a_name, concept_text(b)):
         return True
     return False
 
@@ -338,10 +422,8 @@ def crosses_sections(a, b):
 def decide_pairs(concepts, runtime_instance=None):
     """Every ordered pair the criteria accept or send to the teacher, after vetoes.
 
-    **A cross-section edge is never accepted automatically** -- it is at most
-    pending. Parallel sections are the common case, but some lessons do build
-    section on section (Addition before Multiplication), so these edges are
-    left for a teacher to approve rather than discarded.
+    The cross-section flag is recorded for the teacher but no longer caps a
+    verdict: see learning_path/CRITERIA.md (revision 2026-09-17).
     """
     # Examples and similar furniture present concepts; nothing depends on them
     # and they depend on nothing. They are ordered last by `order_with_links`.
@@ -349,7 +431,7 @@ def decide_pairs(concepts, runtime_instance=None):
     if len(concepts) < 2:
         return []
 
-    matrix = reference_matrix(concepts, runtime_instance)
+    matrix, matched = reference_details(concepts, runtime_instance)
     ratios = inbound_outbound_ratios(concepts, matrix)
     names = concept_names(concepts)
 
@@ -359,14 +441,12 @@ def decide_pairs(concepts, runtime_instance=None):
             if a.id == b.id:
                 continue
 
-            votes = cast_votes(a, b, matrix, ratios)
+            votes = cast_votes(a, b, matrix, ratios, matched)
             verdict = decide(votes)
             if verdict is None or vetoed(a, b, names):
                 continue
 
             cross_section = crosses_sections(a, b)
-            if cross_section and verdict == ACCEPTED:
-                verdict = PENDING
 
             decisions.append({
                 "prerequisite": a,

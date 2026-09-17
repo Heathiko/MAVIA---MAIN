@@ -222,9 +222,10 @@ class CastVoteTests(TestCase):
             {(1, 2): 0.4, (2, 1): 0.1}, {1: 2.0, 2: 1.0},
         )
 
-        self.assertEqual(result["csr_forward"], 0.4)
-        self.assertEqual(result["csr_backward"], 0.1)
-        self.assertAlmostEqual(result["csr_margin"], 0.3)
+        # Renamed 2026-09-17: reference is RefD key-term share, not SBERT cosine.
+        self.assertEqual(result["ref_forward"], 0.4)
+        self.assertEqual(result["ref_backward"], 0.1)
+        self.assertAlmostEqual(result["ref_margin"], 0.3)
         self.assertEqual(result["iol_prerequisite"], 2.0)
         self.assertEqual(result["iol_dependent"], 1.0)
 
@@ -267,7 +268,10 @@ class ReferenceMatrixTests(TestCase):
 
     def test_an_unnameable_concept_gets_no_row(self):
         """This absence is what `semantic_reference` reads to abstain."""
-        examples = Stub(1, title="Examples", content="Ice and steam.")
+        # Changed 2026-09-17: rows now exist for concepts owning key terms, not
+        # for named concepts; "Ice and steam." owns "ice" and "steam", so the
+        # nameless concept here uses only a term Solid shares.
+        examples = Stub(1, title="Examples", content="Its shape.")
         solid = Stub(2, title="Solid", content="A solid keeps its shape.")
 
         matrix = reference_matrix([examples, solid], KeywordRuntime())
@@ -383,7 +387,10 @@ class DecidePairTests(TestCase):
         self.assertIn(self._pair("Solid", "Liquid"), self._decisions())
 
     def test_two_concepts_with_the_same_name_are_vetoed(self):
-        self._concept("Solid", "A solid does not flow.", 4)
+        # Changed 2026-09-17: under RefD two concepts named "solid" refer to each
+        # other through the name alone (a tie), so the raw verdict was None and
+        # the veto untested. The second Solid now builds on the first's wording.
+        self._concept("Solid", "A solid keeps its shape because it is rigid.", 4)
         concepts = concepts_for_topic(self.topic)
         first, second = [concept for concept in concepts if concept.title == "Solid"]
 
@@ -404,16 +411,16 @@ class DecidePairTests(TestCase):
         }
         return rows[("Solid", "Liquid")], by_title
 
-    def test_an_edge_across_sections_is_never_accepted_automatically(self):
-        """Regression, measured: every one of 35 cross-section edges in a blind
-        hand-check was wrong. They stay reviewable, never automatic."""
+    def test_crossing_sections_is_recorded_but_no_longer_caps_the_verdict(self):
+        """Changed 2026-09-17: the cap's evidence (35 wrong cross-section edges)
+        came from per-state Examples and diagrams, now excluded or merged; the
+        teacher's gold edge Solid -> Comparing crosses sections."""
         same, _ = self._verdicts_with_sections("States", "States")
-        self.assertEqual(same["verdict"], ACCEPTED)
-        self.assertFalse(same["cross_section"])
-
         crossing, _ = self._verdicts_with_sections("Solids", "Liquids")
-        self.assertEqual(crossing["verdict"], PENDING)
+
+        self.assertFalse(same["cross_section"])
         self.assertTrue(crossing["cross_section"])
+        self.assertEqual(crossing["verdict"], same["verdict"])
 
     def test_a_concept_is_never_its_own_prerequisite(self):
         for (prerequisite, dependent) in self._decisions():
@@ -445,3 +452,81 @@ class DecidePairTests(TestCase):
 
         self.assertIn("A solid is matter that keeps its shape.", concept.member_text)
         self.assertIn("Solid particles vibrate.", concept.member_text)
+
+
+from .services.criteria import key_terms, reference_details
+
+
+def plant_concepts():
+    """Stamen, Pistil and Pollination among enough neighbours that their terms
+    count as distinctive (six concepts: a term may appear in two)."""
+    return [
+        Stub(1, order=0, title="Stamen", content="The stamen has an anther and a filament. The anther makes pollen."),
+        Stub(2, order=1, title="Pistil", content="The pistil has a stigma, a style and an ovary."),
+        Stub(3, order=2, title="Pollination", content="Pollen moves from the anther to the stigma."),
+        Stub(4, order=3, title="Petals", content="Petals attract bees with colour."),
+        Stub(5, order=4, title="Seed", content="A seed holds a tiny plant and stored food."),
+        Stub(6, order=5, title="Fruit", content="A fruit protects seeds and helps spread them."),
+    ]
+
+
+class KeyTermTests(TestCase):
+    def test_a_concept_owns_the_terms_it_introduces(self):
+        terms = key_terms(plant_concepts())
+
+        self.assertIn("anther", terms[1])
+        self.assertIn("pollen", terms[1])
+        self.assertIn("stigma", terms[2])
+        self.assertIn("stamen", terms[1])
+
+    def test_terms_every_concept_uses_belong_to_none(self):
+        concepts = [
+            Stub(index, order=index, title=title, content=f"{title} is made of particles.")
+            for index, title in enumerate(("Solid", "Liquid", "Gas", "Plasma"), start=1)
+        ]
+
+        terms = key_terms(concepts)
+
+        self.assertFalse(any("particle" in weights for weights in terms.values()))
+
+
+class RefDReferenceTests(TestCase):
+    def test_using_a_concepts_terms_is_a_reference_to_it(self):
+        """Regression, topic 79: Stamen -> Pollination scored backwards under
+        name-to-window similarity (0.23 forward, 0.32 backward)."""
+        concepts = plant_concepts()
+        stamen, pollination = concepts[0], concepts[2]
+
+        matrix, matched = reference_details(concepts, KeywordRuntime())
+
+        self.assertGreater(matrix[(1, 3)], matrix[(3, 1)])
+        self.assertIn("anther", matched[(1, 3)])
+        self.assertEqual(semantic_reference(stamen, pollination, matrix), 1)
+        self.assertEqual(semantic_reference(pollination, stamen, matrix), 0)
+
+    def test_a_comparison_is_not_referenced_by_its_parts(self):
+        """Regression, topic 62: every comparative sentence looked like a
+        reference to "Comparing the Three States"."""
+        shape = Stub(1, order=0, title="Shape", content="Solids keep their shape; liquids take the shape of the container.")
+        comparing = Stub(2, order=1, title="Comparing the Three States", content="The table lists shape, volume and flow for each state.")
+
+        matrix, _ = reference_details([shape, comparing], KeywordRuntime())
+
+        self.assertEqual(semantic_reference(comparing, shape, matrix), 0)
+
+
+class ThanContrastTests(TestCase):
+    def test_a_comparison_with_than_is_contrastive(self):
+        self.assertTrue(only_contrastive_mentions("solid", "Particles have more energy than in a solid."))
+
+
+class MemberTextContrastTests(TestCase):
+    def test_a_contrast_only_in_another_pdf_is_still_vetoed(self):
+        """Criteria read every member's text (Task 5 review ruling): a mention
+        that exists only in a second PDF's wording is judged there too."""
+        solid = Stub(1, order=0, title="Solid", content="A solid keeps its shape.")
+        gas = Stub(2, order=1, title="Gas", content="A gas spreads out.")
+        solid.member_text = solid.content
+        gas.member_text = "A gas spreads out. A gas fills its container, unlike a solid."
+
+        self.assertTrue(criteria.vetoed(solid, gas, concept_names([solid, gas])))

@@ -334,3 +334,20 @@ All deliberate:
   have not been switched to it.
 - **Showing the effect of an approval before it is made.**
 - **Confirming the cross-section rule on a second topic.**
+
+## Revision 2026-09-17: RefD key-term reference
+
+Measured on two uploaded lessons against the teacher's gold map
+(`fixtures/gold_map_*.json`), the name-to-window SBERT similarity voted
+backwards on 7 of 8 missed edges, and the cross-section cap blocked correct
+edges such as Solid -> Comparing.
+
+- Semantic reference is now RefD-style: the weighted share of A's key terms
+  (its name plus distinctive terms it introduces) used by B's text. SBERT
+  matches multi-word names phrased differently (`PHRASE_COSINE`).
+- Foundationality is unchanged but reads the new reference scores.
+- Structural concepts (Examples) take part in no pair and are ordered last.
+- "than" clauses count as contrastive.
+- The cross-section cap is removed; `cross_section` is still stored.
+
+Before/after numbers: `docs/learning_path_revision_2026-09-17.md`.
