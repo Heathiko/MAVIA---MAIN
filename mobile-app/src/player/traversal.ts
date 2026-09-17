@@ -76,18 +76,26 @@ export function stepChunk(
   return { versions: step.versions, questions: step.questions };
 }
 
-export function stepTrack(step: ApiStep, variant: Variant, chunkId: number | null): ApiTrack {
+// One track per part of the concept's passage, in reading order. A concept
+// the chunker split into "(Part 1 of 2)" pieces used to reach the player as
+// its first piece only -- the rest of the narration was never heard. The
+// player already walks a multi-track playlist and moves to the questions after
+// the last track, so a split concept needs nothing more than its parts.
+export function stepTracks(step: ApiStep, variant: Variant, chunkId: number | null): ApiTrack[] {
   const { versions } = stepChunk(step, chunkId);
   const version = versions[variant] ?? versions.normal;
-  return {
-    id: `step-${step.position}-${chunkId ?? "representative"}`,
-    order: 0,
-    title: step.title,
+  const parts = version?.parts?.length
+    ? version.parts
+    : [{ text: version?.text ?? "", audio_url: version?.audio_url ?? "" }];
+  return parts.map((part, index) => ({
+    id: `step-${step.position}-${chunkId ?? "representative"}-${variant}-${index}`,
+    order: index,
+    title: parts.length > 1 ? `${step.title} (part ${index + 1} of ${parts.length})` : step.title,
     type: "lesson_content",
-    audio_url: version?.audio_url ?? "",
-    audio_ready: Boolean(version?.audio_url),
-    text: version?.text ?? "",
-  };
+    audio_url: part.audio_url ?? "",
+    audio_ready: Boolean(part.audio_url),
+    text: part.text ?? "",
+  }));
 }
 
 // GeneratedQuestion never carries a correct_answer to the student (see
@@ -129,7 +137,7 @@ export function cardKey(state: PlayerState): string | null {
 }
 
 export function tracksFor(state: PlayerState): ApiTrack[] {
-  if (state.pathStep) return [stepTrack(state.pathStep, state.variant, state.currentChunk)];
+  if (state.pathStep) return stepTracks(state.pathStep, state.variant, state.currentChunk);
   return state.lesson?.tracks ?? [];
 }
 

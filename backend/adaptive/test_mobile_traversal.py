@@ -277,6 +277,47 @@ class MobileTraversalTranscripts(APITestCase):
             previous = group
         return course, topic
 
+    def _split_passage(self):
+        """One passage cut into "(Part 1 of 2)" / "(Part 2 of 2)", published
+        through the real publishing path so the pieces merge, with the
+        concept's only question on the second part -- the shape that used to
+        make the engine skip the concept."""
+        from learning_path.services.publishing import save_learning_path
+
+        course = CourseGroup.objects.create(title="Split course")
+        _module, topic = _topic(course, "Reproduction")
+        material = LearningMaterial.objects.create(
+            course=course, outline_node=topic, title="Flowers",
+            generated_json={
+                "learning_objects_confirmed": True,
+                "lesson_playlist": [
+                    {"narration_item_order": 1, "audio_url": "/media/p1.mp3"},
+                    {"narration_item_order": 2, "audio_url": "/media/p2.mp3"},
+                    {"narration_item_order": 3, "audio_url": "/media/stamen.mp3"},
+                ],
+            },
+        )
+        objects = []
+        for order, title in enumerate([
+            "Reproduction in Flowering Plants (Part 1 of 2)",
+            "Reproduction in Flowering Plants (Part 2 of 2)",
+            "Stamen",
+        ]):
+            group = LearningObjectGroup.objects.create(outline_node=topic, label=title)
+            obj = LearningObject.objects.create(
+                material=material, group=group, title=title, content=f"{title} text.", order=order,
+            )
+            _variants(obj)
+            objects.append(obj)
+        for obj in objects[1:]:
+            GeneratedQuestion.objects.create(
+                node=obj, question_text=f"{obj.title}?", question_format="TF",
+                correct_answer="True", explanation="", bloom_level="remember",
+                thinking_order="LOT", difficulty="easy", status="final",
+            )
+        save_learning_path(topic)
+        return course, topic
+
     # -- scenarios -------------------------------------------------------
 
     def test_all_correct(self):
@@ -324,3 +365,12 @@ class MobileTraversalTranscripts(APITestCase):
     def test_alternating(self):
         course, topic = self._two_concepts_with_prerequisite()
         self._run("alternating", course, topic, lambda i: i % 2 == 0)
+
+    def test_split_passage(self):
+        """Miss twice so the re-teach rungs play across both parts, then clear."""
+        course, topic = self._split_passage()
+        t = self._run("split-passage", course, topic, lambda i: i >= 2)
+        first = t["start"]["current_step"]
+        self.assertEqual(first["position"], 1)
+        self.assertEqual(len(first["versions"]["normal"]["parts"]), 2)
+        self.assertTrue(t["ended_completed"])

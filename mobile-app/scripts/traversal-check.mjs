@@ -119,6 +119,23 @@ for (const file of readdirSync(TRANSCRIPTS).filter((f) => f.endsWith(".json")).s
       );
     }
 
+    // I7. Every part of a split passage is queued, at whichever rung is
+    // active. A concept the chunker cut in two used to play its first piece
+    // only; the rest of the narration silently never happened.
+    if (state.pathStep && state.phase === "audio") {
+      const chunk = state.currentChunk != null
+        ? state.pathStep.alternates.find((a) => a.learning_object_id === state.currentChunk)
+        : null;
+      const versions = (chunk ?? state.pathStep).versions;
+      const version = versions[state.variant] ?? versions.normal;
+      const expected = version?.parts?.length || 1;
+      check(
+        scenario, i, "split passage not queued as one track per part",
+        tracksFor(state).length === expected,
+        `tracks=${tracksFor(state).length} parts=${expected} variant=${state.variant}`
+      );
+    }
+
     // I5. Never a dead screen: whatever phase we land in must have content.
     if (state.phase === "questions") {
       check(

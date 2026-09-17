@@ -178,7 +178,18 @@ export type ApiStepQuestion = {
   category: string;
 };
 
-export type ApiStepVersion = { text: string; audio_url: string } | null;
+// One chunk of a concept's narration. The content chunker splits an
+// oversized passage into "(Part 1 of 2)" pieces; the backend merges those back
+// into one concept and lists every piece here, in reading order, each with its
+// own recording. Play `parts`, not `audio_url` -- that field only covers the
+// whole of `text` when there is a single part.
+export type ApiStepVersionPart = { text: string; audio_url: string };
+
+export type ApiStepVersion = {
+  text: string;
+  audio_url: string;
+  parts?: ApiStepVersionPart[];
+} | null;
 
 export type ApiStepVersions = {
   normal: ApiStepVersion;
