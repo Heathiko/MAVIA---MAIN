@@ -29,6 +29,9 @@ class Concept:
     section_title: str
     kind: str
     order: int
+    # Every member's text, one PDF after another. The criteria read this so a
+    # concept speaks with all its PDFs' wording, not only the Normal version's.
+    member_text: str = ""
     group: Any = field(repr=False, default=None)
     representative: Any = field(repr=False, default=None)
     members: tuple = field(repr=False, default=())
@@ -308,6 +311,8 @@ def concepts_for_topic(node):
     for position, record in enumerate(records):
         group, members = record["group"], record["members"]
         representative = _representative_for(group, members)
+        scan = sorted(members, key=lambda item: _member_scan_key(item, material_rank))
+        member_text = "\n".join(item.content or "" for item in scan)
         concepts.append(
             Concept(
                 id=group.id,
@@ -321,6 +326,7 @@ def concepts_for_topic(node):
                 section_title=representative.section_title or "",
                 kind=representative.kind,
                 order=position,
+                member_text=member_text,
                 group=group,
                 representative=representative,
                 members=tuple(members),

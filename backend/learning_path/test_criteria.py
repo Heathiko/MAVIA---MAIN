@@ -421,3 +421,27 @@ class DecidePairTests(TestCase):
 
     def test_too_few_concepts_decide_nothing(self):
         self.assertEqual(decide_pairs(self.concepts[:1], KeywordRuntime()), [])
+
+    def test_structural_concepts_take_part_in_no_pair(self):
+        examples = self._concept("7. Everyday Examples", "Matter, a solid, a liquid and a gas.", 5)
+        concepts = concepts_for_topic(self.topic)
+
+        decisions = decide_pairs(concepts, KeywordRuntime())
+
+        self.assertFalse(any(
+            examples.id in (row["prerequisite"].id, row["dependent"].id) for row in decisions
+        ))
+
+    def test_member_text_joins_every_pdf(self):
+        other = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="Other", status="completed",
+        )
+        solid = self.by_title["Solid"]
+        LearningObject.objects.create(
+            material=other, group=solid.group, title="Solids",
+            content="Solid particles vibrate.", order=0,
+        )
+        concept = next(c for c in concepts_for_topic(self.topic) if c.id == solid.id)
+
+        self.assertIn("A solid is matter that keeps its shape.", concept.member_text)
+        self.assertIn("Solid particles vibrate.", concept.member_text)

@@ -14,7 +14,7 @@ from collections import defaultdict
 
 from lessons.services.semantic_grouping import runtime as semantic_runtime
 
-from .concepts import resolve_concept
+from .concepts import is_structural, resolve_concept
 from .text_signals import mentions, normalize
 
 # ACE's methodology windows the dependent's text rather than embedding it whole,
@@ -343,7 +343,9 @@ def decide_pairs(concepts, runtime_instance=None):
     section on section (Addition before Multiplication), so these edges are
     left for a teacher to approve rather than discarded.
     """
-    concepts = list(concepts)
+    # Examples and similar furniture present concepts; nothing depends on them
+    # and they depend on nothing. They are ordered last by `order_with_links`.
+    concepts = [concept for concept in concepts if not is_structural(concept)]
     if len(concepts) < 2:
         return []
 
