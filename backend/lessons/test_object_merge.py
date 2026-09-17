@@ -263,6 +263,21 @@ class MergeApiTests(MergeFixture):
         self.assertEqual(response.status_code, 400)
         self.assertIn("same PDF", response.data["detail"])
 
+    def test_merge_endpoint_rejects_a_non_list_body(self):
+        client = authenticated_api_client()
+        before = sorted(self.material.learning_objects.values_list("title", flat=True))
+
+        response = client.post(
+            self._url("merge-learning-objects/"),
+            {"learning_object_ids": "12"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            sorted(self.material.learning_objects.values_list("title", flat=True)), before,
+        )
+
     def test_split_endpoint_restores_the_originals(self):
         kept, _ = merge_learning_objects([self.shape, self.volume])
         client = authenticated_api_client()

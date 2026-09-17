@@ -628,6 +628,11 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         except OutlineNode.DoesNotExist:
             return Response({"detail": "Outline node not found."}, status=status.HTTP_404_NOT_FOUND)
         raw_ids = request.data.get("learning_object_ids")
+        if not isinstance(raw_ids, list):
+            return Response(
+                {"detail": "Provide learning_object_ids as a list of integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             object_ids = {int(value) for value in raw_ids}
         except (TypeError, ValueError):
