@@ -270,3 +270,149 @@ class OccupiedPairTests(UnitFixture):
         self.assertEqual(merged.group_id, self.solid_a.group_id)
         accepted.refresh_from_db()
         self.assertEqual(accepted.status, LearningObjectMatchSuggestion.Status.ACCEPTED)
+
+
+class MergedRowTests(UnitFixture):
+    """A row that is already merged cannot be merged again, so it never joins a unit."""
+
+    def test_a_merged_row_neither_joins_nor_extends_a_unit(self):
+        LearningObject.objects.filter(pk=self.table_b.id).update(merged_from=[{"id": self.table_b.id}])
+        rows = list(self.b.learning_objects.all())
+
+        labels = {unit.label: unit.ids for unit in find_units(rows)}
+
+        self.assertNotIn(heading_key("Comparing the Three States"), labels)
+        for candidate in heading_unit_candidates(self.topic):
+            for side in (candidate["left"], candidate["right"]):
+                if len(side) > 1:
+                    self.assertNotIn(self.table_b.id, [item.id for item in side])
+
+
+class UnitDecisionTests(UnitFixture):
+    """Teacher decisions on unit suggestions are recorded and never overwritten."""
+
+    def _refresh(self, score=0.5):
+        runtime = FakeRuntime()
+        runtime.pair_scores = lambda pairs: [score for _ in pairs]
+        with patch.dict(os.environ, SEMANTIC_ENV):
+            return refresh_heading_unit_suggestions(self.topic, runtime_instance=runtime)
+
+    def _url(self, suggestion, verb):
+        return (
+            f"/api/courses/{self.course.id}/outline-nodes/{self.topic.id}"
+            f"/match-suggestions/{suggestion.id}/{verb}/"
+        )
+
+    def _unit_row(self, **fields):
+        return LearningObjectMatchSuggestion.objects.create(
+            outline_node=self.topic,
+            source_learning_object=self.solid_a,
+            candidate_learning_object=self.diagram_b,
+            similarity_score=0.5,
+            confidence=LearningObjectMatchSuggestion.Confidence.MEDIUM,
+            status=LearningObjectMatchSuggestion.Status.PENDING,
+            candidate_extra_ids=[self.solids_b.id],
+            evidence={"method": "heading_unit_v1", "label": "solid"},
+            **fields,
+        )
+
+    def test_declining_a_unit_suggestion_whose_kept_rows_differ_in_kind_is_recorded(self):
+        LearningObject.objects.filter(pk=self.examples_a.id).update(kind="image")
+        self._refresh()
+        suggestion = LearningObjectMatchSuggestion.objects.get(evidence__label=heading_key("Everyday Examples"))
+        kinds = {suggestion.source_learning_object.kind, suggestion.candidate_learning_object.kind}
+        self.assertEqual(kinds, {"image", "text"})
+        extras = (list(suggestion.source_extra_ids), list(suggestion.candidate_extra_ids))
+
+        response = authenticated_api_client().post(self._url(suggestion, "reject"), format="json")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        suggestion.refresh_from_db()
+        self.assertEqual(suggestion.status, LearningObjectMatchSuggestion.Status.REJECTED)
+        self.assertTrue(suggestion.evidence["teacher_reviewed"])
+        self.assertEqual(suggestion.evidence["teacher_decision"], "rejected")
+        self.assertEqual(suggestion.evidence["method"], "heading_unit_v1")
+        self.assertEqual((suggestion.source_extra_ids, suggestion.candidate_extra_ids), extras)
+
+    def test_a_declined_unit_stays_declined_when_its_members_change(self):
+        self._refresh()
+        suggestion = LearningObjectMatchSuggestion.objects.get(evidence__label="solid")
+        response = authenticated_api_client().post(self._url(suggestion, "reject"), format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        suggestion.refresh_from_db()
+        extras = (list(suggestion.source_extra_ids), list(suggestion.candidate_extra_ids))
+        self._object(self.b, "Particles in a solid", "Solids", 1)
+
+        self._refresh()
+
+        suggestion.refresh_from_db()
+        self.assertEqual(suggestion.status, LearningObjectMatchSuggestion.Status.REJECTED)
+        self.assertEqual((suggestion.source_extra_ids, suggestion.candidate_extra_ids), extras)
+
+    def test_a_failure_after_merging_rolls_the_whole_accept_back(self):
+        self._refresh()
+        suggestion = LearningObjectMatchSuggestion.objects.get(
+            evidence__label=heading_key("Comparing the Three States"),
+        )
+
+        with patch(
+            "lessons.views.CourseGroupViewSet._refresh_relationship_snapshots",
+            side_effect=RuntimeError("snapshot failed"),
+        ):
+            with self.assertRaises(RuntimeError):
+                authenticated_api_client().post(self._url(suggestion, "accept"), format="json")
+
+        self.assertEqual(
+            LearningObject.objects.filter(pk__in=[self.volume.id, self.table_b.id]).count(), 2,
+        )
+        self.assertEqual(LearningObject.objects.get(pk=self.shape.id).merged_from, [])
+        suggestion.refresh_from_db()
+        self.assertEqual(suggestion.status, LearningObjectMatchSuggestion.Status.PENDING)
+        self.assertTrue(suggestion.source_extra_ids or suggestion.candidate_extra_ids)
+
+    def test_a_declined_kept_pair_refuses_the_accept_before_merging(self):
+        declined = LearningObjectMatchSuggestion.objects.create(
+            outline_node=self.topic,
+            source_learning_object=self.solid_a,
+            candidate_learning_object=self.solids_b,
+            similarity_score=0.9,
+            confidence=LearningObjectMatchSuggestion.Confidence.TEACHER_CONFIRMED,
+            status=LearningObjectMatchSuggestion.Status.REJECTED,
+            evidence={"teacher_reviewed": True, "teacher_decision": "rejected"},
+        )
+        unit = self._unit_row()
+
+        response = authenticated_api_client().post(self._url(unit, "accept"), format="json")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("declined", response.data["detail"])
+        self.assertTrue(LearningObject.objects.filter(pk=self.diagram_b.id).exists())
+        self.assertEqual(LearningObject.objects.get(pk=self.solids_b.id).merged_from, [])
+        declined.refresh_from_db()
+        unit.refresh_from_db()
+        self.assertEqual(declined.status, LearningObjectMatchSuggestion.Status.REJECTED)
+        self.assertEqual(unit.status, LearningObjectMatchSuggestion.Status.PENDING)
+
+    def test_an_accepted_kept_pair_keeps_its_teacher_evidence(self):
+        accepted = LearningObjectMatchSuggestion.objects.create(
+            outline_node=self.topic,
+            source_learning_object=self.solid_a,
+            candidate_learning_object=self.solids_b,
+            similarity_score=0.9,
+            confidence=LearningObjectMatchSuggestion.Confidence.TEACHER_CONFIRMED,
+            status=LearningObjectMatchSuggestion.Status.ACCEPTED,
+            evidence={"method": "content_sts_v1", "teacher_reviewed": True, "teacher_decision": "accepted"},
+        )
+        unit = self._unit_row()
+
+        response = authenticated_api_client().post(self._url(unit, "accept"), format="json")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn("unpublished", response.data)
+        self.assertFalse(LearningObject.objects.filter(pk=self.diagram_b.id).exists())
+        accepted.refresh_from_db()
+        self.assertEqual(accepted.status, LearningObjectMatchSuggestion.Status.ACCEPTED)
+        self.assertEqual(accepted.confidence, LearningObjectMatchSuggestion.Confidence.TEACHER_CONFIRMED)
+        self.assertTrue(accepted.evidence["teacher_reviewed"])
+        self.assertEqual(accepted.evidence["teacher_decision"], "accepted")
+        self.assertEqual((accepted.source_extra_ids, accepted.candidate_extra_ids), ([], []))

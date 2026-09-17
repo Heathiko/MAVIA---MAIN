@@ -250,6 +250,43 @@ class MergeApiTests(MergeFixture):
             if item["id"] == self.shape.id
         ][0]
         self.assertEqual([part["title"] for part in parts], ["Shape", "Volume", "Flow"])
+        self.assertIs(response.data["unpublished"], False)
+
+    def test_merge_endpoint_reports_an_unpublished_topic(self):
+        OutlineNode.objects.filter(pk=self.topic.pk).update(published=True)
+        client = authenticated_api_client()
+
+        response = client.post(
+            self._url("merge-learning-objects/"),
+            {"learning_object_ids": [self.shape.id, self.volume.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIs(response.data["unpublished"], True)
+
+    def test_reconfirming_after_a_merge_does_not_recreate_merged_away_rows(self):
+        client = authenticated_api_client()
+        merged = client.post(
+            self._url("merge-learning-objects/"),
+            {"learning_object_ids": [self.shape.id, self.volume.id, self.flow.id]},
+            format="json",
+        )
+        self.assertEqual(merged.status_code, 200, merged.data)
+
+        response = client.post(
+            f"/api/courses/{self.course.id}/materials/{self.material.id}/confirm-learning-objects/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(LearningObject.objects.filter(pk__in=[self.volume.id, self.flow.id]).exists())
+        self.assertEqual(
+            sorted(self.material.learning_objects.values_list("title", flat=True)),
+            ["Comparing", "Examples", "Matter"],
+        )
+        self.assertEqual(len(LearningObject.objects.get(pk=self.shape.id).merged_from), 3)
 
     def test_merge_endpoint_rejects_objects_from_two_pdfs(self):
         client = authenticated_api_client()
@@ -285,6 +322,7 @@ class MergeApiTests(MergeFixture):
         response = client.post(self._url(f"learning-objects/{kept.id}/split/"), format="json")
 
         self.assertEqual(response.status_code, 200, response.data)
+        self.assertIs(response.data["unpublished"], False)
         self.assertEqual(
             sorted(self.material.learning_objects.values_list("title", flat=True)),
             ["Examples", "Flow", "Matter", "Shape", "Volume"],

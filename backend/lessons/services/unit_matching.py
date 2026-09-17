@@ -45,14 +45,19 @@ def find_units(objects):
     A run continues while the next object sits under the same section heading,
     or carries that heading as its own title -- extraction sometimes drops the
     section of a figure ("5. Comparing the Three States") but keeps its title.
+    An already merged row never joins a unit (merging it again is refused);
+    it ends the run instead, so the rows around it are not treated as adjacent.
     """
     ordered = sorted(objects, key=lambda item: (item.order, item.id))
     units, index = [], 0
     while index < len(ordered):
         first = ordered[index]
+        if first.merged_from:
+            index += 1
+            continue
         label = heading_key(first.section_title) or heading_key(first.title)
         end = index + 1
-        while label and end < len(ordered) and label in (
+        while label and end < len(ordered) and not ordered[end].merged_from and label in (
             heading_key(ordered[end].section_title),
             heading_key(ordered[end].title),
         ):
@@ -142,7 +147,7 @@ def _resolve_unit_pairing(source, source_side, candidate_row, candidate_side):
         and (existing.evidence or {}).get("method") == METHOD
     ):
         # Our own rejected unit suggestion: leave the natural key so the
-        # "same extras" check below can decide whether to skip recreating it.
+        # caller sees the decision and skips the pair.
         return source, source_side, candidate_row, candidate_side
 
     if len(candidate_side) > 1:
@@ -208,12 +213,9 @@ def refresh_heading_unit_suggestions(node, runtime_instance=None):
         existing = LearningObjectMatchSuggestion.objects.filter(
             source_learning_object=source, candidate_learning_object=candidate_row,
         ).first()
-        if (
-            existing
-            and existing.status == LearningObjectMatchSuggestion.Status.REJECTED
-            and existing.source_extra_ids == source_extra
-            and existing.candidate_extra_ids == candidate_extra
-        ):
+        if existing and existing.status != LearningObjectMatchSuggestion.Status.PENDING:
+            # A teacher decision is never overwritten, even when the unit's
+            # members have changed since it was declined.
             continue
         LearningObjectMatchSuggestion.objects.update_or_create(
             source_learning_object=source,
