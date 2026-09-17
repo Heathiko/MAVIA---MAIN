@@ -22,6 +22,8 @@ time (``current_question`` for legacy, ``current_step_position`` +
 ``evaluate`` on ``AdaptiveEngine``.
 """
 
+from django.utils import timezone
+
 from lessons.models import OutlineNode, Question
 from adaptive_config.models import AdaptiveConfig
 from learning_path.services import get_published_path
@@ -196,11 +198,31 @@ def answer_is_correct(question, selected_answer):
 # path traversal (learning_path prerequisites) -- see learning_path/HANDOFF.md
 # ---------------------------------------------------------------------------
 
-# Same cap as MAX_QUESTION_ATTEMPTS: after this many misses on one question,
-# the engine stops asking it again -- either by detouring through a
-# prerequisite, or (if there is none, or the detour is already underway) by
-# re-teaching the same step in a plainer variant.
+# Unlike the legacy engine's flat MAX_QUESTION_ATTEMPTS, path mode reacts on
+# every miss rather than batching three identical ones before doing anything:
+# variant escalates on attempt 1 and 2 (normal -> simplified -> elaborated),
+# and a third miss on the same question -- now at "elaborated", nowhere left
+# to escalate to -- is what triggers a reroute. This constant documents that
+# ladder length; it isn't a counter compared against elsewhere in this file.
 MAX_STEP_QUESTION_ATTEMPTS = 3
+
+# How many times a single step may walk the whole variant ladder before the
+# engine stops teaching it. Only a step with no structural remedy available at
+# all -- no prerequisite to detour through, no alternate chunk to switch to --
+# ever reaches a second pass; see _reroute. It exists so a learner who misses
+# the *root* concept is taught it again rather than pushed straight into
+# material that depends on the very thing they just missed. Counted with
+# LearningState.current_question_attempts, which every real move resets, so it
+# only ever measures time spent on the step in hand.
+MAX_LADDER_PASSES = 2
+
+# How many nested prerequisite detours a single reroute chain may hold at
+# once (LearningState.remediation_stack). Bounds how far back a struggling
+# learner can be walked before the engine gives up on rerouting and falls
+# back to this step's alternate chunk instead -- an unbounded chain has no
+# guaranteed floor and risks marching someone through the whole prerequisite
+# graph on one hard concept.
+MAX_REMEDIATION_DEPTH = 2
 
 VARIANT_ORDER = ["normal", "simplified", "elaborated"]
 
@@ -222,23 +244,65 @@ def _position_of_concept(path, concept_id):
     return step["position"] if step else None
 
 
-def _ordered_step_questions(step):
+def _chunk_content(step, chunk_id):
+    """``(versions, questions)`` for one learning object's telling of `step`'s
+    concept. ``chunk_id=None`` means the step's representative (the default,
+    and the only option before chunk-switching existed); otherwise the
+    matching entry in ``step["alternates"]``. Falls back to the representative
+    if `chunk_id` no longer matches anything (e.g. a republish dropped that
+    alternate) rather than raising mid-assessment."""
+    if chunk_id is not None:
+        for alt in step.get("alternates", []):
+            if alt["learning_object_id"] == chunk_id:
+                return alt["versions"], alt["questions"]
+    return step["versions"], step["questions"]
+
+
+def _unused_alternate(step, chunk_id):
+    """The one alternate chunk still worth trying for `step`, or ``None``.
+
+    Only tracks a single "has this step switched chunks yet" bit
+    (``LearningState.current_chunk``), so with more than one alternate PDF for
+    the same concept only the first is ever reached. Same shape as
+    PATH_MODE.md's other "one level deep" limitations -- revisit if a topic
+    with 3+ independent tellings of one concept shows up in practice.
+    """
+    alternates = step.get("alternates") or []
+    if not alternates or chunk_id is not None:
+        return None
+    return alternates[0]
+
+
+def _ordered_step_questions(step, chunk_id=None):
     """LOT before HOT, then id -- a step holds one concept's questions, so
     this plays the role TIER_BUCKETS plays for the legacy engine without
     needing bucket machinery."""
-    return sorted(step["questions"], key=lambda q: (q["thinking_order"] == "HOT", q["id"]))
+    _versions, questions = _chunk_content(step, chunk_id)
+    return sorted(questions, key=lambda q: (q["thinking_order"] == "HOT", q["id"]))
 
 
-def _next_question_in_step(step, exclude_ids):
-    for question in _ordered_step_questions(step):
+def _next_question_in_step(step, exclude_ids, chunk_id=None):
+    for question in _ordered_step_questions(step, chunk_id):
         if question["id"] not in exclude_ids:
             return question
     return None
 
 
-def _next_step_with_question(path, after_position):
+def _next_step_with_question(path, after_position, learning_state=None):
+    """The first step after ``after_position`` that still has something to ask.
+
+    With ``learning_state``, "to ask" excludes questions the learner has
+    already answered correctly. Without that, a step they cleared on an
+    earlier pass still looks like somewhere to send them: it *has* questions,
+    they are just all spent. ``_advance_past`` would then pick it, ask
+    ``_next_question_in_step`` for one, get ``None`` back and crash
+    subscripting it -- a 500 on submit-response, mid-lesson.
+    """
     for step in path["steps"]:
-        if step["position"] > after_position and _ordered_step_questions(step):
+        if step["position"] <= after_position:
+            continue
+        exclude = _step_answered_ids(learning_state, step) if learning_state is not None else set()
+        if _next_question_in_step(step, exclude) is not None:
             return step
     return None
 
@@ -260,13 +324,40 @@ def resolve_path_start(node):
     return path, None, None
 
 
+# True/False answers arrive from the student's device as "a"/"b", not spelled
+# out. The braille numpad has one physical key per letter, so a two-option
+# True/False question has to land on the same two keys as the first two
+# options of a multiple-choice one -- otherwise the same finger position means
+# different things from question to question. GeneratedQuestion stores TF
+# answers as the words "True"/"False" with no choices dict, so the letters
+# have to be accepted here rather than translated on the device (which never
+# holds a correct answer to translate against). The legacy engine already does
+# the same, in _acceptable_answers.
+# See mobile-app/src/components/QuestionCard.tsx::optionsFor.
+_TRUE_FORMS = {"true", "t", "a"}
+_FALSE_FORMS = {"false", "f", "b"}
+_TF_WORDS = {"true", "t", "false", "f"}
+
+
 def path_answer_is_correct(question, selected_answer):
     """``question`` is one entry of a step's ``questions`` list (a dict from
     ``get_published_path``, not a ``GeneratedQuestion`` row)."""
     correct = str(question["correct_answer"] or "").strip()
     selected = str(selected_answer or "").strip()
+    if not selected:
+        return False
     if selected.upper() == correct.upper():
         return True
+
+    # Gated on the question actually being True/False: an MCQ's correct answer
+    # is a bare letter, and "A" would otherwise look like the word "true".
+    is_tf = (question.get("format") or "").upper() == "TF" or correct.lower() in _TF_WORDS
+    if is_tf:
+        return any(
+            correct.lower() in forms and selected.lower() in forms
+            for forms in (_TRUE_FORMS, _FALSE_FORMS)
+        )
+
     choices = question.get("choices") or {}
     if isinstance(choices, dict):
         for letter, text in choices.items():
@@ -275,14 +366,18 @@ def path_answer_is_correct(question, selected_answer):
     return False
 
 
-def _step_answered_ids(learning_state, step):
-    """Ids of this step's questions the learner already has correct on
-    record -- used so re-entering a step (e.g. resuming after a prerequisite
-    detour) does not re-ask something already cleared."""
-    step_ids = {q["id"] for q in step["questions"]}
+def _step_answered_ids(learning_state, step, chunk_id=None):
+    """Ids of this step's questions (for the given chunk) the learner already
+    has correct on record -- used so re-entering a step (e.g. resuming after a
+    prerequisite detour, or switching to an alternate chunk) does not re-ask
+    something already cleared."""
+    _versions, questions = _chunk_content(step, chunk_id)
+    step_ids = {q["id"] for q in questions}
     return set(
         learning_state.responses.filter(
-            generated_question_id__in=step_ids, is_correct=True
+            generated_question_id__in=step_ids,
+            is_correct=True,
+            created_at__gte=learning_state.attempt_started_at,
         ).values_list("generated_question_id", flat=True)
     )
 
@@ -299,7 +394,14 @@ def student_safe_question(question):
 
 
 def student_safe_step(step):
-    return {**step, "questions": [student_safe_question(q) for q in step["questions"]]}
+    return {
+        **step,
+        "questions": [student_safe_question(q) for q in step["questions"]],
+        "alternates": [
+            {**alt, "questions": [student_safe_question(q) for q in alt["questions"]]}
+            for alt in step.get("alternates", [])
+        ],
+    }
 
 
 def _course_topic_nodes(course):
@@ -347,6 +449,51 @@ def _enter_topic(node):
         return "path", step, question
     questions = lesson_questions(node)
     return "legacy", None, (questions[0] if questions else None)
+
+
+def start_topic(learning_state, node, *, fresh_attempt=False):
+    """Point ``learning_state`` at the start of ``node``. Returns ``False`` if
+    the topic has nothing to teach.
+
+    ``fresh_attempt`` resets what counts as "already cleared". Pass it when
+    replaying something finished, so the learner is actually taught again
+    rather than advanced straight back to the end. Leave it off when merely
+    switching topics, so returning to a half-finished one picks up roughly
+    where it was left instead of starting over.
+
+    Used when the student opens a topic the engine's cursor is not on: they
+    picked a different lesson from the list, or they finished the course and
+    came back to it. Without this the state keeps a cursor belonging somewhere
+    else -- or nowhere at all, once ``completed`` -- ``_current_step_payload``
+    returns ``None``, and the player silently drops out of path mode into a
+    flat playlist with no questions after any concept.
+    """
+    mode, step, question = _enter_topic(node)
+    if question is None:
+        return False
+
+    learning_state.current_lesson_node = node
+    learning_state.current_module = top_level_ancestor(node)
+    learning_state.current_variant = "normal"
+    learning_state.current_chunk_id = None
+    learning_state.current_question_attempts = 0
+    learning_state.remediation_stack = []
+    learning_state.remediated_positions = []
+    learning_state.completed = False
+    if fresh_attempt:
+        # Answers from the finished run stay on record but stop counting as
+        # "already cleared" -- see LearningState.attempt_started_at.
+        learning_state.attempt_started_at = timezone.now()
+
+    if mode == "path":
+        learning_state.current_step_position = step["position"]
+        learning_state.current_generated_question = GeneratedQuestion.objects.get(pk=question["id"])
+        learning_state.current_question = None
+    else:
+        learning_state.current_step_position = None
+        learning_state.current_generated_question = None
+        learning_state.current_question = question
+    return True
 
 
 def resolve_learning_start(course):
@@ -446,11 +593,19 @@ class AdaptiveEngine:
 
         ``path`` is the topic's published learning path (``published_path_for``);
         ``question`` is one entry of the *current step's* ``questions`` list --
-        a dict, not a ``GeneratedQuestion`` row. On repeated failure this sends
-        the learner through the step's nearest prerequisite (HANDOFF.md's own
-        sketch) instead of just stepping down difficulty in place; a step with
-        no prerequisite to fall back on is re-taught in a plainer variant
-        instead, mirroring the legacy engine's step-down-and-retry.
+        a dict, not a ``GeneratedQuestion`` row -- for whichever chunk
+        (``learning_state.current_chunk``) is currently active.
+
+        On a miss, this reacts every time rather than batching three identical
+        misses before doing anything: the content variant escalates in place
+        first (normal -> simplified -> elaborated, one rung per miss, same
+        question shown again each time) before anything structural happens.
+        Only once elaborated has also failed does it reroute -- first through
+        the step's nearest prerequisite (HANDOFF.md's own sketch), then this
+        step's *alternate* chunk (a different uploaded PDF's own telling of
+        the same concept, rather than another reword of the same one), and
+        for a step that had neither, one more pass through the ladder before
+        giving up. See ``_reroute`` and ``adaptive/PATH_MODE.md``.
         """
         is_correct = path_answer_is_correct(question, selected_answer)
         learning_state.mastery = _bkt_update(learning_state.mastery, is_correct)
@@ -459,61 +614,24 @@ class AdaptiveEngine:
 
         if is_correct:
             learning_state.current_question_attempts = 0
-            answered = _step_answered_ids(learning_state, current_step) | {question["id"]}
-            next_question = _next_question_in_step(current_step, answered)
+            chunk_id = learning_state.current_chunk_id
+            answered = _step_answered_ids(learning_state, current_step, chunk_id) | {question["id"]}
+            next_question = _next_question_in_step(current_step, answered, chunk_id)
 
             if next_question is not None:
-                learning_state.current_generated_question = GeneratedQuestion.objects.get(
-                    pk=next_question["id"]
-                )
-            elif learning_state.remediation_target_position is not None:
-                # Cleared the prerequisite detour -- resume where the learner
-                # struggled, picking up whichever of its questions aren't
-                # already answered.
-                resume_position = learning_state.remediation_target_position
-                learning_state.remediation_target_position = None
-                resume_step = _step_by_position(path, resume_position)
-                resume_question = _next_question_in_step(
-                    resume_step, _step_answered_ids(learning_state, resume_step)
-                )
-                if resume_question is not None:
-                    learning_state.current_step_position = resume_position
-                    learning_state.current_generated_question = GeneratedQuestion.objects.get(
-                        pk=resume_question["id"]
-                    )
-                else:
-                    # The struggled-on step is now fully cleared too --
-                    # nothing left to resume, carry straight on from there.
-                    AdaptiveEngine._advance_past(learning_state, path, resume_position)
+                learning_state.current_generated_question_id = next_question["id"]
             else:
-                AdaptiveEngine._advance_past(learning_state, path, learning_state.current_step_position)
+                AdaptiveEngine._resume_or_advance(
+                    learning_state, path, learning_state.current_step_position
+                )
         else:
             learning_state.current_question_attempts += 1
-            if learning_state.current_question_attempts >= MAX_STEP_QUESTION_ATTEMPTS:
-                learning_state.current_question_attempts = 0
-                prerequisites = current_step["prerequisites"]
-                detoured = False
-                if learning_state.remediation_target_position is None and prerequisites:
-                    # Already in path order, nearest (highest position) last.
-                    target_step = _step_by_position(path, _position_of_concept(path, prerequisites[-1]))
-                    # A prerequisite step is, by definition, one the learner
-                    # already cleared to get here -- re-serve its first
-                    # question as a refresher regardless of that history,
-                    # rather than only when it happens to have one left over.
-                    target_question = _next_question_in_step(target_step, exclude_ids=())
-                    if target_question is not None:
-                        learning_state.remediation_target_position = learning_state.current_step_position
-                        learning_state.current_step_position = target_step["position"]
-                        learning_state.current_generated_question = GeneratedQuestion.objects.get(
-                            pk=target_question["id"]
-                        )
-                        learning_state.current_variant = "normal"
-                        detoured = True
-                if not detoured:
-                    # No prerequisite to send them through (or the detour
-                    # itself is what's failing) -- re-teach this step plainer
-                    # rather than recurse into a second level of remediation.
-                    learning_state.current_variant = _escalate_variant(learning_state.current_variant)
+            if learning_state.current_variant != "elaborated":
+                # Cheapest remedy first: re-explain the same question's
+                # content one rung plainer/richer before anything structural.
+                learning_state.current_variant = _escalate_variant(learning_state.current_variant)
+            else:
+                AdaptiveEngine._reroute(learning_state, path, current_step)
 
         learning_state.save()
 
@@ -524,20 +642,176 @@ class AdaptiveEngine:
             "next_module": learning_state.current_module_id,
             "next_lesson_node": learning_state.current_lesson_node_id,
             "next_step_position": learning_state.current_step_position,
-            "remediation_target_position": learning_state.remediation_target_position,
+            "remediation_target_position": (
+                learning_state.remediation_stack[-1]["position"]
+                if learning_state.remediation_stack else None
+            ),
+            "current_chunk": learning_state.current_chunk_id,
             "current_variant": learning_state.current_variant,
-            "next_question": learning_state.current_generated_question_id,
+            # Usually the path-mode question just assigned; but _advance_past
+            # can hand off to a topic with no published path (legacy mode),
+            # where the assignment lands on current_question instead -- still
+            # "the next question to answer" from the caller's point of view.
+            "next_question": (
+                learning_state.current_generated_question_id
+                or learning_state.current_question_id
+            ),
         }
 
     @staticmethod
+    def _reroute(learning_state, path, current_step):
+        """``current_step`` has just failed at its most elaborated variant --
+        nowhere left to escalate *this* question's content to. Tries, in
+        priority order:
+
+        1. Detour through the nearest prerequisite (last in ``prerequisites``,
+           already nearest-last in path order), if one exists and the
+           remediation stack has room (``MAX_REMEDIATION_DEPTH``) -- the
+           bigger, structural intervention, tried first per the user's own
+           ruling. A prerequisite step is, by definition, one the learner
+           already cleared to get here; its first question is re-served as a
+           refresher regardless of that history.
+        2. This step's alternate chunk, if it has one and hasn't been tried
+           yet -- a different PDF's independent explanation, tried only once
+           a detour isn't possible (a leaf concept with no prerequisite) or
+           the remediation stack is already full.
+        3. A second pass through the variant ladder, but *only* for a step
+           that had neither of the above available -- no prerequisite and no
+           alternate, so nothing structural could ever help it. Every other
+           step gets the ladder plus one structural intervention; a root
+           concept would get the ladder alone and then be pushed into
+           material that depends on the concept it just missed. Bounded by
+           ``MAX_LADDER_PASSES``.
+        4. Nothing left to try: give up rerouting this step and move the
+           learner on, via ``_resume_or_advance`` -- the same "never strand
+           anyone" floor the rest of this engine already guarantees. Crucial
+           that this goes through ``_resume_or_advance`` and not straight to
+           ``_advance_past``: if this step was itself a prerequisite detour,
+           there may still be an outer step waiting on the remediation stack
+           to be resumed.
+        """
+        prerequisites = current_step["prerequisites"]
+        position = learning_state.current_step_position
+        # A step gets one detour, not one per failure. The stack is popped on
+        # the way back (see _resume_or_advance), so without this record a step
+        # that fails again immediately after being resumed would detour into
+        # the same prerequisite again, and again -- a learner who keeps missing
+        # never escapes the loop. MAX_REMEDIATION_DEPTH bounds nesting; this
+        # bounds repetition.
+        spent = position in learning_state.remediated_positions
+        if prerequisites and not spent and len(learning_state.remediation_stack) < MAX_REMEDIATION_DEPTH:
+            target_step = _step_by_position(path, _position_of_concept(path, prerequisites[-1]))
+            target_question = _next_question_in_step(target_step, exclude_ids=())
+            if target_question is not None:
+                learning_state.remediation_stack = learning_state.remediation_stack + [{
+                    "position": position,
+                    "chunk_id": learning_state.current_chunk_id,
+                }]
+                learning_state.remediated_positions = learning_state.remediated_positions + [position]
+                learning_state.current_step_position = target_step["position"]
+                learning_state.current_chunk_id = None
+                learning_state.current_variant = "normal"
+                learning_state.current_question_attempts = 0
+                learning_state.current_generated_question_id = target_question["id"]
+                return
+
+        alternates = current_step.get("alternates") or []
+        alternate = _unused_alternate(current_step, learning_state.current_chunk_id)
+        if alternate is not None:
+            alt_question = _next_question_in_step(
+                current_step, exclude_ids=(), chunk_id=alternate["learning_object_id"]
+            )
+            if alt_question is not None:
+                learning_state.current_chunk_id = alternate["learning_object_id"]
+                learning_state.current_variant = "normal"
+                learning_state.current_question_attempts = 0
+                learning_state.current_generated_question_id = alt_question["id"]
+                return
+
+        # Nothing structural was ever available for this step: no prerequisite
+        # to send the learner back through, and no second book's telling of the
+        # concept to switch to. Every other step gets the ladder *plus* one
+        # structural intervention; this one would get the ladder alone and then
+        # be pushed forward into material that depends on the very concept it
+        # just missed. Teach it once more from the top instead, so the effort
+        # spent on it is comparable. Bounded by MAX_LADDER_PASSES.
+        if not prerequisites and not alternates:
+            if learning_state.current_question_attempts < MAX_LADDER_PASSES * MAX_STEP_QUESTION_ATTEMPTS:
+                # Deliberately *not* resetting current_question_attempts: it is
+                # what counts the passes.
+                learning_state.current_variant = "normal"
+                return
+
+        learning_state.current_question_attempts = 0
+        AdaptiveEngine._resume_or_advance(learning_state, path, learning_state.current_step_position)
+
+    @staticmethod
+    def _resume_or_advance(learning_state, path, position):
+        """Step ``position`` has nothing left to do on it -- either its
+        questions are all answered, or ``_reroute`` gave up trying to
+        remediate it. Resume whatever's waiting on the remediation stack
+        (possibly several detours deep), preferring an unused alternate chunk
+        over repeating content that already failed; if nothing is pending,
+        move on to the next step or topic.
+        """
+        if learning_state.remediation_stack:
+            frame = learning_state.remediation_stack[-1]
+            learning_state.remediation_stack = learning_state.remediation_stack[:-1]
+            resume_step = _step_by_position(path, frame["position"])
+            resume_chunk_id = frame["chunk_id"]
+
+            # A detour only ever triggers once a step has failed at
+            # "elaborated" (see evaluate_path), so whichever chunk was active
+            # when we left was necessarily showing its most elaborated
+            # version. Prefer a chunk this step hasn't shown yet; only if
+            # there isn't one do we pick back up at that same elaborated
+            # variant instead of re-walking normal -> simplified on content
+            # that's already known not to have worked.
+            alternate = _unused_alternate(resume_step, resume_chunk_id)
+            if alternate is not None:
+                resume_chunk_id = alternate["learning_object_id"]
+                resume_variant = "normal"
+            else:
+                resume_variant = "elaborated"
+
+            # Ignore StudentResponse history here, the same way the initial
+            # detour-in does (`_reroute`'s prerequisite branch always calls
+            # _next_question_in_step with exclude_ids=()): a step on the
+            # remediation stack is, by path-mode's own invariant, one the
+            # learner already answered correctly *before* ever needing
+            # remediation -- that's how they reached whatever depends on it.
+            # Checking history here would find that old record on the very
+            # first pop and wrongly call the refresher done before it was
+            # ever re-served this time.
+            resume_question = _next_question_in_step(resume_step, exclude_ids=(), chunk_id=resume_chunk_id)
+            if resume_question is not None:
+                learning_state.current_step_position = frame["position"]
+                learning_state.current_chunk_id = resume_chunk_id
+                learning_state.current_variant = resume_variant
+                learning_state.current_question_attempts = 0
+                learning_state.current_generated_question_id = resume_question["id"]
+                return
+            # The struggled-on step is fully cleared too (e.g. from an
+            # earlier pass) -- nothing left to resume there; keep unwinding.
+            AdaptiveEngine._resume_or_advance(learning_state, path, frame["position"])
+            return
+
+        AdaptiveEngine._advance_past(learning_state, path, position)
+
+    @staticmethod
     def _advance_past(learning_state, path, position):
-        """Move on from a fully-cleared step at ``position``: the next step
-        in this topic's path, else the next topic in the course (path or
-        legacy mode, whichever it has), else course completion."""
-        next_step = _next_step_with_question(path, position)
+        """Move on from a fully-settled step at ``position`` (nothing left to
+        resume for it either): the next step in this topic's path, else the
+        next topic in the course (path or legacy mode, whichever it has),
+        else course completion. Always starts fresh at a step's representative
+        chunk -- chunk-switching is a within-step remediation device, not
+        something a new step inherits."""
+        next_step = _next_step_with_question(path, position, learning_state)
         if next_step is not None:
             learning_state.current_step_position = next_step["position"]
+            learning_state.current_chunk_id = None
             learning_state.current_variant = "normal"
+            learning_state.current_question_attempts = 0
             question = _next_question_in_step(next_step, _step_answered_ids(learning_state, next_step))
             learning_state.current_generated_question = GeneratedQuestion.objects.get(pk=question["id"])
             return learning_state
@@ -548,12 +822,19 @@ class AdaptiveEngine:
             learning_state.current_generated_question = None
             learning_state.current_question = None
             learning_state.current_step_position = None
+            learning_state.current_chunk_id = None
+            learning_state.remediation_stack = []
+            learning_state.remediated_positions = []
             return learning_state
 
         mode, next_step, next_question = _enter_topic(next_node)
         learning_state.current_lesson_node = next_node
         learning_state.current_module = top_level_ancestor(next_node)
         learning_state.current_variant = "normal"
+        learning_state.current_chunk_id = None
+        learning_state.current_question_attempts = 0
+        learning_state.remediation_stack = []
+        learning_state.remediated_positions = []
         if mode == "path":
             learning_state.current_step_position = next_step["position"]
             learning_state.current_generated_question = GeneratedQuestion.objects.get(pk=next_question["id"])

@@ -178,12 +178,74 @@ class PublishedPathTests(TopicFixture):
         self.assertEqual(response.status_code, 404)
         self.assertIsNone(get_published_path(self.topic))
 
+    def test_normal_variant_uses_the_already_generated_lesson_audio(self):
+        """The "normal" variant's audio isn't synthesized separately (unlike
+        simplified/elaborated, via LessonVariant) -- it's whatever the
+        material's own lesson-playlist TTS pass already produced for this
+        LearningObject's narration. LearningObjects and playlist entries are
+        both built 1:1, in order, from the same narration script, so a
+        LearningObject's 0-indexed order lines up with the playlist entry's
+        1-indexed narration_item_order (see published.py::_normal_audio_lookup).
+        Regression test for the mobile "quick check comes before the lesson
+        chunk" bug -- normal audio was always "" before this, so path mode
+        skipped straight to questions for every concept's first attempt."""
+        self.material.generated_json = {
+            **self.material.generated_json,
+            "lesson_playlist": [
+                {"narration_item_order": 1, "audio_url": "/media/audio_lessons/matter.mp3"},
+                {"narration_item_order": 2, "audio_url": "/media/audio_lessons/solid.mp3"},
+                {"narration_item_order": 3, "audio_url": "/media/audio_lessons/liquid.mp3"},
+            ],
+        }
+        self.material.save()
+
+        body = self._get("TEACHER").json()
+
+        by_title = {step["title"]: step for step in body["steps"]}
+        self.assertEqual(by_title["Matter"]["versions"]["normal"]["audio_url"], "/media/audio_lessons/matter.mp3")
+        self.assertEqual(by_title["Solid"]["versions"]["normal"]["audio_url"], "/media/audio_lessons/solid.mp3")
+        self.assertEqual(by_title["Liquid"]["versions"]["normal"]["audio_url"], "/media/audio_lessons/liquid.mp3")
+
+    def test_normal_variant_audio_is_blank_when_the_playlist_has_no_match(self):
+        body = self._get("TEACHER").json()
+
+        for step in body["steps"]:
+            self.assertEqual(step["versions"]["normal"]["audio_url"], "")
+
     def test_the_python_function_and_the_api_agree(self):
         body = self._get("TEACHER").json()
 
         self.assertEqual(
             [step["concept_id"] for step in body["steps"]],
             [step["concept_id"] for step in get_published_path(self.topic)["steps"]],
+        )
+
+    def test_a_step_never_serves_more_than_one_lot_and_one_hot(self):
+        """Question generation isn't guaranteed to cap itself at one final
+        question per thinking_order per node -- seen on real published data
+        (3-4 final rows on one concept). A step is one assessment, not a
+        quiz bank: cap to the earliest LOT and earliest HOT, LOT first."""
+        GeneratedQuestion.objects.create(
+            node=self.objects["Solid"], question_text="Second LOT (should be dropped)",
+            question_format="TF", correct_answer="True", thinking_order="LOT",
+            bloom_level="remember", difficulty="easy", status="final",
+        )
+        GeneratedQuestion.objects.create(
+            node=self.objects["Solid"], question_text="A HOT question",
+            question_format="TF", correct_answer="False", thinking_order="HOT",
+            bloom_level="analyze", difficulty="hard", status="final",
+        )
+        GeneratedQuestion.objects.create(
+            node=self.objects["Solid"], question_text="Second HOT (should be dropped)",
+            question_format="TF", correct_answer="True", thinking_order="HOT",
+            bloom_level="analyze", difficulty="hard", status="final",
+        )
+
+        solid = next(step for step in self._get("TEACHER").json()["steps"] if step["title"] == "Solid")
+
+        self.assertEqual(
+            [(q["text"], q["thinking_order"]) for q in solid["questions"]],
+            [("Does a solid keep its shape?", "LOT"), ("A HOT question", "HOT")],
         )
 
 

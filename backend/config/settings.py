@@ -139,6 +139,16 @@ REST_FRAMEWORK = {
 # URL of the React app; used to build the link inside verification emails.
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
+# Whether the teacher-facing student search/enrollment picker (adaptive app)
+# hides students who haven't verified their email yet. Off by default: a
+# school's mail server can be slow or land verification links in spam (seen
+# first-hand this session), and a teacher shouldn't lose the ability to
+# enroll a real student just because delivery is flaky. Set to true if you
+# want unverified accounts kept out of the roster entirely.
+EMAIL_VERIFICATION_REQUIRED = os.getenv("EMAIL_VERIFICATION_REQUIRED", "False").lower() in (
+    "1", "true", "yes",
+)
+
 # Email. Defaults to the console backend so verification links print to the
 # runserver terminal with no setup. Set EMAIL_HOST_USER + EMAIL_HOST_PASSWORD
 # in .env to switch to real SMTP (Gmail app password, etc.).

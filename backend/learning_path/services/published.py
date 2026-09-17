@@ -30,6 +30,22 @@ def _representative(group, members):
     return next((m for m in members if m.represented_by_id is None), members[0] if members else None)
 
 
+def _normal_audio_lookup(material):
+    """{narration_item_order: audio_url} for one material's already-generated
+    playlist (see ``lessons/services/audio_generator.py``) -- the same TTS
+    pipeline legacy-mode lesson tracks use. There is no explicit FK from a
+    LearningObject to its playlist entry, but both are built 1:1, in order,
+    from the same narration script at ingestion, so a LearningObject's
+    0-indexed ``order`` lines up with the (1-indexed) ``narration_item_order``
+    on its playlist entry -- see ``_versions`` below."""
+    generated_json = material.generated_json or {}
+    return {
+        item.get("narration_item_order"): item.get("audio_url") or ""
+        for item in generated_json.get("lesson_playlist", [])
+        if item.get("narration_item_order") is not None and item.get("audio_url")
+    }
+
+
 def _versions(representative):
     rows = {
         row.variant: row
@@ -42,16 +58,29 @@ def _versions(representative):
         row = rows.get(key)
         return {"text": row.narration, "audio_url": row.audio_url or ""} if row else None
 
+    normal_audio = _normal_audio_lookup(representative.material).get(representative.order + 1, "")
     return {
-        "normal": {"text": representative.content or "", "audio_url": ""},
+        "normal": {"text": representative.content or "", "audio_url": normal_audio},
         "simplified": slot("SIMPLIFIED"),
         "elaborated": slot("ELABORATED"),
     }
 
 
 def _questions(representative, include_answers):
-    questions = []
+    # One step, one assessment: the earliest-generated LOT question and the
+    # earliest-generated HOT question, LOT first -- never more than 2, even
+    # if question generation left extra final rows on this node (it isn't
+    # guaranteed to cap itself at one per thinking_order).
+    by_order = {}
     for question in GeneratedQuestion.objects.filter(node=representative, status="final").order_by("id"):
+        order = question.thinking_order or "LOT"
+        by_order.setdefault(order, question)
+
+    questions = []
+    for order in ("LOT", "HOT"):
+        question = by_order.get(order)
+        if question is None:
+            continue
         entry = {
             "id": question.id,
             "text": question.question_text,
@@ -106,6 +135,15 @@ def get_published_path(node, *, include_answers=True):
         sources = {}
         for member in members:
             sources.setdefault(member.material_id, member.material.title)
+        # Independent alternates: other PDFs' own take on this concept, not
+        # folded into another member's telling (`represented_by` marks that).
+        # The adaptive engine's remediation ladder reaches for one of these
+        # when re-explaining the representative's own text hasn't worked --
+        # see adaptive/PATH_MODE.md "chunk switching".
+        alternates = [
+            member for member in members
+            if member.id != representative.id and member.represented_by_id is None
+        ]
         payload_steps.append({
             "position": step.position,
             "depth": step.depth,
@@ -116,6 +154,17 @@ def get_published_path(node, *, include_answers=True):
             "sources": [{"material_id": mid, "title": title} for mid, title in sources.items()],
             "versions": _versions(representative),
             "questions": _questions(representative, include_answers),
+            "alternates": [
+                {
+                    "learning_object_id": alt.id,
+                    "material_id": alt.material_id,
+                    "material_title": alt.material.title,
+                    "title": alt.title,
+                    "versions": _versions(alt),
+                    "questions": _questions(alt, include_answers),
+                }
+                for alt in alternates
+            ],
             "prerequisites": sorted(needs[group.id], key=position_of.get),
             "leads_to": sorted(leads[group.id], key=position_of.get),
         })

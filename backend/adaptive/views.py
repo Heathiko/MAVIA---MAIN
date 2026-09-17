@@ -32,6 +32,7 @@ from .services import (
     published_path_for,
     resolve_learning_start,
     resolve_start,
+    start_topic,
     student_safe_question,
     student_safe_step,
     top_level_ancestor,
@@ -78,7 +79,8 @@ class StartLearningView(APIView):
             course=course,
             defaults={"mastery": AdaptiveConfig.load().starting_mastery},
         )
-        if created or not _in_progress(state) and not state.completed:
+        requested_id = serializer.validated_data.get("lesson_node_id")
+        if created or (not _in_progress(state) and not state.completed):
             start = resolve_learning_start(course)
             state.current_module = start["module"]
             state.current_lesson_node = start["node"]
@@ -91,6 +93,16 @@ class StartLearningView(APIView):
                 state.current_generated_question = None
                 state.current_question = start["question"]
             state.save()
+        elif requested_id and (state.completed or state.current_lesson_node_id != requested_id):
+            # The player has a different topic open than the cursor is on --
+            # a different lesson was picked from the list, or the course was
+            # finished and reopened. Teach the topic they actually opened
+            # instead of handing back a cursor that points elsewhere.
+            node = course.nodes.filter(pk=requested_id, published=True).first()
+            # Replaying something finished starts a clean attempt; simply
+            # switching topics keeps the learner's place in this one.
+            if node is not None and start_topic(state, node, fresh_attempt=state.completed):
+                state.save()
 
         lesson = (
             build_lesson_payload(state.current_lesson_node)
@@ -131,7 +143,13 @@ class SubmitResponseView(APIView):
                 return Response({"detail": "Answer the currently assigned question."}, status=400)
             path = published_path_for(state.current_lesson_node)
             step = next(s for s in path["steps"] if s["position"] == state.current_step_position)
-            question = next(q for q in step["questions"] if q["id"] == data["question_id"])
+            # The assigned question can belong to an alternate chunk, not just
+            # the step's representative, once evaluate_path has switched
+            # chunks mid-remediation -- search every chunk's question list.
+            all_questions = step["questions"] + [
+                q for alt in step.get("alternates", []) for q in alt["questions"]
+            ]
+            question = next(q for q in all_questions if q["id"] == data["question_id"])
 
             result = AdaptiveEngine.evaluate_path(state, path, question, data["selected_answer"])
             StudentResponse.objects.create(

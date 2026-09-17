@@ -180,6 +180,27 @@ export type ApiStepQuestion = {
 
 export type ApiStepVersion = { text: string; audio_url: string } | null;
 
+export type ApiStepVersions = {
+  normal: ApiStepVersion;
+  simplified: ApiStepVersion;
+  elaborated: ApiStepVersion;
+};
+
+// Another uploaded PDF's own independent telling of this step's concept —
+// same shape as the step itself. The engine switches to one of these
+// (LearningState.current_chunk) once the representative's own ladder
+// (normal/simplified/elaborated) is exhausted; see PATH_MODE.md "chunk
+// switching". Rendered by [lessonId].tsx's stepChunk() helper, which resolves
+// the active chunk's versions/questions instead of always the representative's.
+export type ApiStepAlternate = {
+  learning_object_id: number;
+  material_id: number;
+  material_title: string;
+  title: string;
+  versions: ApiStepVersions;
+  questions: ApiStepQuestion[];
+};
+
 export type ApiStep = {
   position: number;
   depth: number;
@@ -188,14 +209,11 @@ export type ApiStep = {
   section_title: string;
   learning_object_id: number;
   sources: { material_id: number; title: string }[];
-  versions: {
-    normal: ApiStepVersion;
-    simplified: ApiStepVersion;
-    elaborated: ApiStepVersion;
-  };
+  versions: ApiStepVersions;
   // 2 questions per concept, 1 LOT + 1 HOT — never includes correct_answer,
   // per learning_path/HANDOFF.md: answers never reach a student's device.
   questions: ApiStepQuestion[];
+  alternates: ApiStepAlternate[];
   prerequisites: number[];
   leads_to: number[];
 };
@@ -211,6 +229,7 @@ export type ApiLearningState = {
   current_step_position: number | null;
   current_generated_question: number | null;
   remediation_target_position: number | null;
+  current_chunk: number | null;
   current_variant: Variant;
   mastery: number;
   attempts: number;
@@ -269,11 +288,22 @@ export type ApiStartResult = {
   current_step: ApiStep | null;
 };
 
-export function startLearning(courseId: number | string): Promise<ApiStartResult> {
+// `lessonNodeId` is the topic the player has open. The engine's cursor is
+// course-wide, so without it the two can disagree -- the student taps one
+// lesson and is served another's concept, or a finished course leaves them
+// with no assigned question and the player quietly falls back to a flat
+// playlist with no questions at all.
+export function startLearning(
+  courseId: number | string,
+  lessonNodeId?: number | string
+): Promise<ApiStartResult> {
   return request("/adaptive/start/", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ course_id: courseId }),
+    body: JSON.stringify({
+      course_id: courseId,
+      ...(lessonNodeId != null ? { lesson_node_id: Number(lessonNodeId) } : {}),
+    }),
   });
 }
 
@@ -287,6 +317,7 @@ export type ApiSubmitResult = {
   // Path-mode only (undefined in legacy mode):
   next_step_position?: number | null;
   remediation_target_position?: number | null;
+  current_chunk?: number | null;
   current_variant?: Variant;
   current_step: ApiStep | null;
   lesson: ApiLesson | null;

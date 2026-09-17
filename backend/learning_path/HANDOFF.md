@@ -109,6 +109,16 @@ API for anything running in a browser.
           "category": "Facts and Information"
         }
       ],
+      "alternates": [
+        {
+          "learning_object_id": 9,
+          "material_id": 2,
+          "material_title": "states-of-matter-accessible",
+          "title": "Solid",
+          "versions": { "normal": { "...": "..." }, "simplified": null, "elaborated": null },
+          "questions": [ { "...": "..." } ]
+        }
+      ],
       "prerequisites": [2],
       "leads_to": [15]
     }
@@ -128,7 +138,8 @@ API for anything running in a browser.
 | `sources` | which uploaded PDFs contributed |
 | `versions.normal` | always present |
 | `versions.simplified` / `.elaborated` | `null` if missing. A successful publish requires both, so on a published path they are normally present — still handle `null`. |
-| `questions` | final (classified, de-duplicated) questions only; drafts never appear |
+| `questions` | at most 2: the earliest-generated LOT and earliest-generated HOT question on this node (LOT first), drafts never appear. A step is one assessment, not a quiz bank -- capped here even if question generation left more than one final row per `thinking_order` on a node (seen on real data: 3-4 final rows on one concept). |
+| `alternates` | *(mavia addition, not upstream)* other uploaded PDFs' own independent take on this concept — same shape as the step itself (`versions` + `questions`), keyed to their own `learning_object_id`. Empty when only one PDF taught this concept. `mavia`'s adaptive engine reaches for one of these when re-explaining the representative's own text at every level hasn't worked; see `adaptive/PATH_MODE.md`. |
 | `prerequisites` | `concept_id`s a student needs **first**, in path order |
 | `leads_to` | `concept_id`s that build on this one |
 

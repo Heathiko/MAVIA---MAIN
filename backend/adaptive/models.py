@@ -1,7 +1,8 @@
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
-from lessons.models import CourseGroup, OutlineNode, Question
+from lessons.models import CourseGroup, LearningObject, OutlineNode, Question
 from question_generation.models import GeneratedQuestion
 
 
@@ -90,9 +91,41 @@ class LearningState(models.Model):
         blank=True,
         related_name="+",
     )
-    # Non-null while detouring through an easier prerequisite step after
-    # repeated failure: the step position to resume once that detour clears.
-    remediation_target_position = models.PositiveIntegerField(null=True, blank=True)
+    # Stack of steps to resume, nearest (next to pop) last: pushed on every
+    # detour into a prerequisite, popped once that prerequisite step is fully
+    # answered. Bounded by adaptive.services.MAX_REMEDIATION_DEPTH — a learner
+    # is never routed more than that many prerequisites deep before the engine
+    # falls back to an alternate chunk or gives up rerouting. Each entry is
+    # {"position": <step position>, "chunk_id": <LearningObject id or None>} --
+    # "chunk_id" records which learning object (representative vs. an
+    # alternate PDF's own telling of the concept) the resumed step was showing
+    # at the moment it detoured, so resuming knows whether an unused alternate
+    # is still available or whether it's already down to its last escalated
+    # variant. See adaptive/PATH_MODE.md.
+    remediation_stack = models.JSONField(default=list, blank=True)
+    # Step positions that have already spent their one prerequisite detour in
+    # the current topic. remediation_stack alone cannot carry this: it is
+    # *popped* when a detour is resumed, so without a separate record a step
+    # that fails again right after being resumed is free to detour into the
+    # same prerequisite a second time, and a learner who keeps missing walks
+    # that loop forever (position N -> prerequisite -> back to N -> ...).
+    # MAX_REMEDIATION_DEPTH bounds how deep the stack goes at once; this
+    # bounds how many times any one step may reach for the remedy at all.
+    # Reset when the learner moves to another topic, since positions are
+    # numbered per topic. See adaptive/PATH_MODE.md.
+    remediated_positions = models.JSONField(default=list, blank=True)
+    # Which learning object supplies the current step's content/questions.
+    # None means the step's representative (the default, and the only option
+    # before chunk-switching existed). Set to an alternate's id when the
+    # representative's own ladder (normal/simplified/elaborated) has been
+    # exhausted and another uploaded PDF's version of the same concept exists.
+    current_chunk = models.ForeignKey(
+        LearningObject,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
     current_variant = models.CharField(
         max_length=10,
         choices=[("normal", "Normal"), ("simplified", "Simplified"), ("elaborated", "Elaborated")],
@@ -102,6 +135,13 @@ class LearningState(models.Model):
     # Attempts spent on current_question, so the engine can move a learner on
     # after repeated wrong answers rather than stranding them.
     current_question_attempts = models.PositiveIntegerField(default=0)
+    # When the current run at the current topic began. StudentResponse rows
+    # are kept forever (the teacher report reads them), but only those from
+    # the current attempt count as "already cleared" -- otherwise a student
+    # who finished a topic and opened it again would be advanced straight
+    # back past every step they had ever answered, arriving at the end
+    # without being taught anything. See services._step_answered_ids.
+    attempt_started_at = models.DateTimeField(default=timezone.now)
     mastery = models.FloatField(default=0.30)
     attempts = models.PositiveIntegerField(default=0)
     completed = models.BooleanField(default=False)

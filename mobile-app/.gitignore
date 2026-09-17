@@ -13,3 +13,4 @@ web-build/
 npm-debug.*
 *.log
 .DS_Store
+scripts/.transcripts/

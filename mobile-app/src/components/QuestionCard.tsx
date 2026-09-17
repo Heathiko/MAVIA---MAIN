@@ -1,7 +1,7 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
-import Button from "@/components/Button";
+import { useNarration } from "@/hooks/useNarration";
 import { colors, radii, spacing } from "@/theme";
 
 // Mirrors lessons.Question from the API.
@@ -19,11 +19,16 @@ export type SubmitResult = { is_correct: boolean; mastery: number; completed: bo
 type Option = { key: string; label: string };
 const LETTERS = ["a", "b", "c", "d", "e", "f"];
 
+// Every option is addressed by its letter, True/False included: the braille
+// numpad has one physical key per letter, so the same finger position has to
+// mean the same thing whatever kind of question is on screen. A = True,
+// B = False. The backend accepts those letters for TF questions --
+// see adaptive/services.py::path_answer_is_correct.
 function optionsFor(question: Question): Option[] {
   if (question.question_type === "true_false") {
     return [
-      { key: "true", label: "True" },
-      { key: "false", label: "False" },
+      { key: LETTERS[0], label: "True" },
+      { key: LETTERS[1], label: "False" },
     ];
   }
   return (question.choices ?? []).map((label, index) => ({ key: LETTERS[index], label }));
@@ -43,20 +48,83 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext 
   const [result, setResult] = useState<SubmitResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const narration = useNarration();
+  const advancedRef = useRef(false);
+  // The verdict has to wait for the read-back of the chosen answer to finish.
+  // speak() stops whatever is talking, so a fast reply from the server would
+  // otherwise cut "Answered A. Solid." off mid-word. These two track which of
+  // the pair happened first; whichever finishes last plays the verdict.
+  const readBackDoneRef = useRef(false);
+  // `advance` is false when the submit failed: the student stays on this
+  // question to try again, so the verdict must not move them on.
+  const verdictRef = useRef<{ text: string; advance: boolean } | null>(null);
 
   const answered = result !== null;
   const openEnded = options.length === 0;
+
+  function advanceOnce() {
+    if (advancedRef.current) return;
+    advancedRef.current = true;
+    onNext();
+  }
+
+  function speakVerdictWhenReady() {
+    if (!readBackDoneRef.current || verdictRef.current === null) return;
+    const { text, advance } = verdictRef.current;
+    verdictRef.current = null;
+    narration.speak(text, advance ? { onDone: advanceOnce } : undefined);
+  }
+
+  // Read the new question (and its choices) aloud as soon as it appears.
+  // Open-ended questions have nothing to grade -- move on as soon as the
+  // prompt's been read instead of waiting on a tap that never comes from
+  // choose() below.
+  useEffect(() => {
+    advancedRef.current = false;
+    // "A. Solid. B. Liquid." -- the letter is the key they press, so it is
+    // read with every option, not just implied by the order.
+    const choiceText = options.map((o) => `${o.key.toUpperCase()}. ${o.label}.`).join(" ");
+    narration.speak(choiceText ? `${question.prompt} ${choiceText}` : question.prompt, {
+      onDone: openEnded ? advanceOnce : undefined,
+    });
+    return () => narration.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [question.id]);
 
   async function choose(key: string) {
     if (submitting || answered) return;
     setSelected(key);
     setSubmitting(true);
     setError(null);
+    readBackDoneRef.current = false;
+    verdictRef.current = null;
+
+    // Read the choice back immediately, before the network round trip: the
+    // student needs to know which key registered without waiting on a server.
+    const option = options.find((o) => o.key === key);
+    narration.speak(
+      option ? `Answered ${option.key.toUpperCase()}. ${option.label}.` : `Answered ${key}.`,
+      {
+        onDone: () => {
+          readBackDoneRef.current = true;
+          speakVerdictWhenReady();
+        },
+      }
+    );
+
     try {
-      setResult(await onSubmit(key));
+      const res = await onSubmit(key);
+      setResult(res);
+      verdictRef.current = { text: res.is_correct ? "Correct." : "Not quite.", advance: true };
+      speakVerdictWhenReady();
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Couldn't submit your answer.";
       setSelected(null);
-      setError(err instanceof Error ? err.message : "Couldn't submit your answer.");
+      setError(message);
+      // Say it too -- a silent failure leaves a student who cannot read the
+      // red text waiting on a question that will never move.
+      verdictRef.current = { text: "That answer didn't send. Please try again.", advance: false };
+      speakVerdictWhenReady();
     } finally {
       setSubmitting(false);
     }
@@ -114,14 +182,6 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext 
             {result?.is_correct ? "Correct" : "Not quite"}
           </Text>
         </View>
-      )}
-
-      {(answered || openEnded) && (
-        <Button
-          label={index + 1 < total ? "Next question" : "Finish lesson"}
-          onPress={onNext}
-          style={{ marginTop: spacing.sm }}
-        />
       )}
     </View>
   );
