@@ -15,7 +15,7 @@ from collections import Counter, defaultdict
 
 from lessons.services.semantic_grouping import runtime as semantic_runtime
 
-from .concepts import is_structural, resolve_concept
+from .concepts import heading_name, is_structural, resolve_concept
 from .text_signals import MIN_TERM_LENGTH, STOP_WORDS, mentions, normalize, singular
 
 # ACE's methodology windows the dependent's text rather than embedding it whole,
@@ -87,6 +87,41 @@ def concept_names(concepts):
 def concept_text(concept):
     """All of a concept's wording: every member PDF when known, else its own text."""
     return getattr(concept, "member_text", "") or concept.content or ""
+
+
+def head_words(names):
+    """``{concept id: head word}`` for multi-word names, where unambiguous.
+
+    Lessons name a concept by its whole heading ("seed formation") but refer
+    to it by its first significant word ("the seed"). A head word that two
+    names share points at neither, so it never counts.
+    """
+    candidates = {}
+    for concept_id, name in names.items():
+        if not name or len(name.split()) < 2:
+            continue
+        for word in name.split():
+            if word not in STOP_WORDS and len(word) >= MIN_TERM_LENGTH:
+                candidates[concept_id] = singular(word)
+                break
+    counts = Counter(candidates.values())
+    return {concept_id: word for concept_id, word in candidates.items() if counts[word] == 1}
+
+
+def contained_in(holder, target_name):
+    """True when any of ``holder``'s members sits under a heading naming the target.
+
+    Wang et al. (2016) read textbook section structure as prerequisite
+    evidence: a passage under the "Matter" heading builds on Matter even when
+    it never says "matter".
+    """
+    if not target_name:
+        return False
+    members = getattr(holder, "members", None) or (holder,)
+    return any(
+        heading_name(getattr(member, "section_title", "") or "") == target_name
+        for member in members
+    )
 
 
 def _terms(text):
@@ -178,6 +213,7 @@ def reference_details(concepts, runtime_instance=None):
         if names.get(concept_id) and len(names[concept_id].split()) > 1
     })
     phrase_hits = _phrase_hits(concepts, phrases, texts, runtime_instance) if phrases else set()
+    heads = head_words(names)
 
     matrix, matched = {}, {}
     for target_id, weights in terms.items():
@@ -185,11 +221,23 @@ def reference_details(concepts, runtime_instance=None):
         for holder in concepts:
             if holder.id == target_id:
                 continue
-            found = [
-                term for term in weights
-                if mentions(texts[holder.id], term) or (holder.id, term) in phrase_hits
-            ]
-            matrix[(target_id, holder.id)] = sum(weights[term] for term in found) / total
+            if contained_in(holder, names.get(target_id)):
+                matrix[(target_id, holder.id)] = 1.0
+                matched[(target_id, holder.id)] = [f"section:{names[target_id]}"]
+                continue
+            found, score = [], 0.0
+            for term, weight in weights.items():
+                if mentions(texts[holder.id], term) or (holder.id, term) in phrase_hits:
+                    found.append(term)
+                    score += weight
+                elif (
+                    term == names.get(target_id)
+                    and target_id in heads
+                    and mentions(texts[holder.id], heads[target_id])
+                ):
+                    found.append(f"head:{heads[target_id]}")
+                    score += weight
+            matrix[(target_id, holder.id)] = score / total
             matched[(target_id, holder.id)] = sorted(found)
     return matrix, matched
 

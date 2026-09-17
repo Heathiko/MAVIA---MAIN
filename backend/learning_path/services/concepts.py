@@ -75,6 +75,11 @@ def _heading_name(heading):
     return None
 
 
+def heading_name(heading):
+    """What a section heading names, or ``None``. Public for the criteria."""
+    return _heading_name(heading)
+
+
 def resolve_concept(learning_object):
     """Return the normalised concept this chunk owns, or ``None``."""
     # Split chunks are one passage the chunker cut, so they share one concept.

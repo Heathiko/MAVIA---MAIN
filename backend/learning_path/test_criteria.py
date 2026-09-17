@@ -33,6 +33,7 @@ from .services.criteria import (
     crosses_sections,
     decide,
     decide_pairs,
+    head_words,
     inbound_outbound,
     inbound_outbound_ratios,
     key_terms,
@@ -553,3 +554,86 @@ class MemberTextContrastTests(TestCase):
         gas.member_text = "A gas spreads out. A gas fills its container, unlike a solid."
 
         self.assertTrue(criteria.vetoed(solid, gas, concept_names([solid, gas])))
+
+
+class Headed:
+    """A stub concept whose members carry section headings."""
+
+    def __init__(self, id, order, title, content, sections=("",)):
+        self.id = id
+        self.order = order
+        self.title = title
+        self.content = content
+        self.member_text = content
+        self.section_title = sections[0]
+        self.kind = "text"
+        self.members = tuple(
+            type("Member", (), {"section_title": section, "title": title, "content": content})()
+            for section in sections
+        )
+
+
+class LiteralRuntime:
+    """An encoder stand-in under which no text paraphrases a name.
+
+    KeywordRuntime puts every text without its vocabulary on one neutral axis,
+    so "seed formation" and "fruit formation" would each paraphrase the other's
+    text and hide the head-word evidence these tests measure.
+    """
+
+    def embeddings(self, payload):
+        return [[0.0] for _ in payload]
+
+
+class HeadWordTests(TestCase):
+    def test_the_head_word_is_the_first_significant_word(self):
+        names = {1: "seed formation", 2: "stamen male part", 3: "solid"}
+
+        self.assertEqual(head_words(names), {1: "seed", 2: "stamen"})
+
+    def test_a_shared_head_word_is_ambiguous(self):
+        names = {1: "seed formation", 2: "seed dispersal"}
+
+        self.assertEqual(head_words(names), {})
+
+    def test_saying_the_head_word_refers_to_a_multi_word_concept(self):
+        """Regression, topic 79: Fruit says "seed", never "seed formation"."""
+        seed = Stub(1, order=0, title="Seed formation", content="The ovule becomes a seed with stored food.")
+        fruit = Stub(2, order=1, title="Fruit formation", content="The ovary grows around the seed and ripens.")
+        others = [
+            Stub(3, order=2, title="Petals", content="Petals attract bees with colour."),
+            Stub(4, order=3, title="Roots", content="Roots take in water from soil."),
+        ]
+
+        matrix, matched = reference_details([seed, fruit, *others], LiteralRuntime())
+
+        self.assertIn("head:seed", matched[(1, 2)])
+        self.assertEqual(semantic_reference(seed, fruit, matrix), 1)
+
+
+class SectionContainmentTests(TestCase):
+    def test_a_concept_under_anothers_heading_refers_to_it(self):
+        """Regression, topic 62: Solid sits under the "Matter" heading but never
+        says "matter"; the overview names solid, so RefD read it backwards."""
+        matter = Headed(1, 0, "Matter", "Matter has mass. It can be a solid, a liquid or a gas.", ("Matter",))
+        solid = Headed(2, 1, "Solid", "A solid keeps its shape.", ("Matter", "Solids"))
+        others = [
+            Headed(3, 2, "Roots", "Roots take in water."),
+            Headed(4, 3, "Leaves", "Leaves make food."),
+        ]
+
+        matrix, matched = reference_details([matter, solid, *others], KeywordRuntime())
+
+        self.assertEqual(matrix[(1, 2)], 1.0)
+        self.assertEqual(matched[(1, 2)], ["section:matter"])
+        self.assertEqual(semantic_reference(matter, solid, matrix), 1)
+        self.assertEqual(semantic_reference(solid, matter, matrix), 0)
+
+    def test_a_concept_never_contains_itself(self):
+        matter = Headed(1, 0, "Matter", "Matter has mass.", ("Matter",))
+        roots = Headed(2, 1, "Roots", "Roots take in water.")
+
+        matrix, matched = reference_details([matter, roots], KeywordRuntime())
+
+        self.assertNotIn((1, 1), matrix)
+        self.assertFalse(any(term.startswith("section:") for terms in matched.values() for term in terms))
