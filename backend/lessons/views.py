@@ -782,6 +782,8 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             "confidence": suggestion.confidence,
             "evidence": suggestion.evidence,
             "status": suggestion.status,
+            "source_extra_ids": [],
+            "candidate_extra_ids": [],
         }
         kept = []
         for members in sides:

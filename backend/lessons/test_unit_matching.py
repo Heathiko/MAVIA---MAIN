@@ -199,3 +199,74 @@ class SuggestionTests(UnitFixture):
         self.assertEqual(len(merged_b.merged_from), 2)
         self.assertEqual(merged_a.group_id, merged_b.group_id)
         self.assertFalse(LearningObject.objects.filter(pk__in=[self.volume.id, self.table_b.id]).exists())
+        accepted = LearningObjectMatchSuggestion.objects.get(
+            source_learning_object=merged_a, candidate_learning_object=merged_b,
+        )
+        self.assertEqual(accepted.status, LearningObjectMatchSuggestion.Status.ACCEPTED)
+        self.assertEqual(accepted.source_extra_ids, [])
+        self.assertEqual(accepted.candidate_extra_ids, [])
+
+
+class OccupiedPairTests(UnitFixture):
+    """A one-to-one accept can leave a unit suggestion's natural kept-row pair
+    already occupied by a real decision; that decision must never be touched."""
+
+    def _refresh(self, score=0.5):
+        runtime = FakeRuntime()
+        runtime.pair_scores = lambda pairs: [score for _ in pairs]
+        with patch.dict(os.environ, SEMANTIC_ENV):
+            return refresh_heading_unit_suggestions(self.topic, runtime_instance=runtime)
+
+    def _accept_one_to_one(self, source, candidate):
+        client = authenticated_api_client()
+        suggestion = LearningObjectMatchSuggestion.objects.create(
+            outline_node=self.topic,
+            source_learning_object=source,
+            candidate_learning_object=candidate,
+            similarity_score=0.9,
+            confidence=LearningObjectMatchSuggestion.Confidence.HIGH,
+            status=LearningObjectMatchSuggestion.Status.PENDING,
+            evidence={"method": "content_sts_v1"},
+        )
+        response = client.post(
+            f"/api/courses/{self.course.id}/outline-nodes/{self.topic.id}/match-suggestions/{suggestion.id}/accept/",
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return suggestion
+
+    def test_an_accepted_one_to_one_pair_is_not_reset_by_a_colliding_unit_suggestion(self):
+        source, candidate = sorted([self.solid_a, self.solids_b], key=lambda item: item.id)
+        accepted = self._accept_one_to_one(source, candidate)
+
+        self._refresh()
+
+        accepted.refresh_from_db()
+        self.assertEqual(accepted.status, LearningObjectMatchSuggestion.Status.ACCEPTED)
+        unit_suggestion = LearningObjectMatchSuggestion.objects.get(evidence__label="solid")
+        self.assertEqual(unit_suggestion.status, LearningObjectMatchSuggestion.Status.PENDING)
+        members = {
+            unit_suggestion.source_learning_object_id, unit_suggestion.candidate_learning_object_id,
+            *unit_suggestion.source_extra_ids, *unit_suggestion.candidate_extra_ids,
+        }
+        self.assertEqual(members, {self.solid_a.id, self.solids_b.id, self.diagram_b.id})
+
+    def test_accepting_the_rekeyed_unit_suggestion_merges_and_keeps_the_prior_accept(self):
+        source, candidate = sorted([self.solid_a, self.solids_b], key=lambda item: item.id)
+        accepted = self._accept_one_to_one(source, candidate)
+        self._refresh()
+        unit_suggestion = LearningObjectMatchSuggestion.objects.get(evidence__label="solid")
+        client = authenticated_api_client()
+
+        response = client.post(
+            f"/api/courses/{self.course.id}/outline-nodes/{self.topic.id}"
+            f"/match-suggestions/{unit_suggestion.id}/accept/",
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        merged = LearningObject.objects.get(pk=self.solids_b.id)
+        self.assertFalse(LearningObject.objects.filter(pk=self.diagram_b.id).exists())
+        self.assertEqual(merged.group_id, self.solid_a.group_id)
+        accepted.refresh_from_db()
+        self.assertEqual(accepted.status, LearningObjectMatchSuggestion.Status.ACCEPTED)

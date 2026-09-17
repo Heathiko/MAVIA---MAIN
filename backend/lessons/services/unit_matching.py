@@ -121,6 +121,66 @@ def heading_unit_candidates(node):
     return candidates
 
 
+def _resolve_unit_pairing(source, source_side, candidate_row, candidate_side):
+    """Never modify a suggestion row whose status is not PENDING.
+
+    The natural kept-row pair may already be occupied by a real decision --
+    most commonly a teacher-accepted one-to-one match that happens to share
+    the same kept rows as this unit. When that happens, re-key the unit
+    suggestion onto an alternate member (lowest order) of whichever side
+    still has extras, preferring the candidate side when both do, so the
+    occupied pair is left untouched. Returns ``None`` when no alternate
+    pairing is available or that alternate is itself occupied.
+    """
+    existing = LearningObjectMatchSuggestion.objects.filter(
+        source_learning_object=source, candidate_learning_object=candidate_row,
+    ).first()
+    if existing is None or existing.status == LearningObjectMatchSuggestion.Status.PENDING:
+        return source, source_side, candidate_row, candidate_side
+    if (
+        existing.status == LearningObjectMatchSuggestion.Status.REJECTED
+        and (existing.evidence or {}).get("method") == METHOD
+    ):
+        # Our own rejected unit suggestion: leave the natural key so the
+        # "same extras" check below can decide whether to skip recreating it.
+        return source, source_side, candidate_row, candidate_side
+
+    if len(candidate_side) > 1:
+        target_is_source, target_primary, target_side = False, candidate_row, candidate_side
+        other_primary, other_side = source, source_side
+    elif len(source_side) > 1:
+        target_is_source, target_primary, target_side = True, source, source_side
+        other_primary, other_side = candidate_row, candidate_side
+    else:
+        return None
+
+    alternates = sorted(
+        (item for item in target_side if item.id != target_primary.id),
+        key=lambda item: (item.order, item.id),
+    )
+    if not alternates:
+        return None
+    new_primary = alternates[0]
+
+    if target_is_source:
+        new_source, new_source_side = new_primary, target_side
+        new_candidate, new_candidate_side = other_primary, other_side
+    else:
+        new_source, new_source_side = other_primary, other_side
+        new_candidate, new_candidate_side = new_primary, target_side
+
+    if new_source.id > new_candidate.id:
+        new_source, new_candidate = new_candidate, new_source
+        new_source_side, new_candidate_side = new_candidate_side, new_source_side
+
+    new_existing = LearningObjectMatchSuggestion.objects.filter(
+        source_learning_object=new_source, candidate_learning_object=new_candidate,
+    ).first()
+    if new_existing and new_existing.status != LearningObjectMatchSuggestion.Status.PENDING:
+        return None
+    return new_source, new_source_side, new_candidate, new_candidate_side
+
+
 def refresh_heading_unit_suggestions(node, runtime_instance=None):
     """Create or refresh pending unit suggestions for this topic. Never merges."""
     engine = runtime_instance or semantic_grouping.runtime()
@@ -137,6 +197,11 @@ def refresh_heading_unit_suggestions(node, runtime_instance=None):
             continue
         source, candidate_row = (kept_left, kept_right) if kept_left.id < kept_right.id else (kept_right, kept_left)
         source_side, candidate_side = (left, right) if source is kept_left else (right, left)
+
+        pairing = _resolve_unit_pairing(source, source_side, candidate_row, candidate_side)
+        if pairing is None:
+            continue
+        source, source_side, candidate_row, candidate_side = pairing
         source_extra = sorted(item.id for item in source_side if item.id != source.id)
         candidate_extra = sorted(item.id for item in candidate_side if item.id != candidate_row.id)
 
