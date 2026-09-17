@@ -96,16 +96,19 @@ def head_words(names):
     to it by its first significant word ("the seed"). A head word that two
     names share points at neither, so it never counts.
     """
+    # Every name's head word counts toward ambiguity, single-word names too:
+    # beside a "seed" concept, "seed" cannot also point at "seed dispersal".
     candidates = {}
     for concept_id, name in names.items():
-        if not name or len(name.split()) < 2:
-            continue
-        for word in name.split():
+        for word in (name or "").split():
             if word not in STOP_WORDS and len(word) >= MIN_TERM_LENGTH:
                 candidates[concept_id] = singular(word)
                 break
     counts = Counter(candidates.values())
-    return {concept_id: word for concept_id, word in candidates.items() if counts[word] == 1}
+    return {
+        concept_id: word for concept_id, word in candidates.items()
+        if counts[word] == 1 and len(names[concept_id].split()) >= 2
+    }
 
 
 def contained_in(holder, target_name):

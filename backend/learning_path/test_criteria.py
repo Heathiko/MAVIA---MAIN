@@ -611,6 +611,29 @@ class HeadWordTests(TestCase):
         self.assertEqual(semantic_reference(seed, fruit, matrix), 1)
 
 
+    def test_a_single_word_name_makes_its_word_ambiguous(self):
+        names = {1: "seed", 2: "seed dispersal"}
+
+        self.assertEqual(head_words(names), {})
+
+    def test_an_ambiguous_head_word_adds_no_reference(self):
+        """Beside a "Seed" concept, saying "seed" refers to Seed, not to Seed dispersal."""
+        seed = Stub(1, order=0, title="Seed", content="The ovule becomes a seed with stored food.")
+        dispersal = Stub(2, order=1, title="Seed dispersal", content="Wind and animals carry it far away.")
+        fruit = Stub(3, order=2, title="Fruit", content="The ovary grows around the seed and ripens.")
+        others = [
+            Stub(4, order=3, title="Petals", content="Petals attract bees with colour."),
+            Stub(5, order=4, title="Roots", content="Roots take in water from soil."),
+        ]
+
+        _, matched = reference_details([seed, dispersal, fruit, *others], LiteralRuntime())
+
+        self.assertFalse(any(
+            term.startswith("head:")
+            for (target_id, _), terms in matched.items() if target_id == 2
+            for term in terms
+        ))
+
 class SectionContainmentTests(TestCase):
     def test_a_concept_under_anothers_heading_refers_to_it(self):
         """Regression, topic 62: Solid sits under the "Matter" heading but never
