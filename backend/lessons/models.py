@@ -215,6 +215,10 @@ class LearningObject(models.Model):
     # to a grouped object could never be noticed. A mismatch is what enables
     # the teacher's "Review grouping changes" action.
     grouping_content_hash = models.CharField(max_length=64, blank=True, default="")
+    # Set when several objects from this PDF were merged into this row: one
+    # snapshot per original member, in document order, so "Split back" can
+    # rebuild them with their original metadata ids and question links.
+    merged_from = models.JSONField(default=list, blank=True)
 
     class Meta:
         ordering = ["order", "id"]
@@ -278,6 +282,10 @@ class LearningObjectMatchSuggestion(models.Model):
         choices=Status.choices,
         default=Status.PENDING,
     )
+    # A heading-matched unit suggestion names more than one object per side.
+    # The FKs hold each side's kept row; these hold the other members.
+    source_extra_ids = models.JSONField(default=list, blank=True)
+    candidate_extra_ids = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -306,7 +314,7 @@ class LearningObjectMatchSuggestion(models.Model):
             errors["source_learning_object"] = "Source object must belong to the suggestion topic."
         if candidate.material.outline_node_id != self.outline_node_id:
             errors["candidate_learning_object"] = "Candidate object must belong to the suggestion topic."
-        if source.kind != candidate.kind:
+        if source.kind != candidate.kind and not (self.source_extra_ids or self.candidate_extra_ids):
             errors["candidate_learning_object"] = "Suggested objects must have the same content type."
         if errors:
             raise ValidationError(errors)
