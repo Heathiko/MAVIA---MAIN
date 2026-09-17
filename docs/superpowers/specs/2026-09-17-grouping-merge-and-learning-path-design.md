@@ -22,7 +22,8 @@ Observed failures:
    into text + diagram + examples; material 15 has one object per state. Result:
    duplicate and fragment concepts (3x "Diagram description", 4x "Everyday
    examples", 2x "Comparing the Three States").
-2. **Figure-description boilerplate inflates similarity.** Both figure objects
+2. **Figure-description boilerplate inflates similarity** (stripping it only
+   lowers the wrong pair from 0.625 to 0.596, so it is not addressed here). Both figure objects
    open with "Here's a description of the figure for…" / "Okay, let's describe
    this figure…". The particles figure and "6. Changing From One State to
    Another" scored 0.625 and the suggestion was accepted.
@@ -104,28 +105,52 @@ Gas; the reverse of any required edge.
 
 1. Gold fixtures and failing gold test (§4.6).
 2. Many-to-one merges in grouping (§4.2).
-3. Boilerplate stripping for scoring (§4.3).
-4. Revised learning-path criteria (§4.4, §4.5).
-5. Media cleanup (§4.7).
-6. Re-run both topics on the live database; before/after report.
+3. Revised learning-path criteria (§4.4, §4.5).
+4. Media cleanup (§4.7).
+5. Re-run both topics on the live database; before/after report.
 
 ### 4.2 Many-to-one merges
 
-**Unit detection** (`lessons/services/semantic_grouping.py`, new helper):
+**Why not score-based detection** (measured 2026-09-17, after approval of the
+first draft): the cross-encoder scores nearly every material-15 object between
+0.5 and 0.65 against every material-16 section. Shape, Volume and Flow all rank
+the "Changing From One State" section above the Comparing section. Structure
+alone also over-merges: material 15's "Matter" section holds Matter, Solid,
+Liquid and Gas. Units are therefore proposed only when headings corroborate
+them.
+
+**Unit detection** (`lessons/services/unit_matching.py`):
 
 - A *unit* is two or more consecutive objects (by `order`) in one material that
   share a non-empty `section_title`, extended by an immediately following object
-  whose title, with leading numbering stripped and case folded, equals that
-  heading (recovers object 183, whose heading extraction lost).
-- Unit text for scoring = `"<title>: <content>"` per member, joined by newline,
-  in document order. Units that exceed the encoder or cross-encoder limit are not
-  scored (existing no-silent-truncation rule).
-- Units are scored against single objects and units from other materials with
-  the existing `rank_groups` models and thresholds.
-- **Units never merge automatically.** Any unit match at or above the review
-  threshold (0.3) with the required margin becomes a suggestion, regardless of
-  score. One-to-one behaviour for single objects is unchanged.
-- A unit may mix `text` and `image` members; the merged object is `text`.
+  whose normalized title (`normalize_learning_object_title`, singular-folded)
+  equals the normalized heading, and by consecutive objects whose normalized
+  titles are equal (recovers 183 and 185, whose headings extraction lost).
+- A unit's *label* is its normalized, singular-folded heading.
+
+**Heading-matched suggestions:**
+
+- A unit in material M is proposed with a counterpart in another material of
+  the same topic when the counterpart is either a single object whose
+  normalized singular title equals the unit label, or a unit with the same
+  label. Generic labels (`_GENERIC_SINGULAR_LABELS` minus "everyday example")
+  still match here because a unit label is structure, not a title claim.
+- The cross-encoder confirms: joined texts (`"<title>: <content>"` per member)
+  must score at or above the review threshold (0.3). Otherwise no suggestion.
+- A label that matches more than one counterpart in the same material is
+  ambiguous and produces no suggestion.
+- **Never applied automatically.** Status is always pending.
+- One-to-one behaviour for single objects is unchanged.
+
+Expected on topic 62: Comparing (164-167 <-> 182-183), Solid (161 <-> 172-174),
+Liquid (162 <-> 175-178), Gas (163 <-> 179-181), Everyday Examples
+(168 <-> 187-188). None for material 15's "Matter" section.
+
+**Manual merge** for what headings cannot find (Changing 184-186 exists in one
+PDF only; the Matter intro 170-171 has no heading): the teacher ticks two or
+more objects from **one** material in the grouping step and clicks
+"Merge into one" (`outline-nodes/<node_id>/merge-learning-objects`). Same merge
+and split mechanics as below.
 
 **Suggestion model:** `LearningObjectMatchSuggestion` gains
 `source_extra_ids` and `candidate_extra_ids` (JSON lists, default empty). The
@@ -148,6 +173,9 @@ when either list is non-empty.
      (deduplicating links).
    - Delete `LessonVariant` rows of all unit members (including the kept row);
      versions are re-derived by version assignment.
+   - Merge is refused when more than one member belongs to a group with
+     other objects; the kept row is the member that does, else the first.
+   - Remove `lesson_playlist` entries of all members so audio is regenerated.
    - Delete the other members; renumber the material's remaining `order`
      values contiguously; refresh the material's saved learning-object snapshot
      so re-confirmation does not recreate them.
@@ -166,14 +194,6 @@ objects and would all need a "skip merged" filter.
 
 **Frontend** (`TopicDetailPage.jsx`): suggestion cards list every member on
 each side; merged objects show "Split back".
-
-### 4.3 Boilerplate stripping for scoring
-
-Before embedding or cross-encoding, remove a leading figure-describer preamble
-matching sentences such as "Here's a description of the figure for (your|a
-blind) student:" and "Okay, let's (describe|explain) (this|what this) figure…".
-Scoring input only; stored content is untouched. The pattern list lives next to
-`normalized()` with a comment naming it as a workaround for extraction output.
 
 ### 4.4 Concept surface (`learning_path/services/`)
 
@@ -227,7 +247,8 @@ without a lesson-specific rule, stop and report to the user rather than add one.
   forbidden edge, or wrong order; prints extra non-forbidden edges.
 - **Unit tests:** unit detection (including lost-heading recovery), units never
   auto-merge, accept merges and re-points questions, split restores
-  `metadata_id`s and links, published topic unpublished, boilerplate stripping,
+  `metadata_id`s and links, published topic unpublished, heading-matched suggestions (none for the
+  material-15 Matter section), manual merge refused across materials,
   numbering-stripped names, structural concepts excluded and ordered last,
   RefD reference direction on synthetic text, "than" contrast veto.
 - **Existing tests:** the 28 synthetic learning-path tests change only where they
