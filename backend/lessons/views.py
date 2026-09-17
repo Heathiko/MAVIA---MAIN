@@ -757,6 +757,45 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         except LearningObjectMatchSuggestion.DoesNotExist:
             return None
 
+    @transaction.atomic
+    def _merge_suggestion_units(self, suggestion, source, candidate):
+        """Merge each side of a unit suggestion; return the two kept rows.
+
+        The suggestion row cascades away if one of its FK rows is merged away,
+        so the pair is recorded again against the kept rows.
+        """
+        sides = []
+        for primary, extra_ids in (
+            (source, suggestion.source_extra_ids),
+            (candidate, suggestion.candidate_extra_ids),
+        ):
+            members = [primary, *LearningObject.objects.filter(
+                pk__in=extra_ids, material_id=primary.material_id,
+            )]
+            if len(members) != 1 + len(extra_ids):
+                raise MergeError("This suggestion is out of date. Refresh the page and review it again.")
+            sides.append(members)
+
+        fields = {
+            "outline_node": suggestion.outline_node,
+            "similarity_score": suggestion.similarity_score,
+            "confidence": suggestion.confidence,
+            "evidence": suggestion.evidence,
+            "status": suggestion.status,
+        }
+        kept = []
+        for members in sides:
+            if len(members) == 1:
+                kept.append(members[0])
+            else:
+                row, _ = merge_learning_objects(members)
+                kept.append(row)
+        left, right = sorted(kept, key=lambda item: item.id)
+        LearningObjectMatchSuggestion.objects.update_or_create(
+            source_learning_object=left, candidate_learning_object=right, defaults=fields,
+        )
+        return left, right
+
     @action(
         detail=True,
         methods=["post"],
@@ -787,6 +826,14 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             return Response(
                 {"detail": "Confirm both learning objects before reviewing this connection."},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        if suggestion.source_extra_ids or suggestion.candidate_extra_ids:
+            try:
+                source, candidate = self._merge_suggestion_units(suggestion, source, candidate)
+            except MergeError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+            suggestion = LearningObjectMatchSuggestion.objects.get(
+                source_learning_object=source, candidate_learning_object=candidate,
             )
         suggestion.status = LearningObjectMatchSuggestion.Status.ACCEPTED
         suggestion.save(update_fields=["status", "updated_at"])

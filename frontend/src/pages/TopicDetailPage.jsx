@@ -351,17 +351,26 @@ function ObjectPairsPanel({
                     <strong>{Math.round(suggestion.similarity_score * 100)}%</strong>
                     <em>{suggestion.confidence} confidence</em>
                   </div>
+                  {(suggestion.source_extra_ids?.length > 0 || suggestion.candidate_extra_ids?.length > 0) && (
+                    <p className="muted-text">
+                      Accepting merges the objects on each side into one, then connects them. You can split them back later.
+                    </p>
+                  )}
                   <div className="match-suggestion-pair">
                     <div className="match-source-card">
                       <div className="match-source-label">
                         <span aria-hidden="true">A</span>
                         <small>{sourceMaterial?.filename || `PDF ${source.material}`}</small>
                       </div>
-                      <strong>{source.title}</strong>
-                      {source.image_url && (
-                        <img className="review-source-image" src={source.image_url} alt={source.title || "Source A"} />
-                      )}
-                      <p className="match-source-content">{source.content || "No narration content."}</p>
+                      {(suggestion.source_members?.length ? suggestion.source_members : [source]).map((member) => (
+                        <div key={member.id} className="match-unit-member">
+                          <strong>{member.title}</strong>
+                          {member.image_url && (
+                            <img className="review-source-image" src={member.image_url} alt={member.title || "Source A"} />
+                          )}
+                          <p className="match-source-content">{member.content || "No narration content."}</p>
+                        </div>
+                      ))}
                     </div>
                     <div className="match-pair-connector" aria-hidden="true">
                       <span>+</span>
@@ -372,11 +381,15 @@ function ObjectPairsPanel({
                         <span aria-hidden="true">B</span>
                         <small>{candidateMaterial?.filename || `PDF ${candidate.material}`}</small>
                       </div>
-                      <strong>{candidate.title}</strong>
-                      {candidate.image_url && (
-                        <img className="review-source-image" src={candidate.image_url} alt={candidate.title || "Source B"} />
-                      )}
-                      <p className="match-source-content">{candidate.content || "No narration content."}</p>
+                      {(suggestion.candidate_members?.length ? suggestion.candidate_members : [candidate]).map((member) => (
+                        <div key={member.id} className="match-unit-member">
+                          <strong>{member.title}</strong>
+                          {member.image_url && (
+                            <img className="review-source-image" src={member.image_url} alt={member.title || "Source B"} />
+                          )}
+                          <p className="match-source-content">{member.content || "No narration content."}</p>
+                        </div>
+                      ))}
                     </div>
                   </div>
                   <div className="match-suggestion-actions">
