@@ -109,6 +109,11 @@ class LearningObjectSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True,
     )
+    # Titles of the originals a merged object was built from; empty otherwise.
+    merged_parts = serializers.SerializerMethodField()
+
+    def get_merged_parts(self, obj):
+        return [{"title": entry.get("title", "")} for entry in (obj.merged_from or [])]
 
     class Meta:
         model = LearningObject
@@ -127,6 +132,7 @@ class LearningObjectSerializer(serializers.ModelSerializer):
             "source_page",
             "source_block_id",
             "source_excerpt",
+            "merged_parts",
         ]
 
 

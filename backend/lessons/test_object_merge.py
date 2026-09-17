@@ -221,3 +221,56 @@ class SplitTests(MergeFixture):
     def test_an_unmerged_object_cannot_be_split(self):
         with self.assertRaises(MergeError):
             split_learning_object(self.shape)
+
+
+from .tests import authenticated_api_client
+
+
+class MergeApiTests(MergeFixture):
+    def _url(self, suffix):
+        return f"/api/courses/{self.course.id}/outline-nodes/{self.topic.id}/{suffix}"
+
+    def test_merge_endpoint_merges_and_returns_the_resources(self):
+        client = authenticated_api_client()
+
+        response = client.post(
+            self._url("merge-learning-objects/"),
+            {"learning_object_ids": [self.shape.id, self.volume.id, self.flow.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn("learning_object_groups", response.data)
+        merged = LearningObject.objects.get(pk=self.shape.id)
+        self.assertEqual(len(merged.merged_from), 3)
+        parts = [
+            item["merged_parts"]
+            for group in response.data["learning_object_groups"]
+            for item in group["learning_objects"]
+            if item["id"] == self.shape.id
+        ][0]
+        self.assertEqual([part["title"] for part in parts], ["Shape", "Volume", "Flow"])
+
+    def test_merge_endpoint_rejects_objects_from_two_pdfs(self):
+        client = authenticated_api_client()
+
+        response = client.post(
+            self._url("merge-learning-objects/"),
+            {"learning_object_ids": [self.shape.id, self.comparing.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("same PDF", response.data["detail"])
+
+    def test_split_endpoint_restores_the_originals(self):
+        kept, _ = merge_learning_objects([self.shape, self.volume])
+        client = authenticated_api_client()
+
+        response = client.post(self._url(f"learning-objects/{kept.id}/split/"), format="json")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            sorted(self.material.learning_objects.values_list("title", flat=True)),
+            ["Examples", "Flow", "Matter", "Shape", "Volume"],
+        )

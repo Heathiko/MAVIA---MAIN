@@ -287,6 +287,26 @@ export function separateLearningObject(courseId, nodeId, learningObjectId) {
   );
 }
 
+// Several objects from one PDF become one, when another PDF teaches them as one.
+export function mergeLearningObjects(courseId, nodeId, learningObjectIds) {
+  return request(
+    `/courses/${courseId}/outline-nodes/${nodeId}/merge-learning-objects/`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ learning_object_ids: learningObjectIds }),
+    }
+  );
+}
+
+// Undo a merge; the original objects come back with their question links.
+export function splitLearningObject(courseId, nodeId, learningObjectId) {
+  return request(
+    `/courses/${courseId}/outline-nodes/${nodeId}/learning-objects/${learningObjectId}/split/`,
+    { method: "POST" }
+  );
+}
+
 // Where each edited learning object now belongs. Proposes only; changes nothing.
 export function fetchRegroupingPreview(courseId, nodeId) {
   return request(`/courses/${courseId}/outline-nodes/${nodeId}/regrouping/`);

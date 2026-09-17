@@ -85,6 +85,7 @@ from .services.learning_resource_linker import (
     refresh_material_learning_relationships,
     refresh_question_learning_object_links,
 )
+from .services.object_merge import MergeError, merge_learning_objects, split_learning_object
 from .services.regrouping import (
     RegroupingUnavailable,
     apply_regrouping,
@@ -612,6 +613,65 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             {learning_object.material, *(member.material for member in old_group_members)},
             recompute=False,
         )
+        return Response(self._learning_resources_payload(node, request))
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"outline-nodes/(?P<node_id>[^/.]+)/merge-learning-objects",
+    )
+    def merge_learning_objects_action(self, request, pk=None, node_id=None):
+        """Merge objects from one PDF into one, for content another PDF teaches as one."""
+        course = self.get_object()
+        try:
+            node = course.nodes.get(pk=node_id)
+        except OutlineNode.DoesNotExist:
+            return Response({"detail": "Outline node not found."}, status=status.HTTP_404_NOT_FOUND)
+        raw_ids = request.data.get("learning_object_ids")
+        try:
+            object_ids = {int(value) for value in raw_ids}
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "Provide learning_object_ids as a list of integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        members = list(
+            LearningObject.objects.filter(
+                id__in=object_ids, material__outline_node=node,
+            ).select_related("material")
+        )
+        if len(members) != len(object_ids):
+            return Response(
+                {"detail": "One or more learning objects were not found in this topic."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            merge_learning_objects(members)
+        except MergeError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        self._refresh_relationship_snapshots({members[0].material}, recompute=False)
+        return Response(self._learning_resources_payload(node, request))
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"outline-nodes/(?P<node_id>[^/.]+)/learning-objects/(?P<object_id>[^/.]+)/split",
+    )
+    def split_learning_object_action(self, request, pk=None, node_id=None, object_id=None):
+        """Undo a merge: rebuild the original objects with their question links."""
+        course = self.get_object()
+        try:
+            node = course.nodes.get(pk=node_id)
+            learning_object = LearningObject.objects.select_related("material").get(
+                pk=object_id, material__outline_node=node,
+            )
+        except (OutlineNode.DoesNotExist, LearningObject.DoesNotExist):
+            return Response({"detail": "Learning object not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            split_learning_object(learning_object)
+        except MergeError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        self._refresh_relationship_snapshots({learning_object.material}, recompute=False)
         return Response(self._learning_resources_payload(node, request))
 
     @action(

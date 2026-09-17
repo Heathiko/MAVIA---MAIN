@@ -28,8 +28,10 @@ import {
   editVersionText,
   generateObjectVersions,
   keepVersionText,
+  mergeLearningObjects,
   reviewQuestionPairing,
   separateLearningObject,
+  splitLearningObject,
   startQuestionGeneration,
   updateLearningObject,
   updateTopicQuestion,
@@ -2255,6 +2257,49 @@ function LearningObjectConnections({
     }
   }
 
+  const allLearningObjects = (resources?.learning_object_groups || []).flatMap(
+    (group) => group.learning_objects || [],
+  );
+  const selectedMaterials = new Set(
+    allLearningObjects
+      .filter((item) => selectedIds.includes(item.id))
+      .map((item) => Number(item.material)),
+  );
+  const canMergeSelected = selectedIds.length >= 2 && selectedMaterials.size === 1;
+
+  async function mergeSelected() {
+    if (reviewStep !== "objects" || !canMergeSelected) return;
+    setBusyAction("merge");
+    onError("");
+    onMessage("");
+    try {
+      const data = await mergeLearningObjects(courseId, topicId, selectedIds);
+      setResources(data);
+      setSelectedIds([]);
+      onMessage("Selected objects were merged into one. Use “Split back” to undo.");
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  async function splitObject(item) {
+    if (reviewStep !== "objects") return;
+    setBusyAction(`split-${item.id}`);
+    onError("");
+    onMessage("");
+    try {
+      const data = await splitLearningObject(courseId, topicId, item.id);
+      setResources(data);
+      onMessage(`“${item.title}” was split back into ${item.merged_parts.length} objects.`);
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   async function reviewMatchSuggestion(suggestion, decision) {
     setBusyAction(`suggestion-${decision}-${suggestion.id}`);
     onError("");
@@ -2808,6 +2853,17 @@ function LearningObjectConnections({
                                 {busyAction === `separate-${item.id}` ? "Separating…" : "Separate"}
                               </button>
                             )}
+                            {item.merged_parts?.length > 0 && reviewStep === "objects" && (
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-small"
+                                disabled={Boolean(busyAction)}
+                                title={`Merged from: ${item.merged_parts.map((part) => part.title).join(", ")}`}
+                                onClick={() => splitObject(item)}
+                              >
+                                {busyAction === `split-${item.id}` ? "Splitting…" : "Split back"}
+                              </button>
+                            )}
                           </div>
                         );
                       })}
@@ -2883,6 +2939,15 @@ function LearningObjectConnections({
               onChange={(event) => setGroupLabel(event.target.value)}
             />
           </label>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={!canMergeSelected || Boolean(busyAction)}
+            title={canMergeSelected ? "" : "Select two or more objects from the same PDF"}
+            onClick={mergeSelected}
+          >
+            {busyAction === "merge" ? "Merging…" : "Merge into one"}
+          </button>
           <button
             type="button"
             className="btn btn-primary"
