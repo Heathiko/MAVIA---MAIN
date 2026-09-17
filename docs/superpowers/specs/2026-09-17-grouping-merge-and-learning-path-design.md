@@ -139,6 +139,9 @@ them.
   must score at or above the review threshold (0.3). Otherwise no suggestion.
 - A label that matches more than one counterpart in the same material is
   ambiguous and produces no suggestion.
+- A unit with two or more members already connected to other PDFs is not
+  proposed: the PDFs already agree at a finer grain (topic 79's "Reproduction"
+  section holds Stamen, Pistil and Petals, each already paired).
 - **Never applied automatically.** Status is always pending.
 - One-to-one behaviour for single objects is unchanged.
 
@@ -213,8 +216,10 @@ each side; merged objects show "Split back".
 - **Temporal order:** unchanged.
 - **Semantic reference (RefD-style):**
   - Key terms of concept A = its name plus distinctive terms from its text.
-    Term weight = inverse document frequency over the topic's concepts; terms
-    below a weight floor are dropped (e.g. "particles" in topic 62).
+    A term belongs to the earliest concept that uses it (the one introducing
+    it). Term weight = inverse document frequency over the topic's concepts;
+    terms used by too many concepts are dropped (e.g. "particles" in topic 62).
+    The name weighs as much as all the concept's other terms together.
   - `ref(B -> A)` = weighted share of A's key terms mentioned in B's text,
     using the existing `mentions` plural folding.
   - Multi-word terms that are not matched literally may match a B text window
