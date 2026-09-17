@@ -77,8 +77,9 @@ def _windows(text):
 def concept_names(concepts):
     """The name each concept can be *referred to by*, or None.
 
-    A concept with no name cannot be referred to, so nothing can be shown to
-    depend on it -- the same rule `concepts.py` already applies to chunks.
+    The name is one of a concept's key terms (see ``key_terms``). A concept
+    with no name can still be referred to through the distinctive terms it
+    introduces; only a concept owning no key terms at all cannot be.
     """
     return {concept.id: resolve_concept(concept) for concept in concepts}
 
@@ -144,6 +145,7 @@ def _phrase_hits(concepts, phrases, texts, runtime_instance):
     vectors = engine.embeddings(payload)
     phrase_vectors = dict(zip(phrases, vectors[:len(phrases)]))
 
+    # Vectors come back normalised, so the dot product below is the cosine.
     hits, cursor = set(), len(phrases)
     for concept in concepts:
         count = len(windowed[concept.id])
@@ -202,10 +204,11 @@ def inbound_outbound_ratios(concepts, matrix):
 
     **Only concepts with key terms get a ratio.** Inbound reference is how
     strongly other text refers to a concept's *key terms*, so a concept with
-    none has an inbound of zero by construction, not by measurement. Giving it a ratio of 0
-    made every named concept look more foundational than it -- measured on real
-    content, 55 verdicts came from nothing but that. The matrix only holds rows
-    for nameable targets, so those are exactly the concepts measured here.
+    none has an inbound of zero by construction, not by measurement. Giving it a
+    ratio of 0 made every measurable concept look more foundational than it --
+    measured on real content, 55 verdicts came from nothing but that. The matrix
+    only holds rows for concepts owning key terms (a name or distinctive terms),
+    so those are exactly the concepts measured here.
     """
     inbound = defaultdict(float)
     outbound = defaultdict(float)
@@ -235,15 +238,16 @@ def temporal_order(a, b):
 def semantic_reference(a, b, matrix):
     """1 when b's text refers to a more than a's refers to b.
 
-    **Both concepts must be nameable for this to mean anything.** A concept with
-    no name -- "Everyday Examples", "Examples" -- cannot be searched for, so its
+    **Both concepts must own key terms for this to mean anything.** A concept
+    with neither a name nor a distinctive term cannot be searched for, so its
     side of the comparison is structurally zero. Comparing a measured number
     against one that could never be measured is not evidence of direction; it
-    just means the named concept always wins. Measured on real data that made
-    every nameless concept a dependent of nearly everything.
+    just means the measurable concept always wins. Measured on real data that
+    made every such concept a dependent of nearly everything.
 
-    The matrix holds a row for each nameable concept, so a missing key is
-    exactly the case where no comparison is possible.
+    The matrix holds a row for each concept owning key terms (a name or
+    distinctive terms), so a missing key is exactly the case where no
+    comparison is possible.
     """
     forward_key, backward_key = (a.id, b.id), (b.id, a.id)
     if forward_key not in matrix or backward_key not in matrix:
@@ -267,8 +271,8 @@ def inbound_outbound(a, b, ratios):
     The margin is relative because the ratio is scale-free: what matters is
     being half again as foundational, not being 0.4 higher.
 
-    A concept with no ratio has no name to be referred to by, so the
-    comparison is not a measurement and no vote is cast -- the same rule
+    A concept with no ratio owns no key terms (no name and no distinctive
+    term) to be referred to by, so the comparison is not a measurement and no vote is cast -- the same rule
     ``semantic_reference`` applies.
     """
     if a.id not in ratios or b.id not in ratios:

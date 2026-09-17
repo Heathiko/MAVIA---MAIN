@@ -35,7 +35,9 @@ from .services.criteria import (
     decide_pairs,
     inbound_outbound,
     inbound_outbound_ratios,
+    key_terms,
     only_contrastive_mentions,
+    reference_details,
     reference_matrix,
     semantic_reference,
     temporal_order,
@@ -266,11 +268,12 @@ class ReferenceMatrixTests(TestCase):
         self.assertGreater(matrix[(1, 2)], 0.0)
         self.assertEqual(matrix[(2, 1)], 0.0)
 
-    def test_an_unnameable_concept_gets_no_row(self):
-        """This absence is what `semantic_reference` reads to abstain."""
-        # Changed 2026-09-17: rows now exist for concepts owning key terms, not
-        # for named concepts; "Ice and steam." owns "ice" and "steam", so the
-        # nameless concept here uses only a term Solid shares.
+    def test_a_concept_owning_no_key_terms_gets_no_row(self):
+        """A concept with no name and no distinctive term cannot be referred
+        to. This absence is what `semantic_reference` reads to abstain."""
+        # Changed 2026-09-17: was test_an_unnameable_concept_gets_no_row. Rows
+        # now follow key-term ownership, not names; "Ice and steam." owns "ice"
+        # and "steam", so this concept uses only a term Solid shares.
         examples = Stub(1, title="Examples", content="Its shape.")
         solid = Stub(2, title="Solid", content="A solid keeps its shape.")
 
@@ -278,6 +281,29 @@ class ReferenceMatrixTests(TestCase):
 
         self.assertNotIn((1, 2), matrix)
         self.assertIn((2, 1), matrix)
+
+    def test_a_nameless_concept_owning_a_distinctive_term_gets_a_row(self):
+        """Key terms are the name plus distinctive terms; no name is required.
+        A long sentence title names nothing, yet its unique term is matched
+        when a later concept's text uses it. Six concepts, so a term used by two
+        still counts as distinctive."""
+        concepts = [
+            Stub(1, order=0,
+                 title="Tiny moving particles called atoms fill all the matter around us",
+                 content="Tiny atoms fill everything around us."),
+            Stub(2, order=1, title="Solid", content="A solid keeps atoms packed tightly."),
+            Stub(3, order=2, title="Liquid", content="A liquid flows into a container."),
+            Stub(4, order=3, title="Gas", content="A gas spreads out to fill a room."),
+            Stub(5, order=4, title="Melting", content="Heat turns ice into water."),
+            Stub(6, order=5, title="Freezing", content="Cold turns water into ice."),
+        ]
+
+        self.assertIsNone(concept_names(concepts)[1])
+        matrix, matched = reference_details(concepts, KeywordRuntime())
+
+        self.assertIn((1, 2), matrix)
+        self.assertIn("atom", matched[(1, 2)])
+        self.assertGreater(matrix[(1, 2)], 0.0)
 
 
 class ContrastTests(TestCase):
@@ -452,9 +478,6 @@ class DecidePairTests(TestCase):
 
         self.assertIn("A solid is matter that keeps its shape.", concept.member_text)
         self.assertIn("Solid particles vibrate.", concept.member_text)
-
-
-from .services.criteria import key_terms, reference_details
 
 
 def plant_concepts():
