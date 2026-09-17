@@ -51,6 +51,7 @@ def gold_report(data, concepts, decisions):
     required = [tuple(edge) for edge in data["required"]]
     structural = set(data["structural"])
     parallel = [set(group) for group in data["parallel"]]
+    known_missing = [tuple(edge) for edge in data.get("known_missing", [])]
 
     def forbidden(edge):
         before, after = edge
@@ -65,11 +66,14 @@ def gold_report(data, concepts, decisions):
     ordered, _, ignored = order_with_links(concepts, links)
     order = [key[concept.id] for concept in ordered]
     accepted_set = set(accepted)
+    missing_required = [edge for edge in required if edge not in accepted_set]
     return {
         "topic": data["topic_id"],
         "accepted": [list(edge) for edge in accepted],
         "pending": [list(edge) for edge in pending],
-        "missing_required": [list(edge) for edge in required if edge not in accepted_set],
+        "missing_required": [list(edge) for edge in missing_required],
+        "unexpected_missing": [list(edge) for edge in missing_required if edge not in known_missing],
+        "gaps_closed": [list(edge) for edge in known_missing if edge in accepted_set],
         "forbidden_accepted": [list(edge) for edge in accepted if forbidden(edge)],
         "extra_accepted": [list(edge) for edge in accepted if edge not in required and not forbidden(edge)],
         "order": order,

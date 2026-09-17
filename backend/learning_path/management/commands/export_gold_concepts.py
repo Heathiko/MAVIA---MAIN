@@ -58,6 +58,7 @@ class Command(BaseCommand):
             })
 
         output = {name: spec[name] for name in ("topic_id", "required", "parallel", "structural", "expected_order")}
+        output["known_missing"] = spec.get("known_missing", [])
         output["concepts"] = concepts
         Path(out_path).write_text(json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8")
         self.stdout.write(self.style.SUCCESS(f"Wrote {len(concepts)} concepts to {out_path}"))

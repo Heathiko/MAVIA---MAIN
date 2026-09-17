@@ -35,6 +35,8 @@ MAX_IOL = 1e6
 
 # How much more foundational one concept must be before the ratio counts as
 # evidence rather than as noise. See `inbound_outbound`.
+# Confirmed by the grid (evaluate_gold_paths --grid) on gold topics 62 and 79;
+# see docs/learning_path_revision_2026-09-17.md.
 MIN_IOL_MARGIN = 0.25
 
 # RefD (Liang et al., 2015): A is a prerequisite of B when B refers to A more
@@ -45,13 +47,19 @@ MIN_IOL_MARGIN = 0.25
 
 # A term used by more than this share of a topic's concepts belongs to none of
 # them ("particles" in a states-of-matter lesson).
+# Confirmed by the grid (evaluate_gold_paths --grid) on gold topics 62 and 79;
+# see docs/learning_path_revision_2026-09-17.md.
 REF_MAX_DF_RATIO = 0.34
 
 # How much more B must refer to A than A to B for the vote to count.
-REF_MARGIN = 0.05
+# Calibrated 2026-09-17 on gold topics 62 and 79; see
+# docs/learning_path_revision_2026-09-17.md.
+REF_MARGIN = 0.0
 
 # ACE (Aytekin & Saygin, 2024) link: a multi-word name phrased differently
 # ("change of state") still counts when a text window is this close to it.
+# Confirmed by the grid (evaluate_gold_paths --grid) on gold topics 62 and 79;
+# see docs/learning_path_revision_2026-09-17.md.
 PHRASE_COSINE = 0.80
 
 

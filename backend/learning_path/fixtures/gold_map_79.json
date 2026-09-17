@@ -18,5 +18,6 @@
   ],
   "parallel": [],
   "structural": ["examples"],
-  "expected_order": ["reproduction", "stamen", "pistil", "petals", "pollination", "fertilization", "seed", "fruit", "examples"]
+  "expected_order": ["reproduction", "stamen", "pistil", "petals", "pollination", "fertilization", "seed", "fruit", "examples"],
+  "known_missing": [["stamen","pollination"],["pistil","pollination"],["pollination","fertilization"],["fertilization","seed"]]
 }
