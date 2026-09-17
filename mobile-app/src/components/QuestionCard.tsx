@@ -40,9 +40,13 @@ type Props = {
   total: number;
   onSubmit: (answer: string) => Promise<SubmitResult>;
   onNext: () => void;
+  // Bumped by the screen when the learner asks to hear it again (the
+  // "repeat the question" voice command). Re-reads the question in place -- unlike remounting the
+  // card, an answer already given is kept.
+  repeatSignal?: number;
 };
 
-export default function QuestionCard({ question, index, total, onSubmit, onNext }: Props) {
+export default function QuestionCard({ question, index, total, onSubmit, onNext, repeatSignal = 0 }: Props) {
   const options = useMemo(() => optionsFor(question), [question]);
   const [selected, setSelected] = useState<string | null>(null);
   const [result, setResult] = useState<SubmitResult | null>(null);
@@ -75,21 +79,37 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext 
     narration.speak(text, advance ? { onDone: advanceOnce } : undefined);
   }
 
+  // "A. Solid. B. Liquid." -- the letter is the key they press, so it is
+  // read with every option, not just implied by the order.
+  function readQuestionAloud() {
+    const choiceText = options.map((o) => `${o.key.toUpperCase()}. ${o.label}.`).join(" ");
+    narration.speak(choiceText ? `${question.prompt} ${choiceText}` : question.prompt, {
+      onDone: openEnded ? advanceOnce : undefined,
+    });
+  }
+
   // Read the new question (and its choices) aloud as soon as it appears.
   // Open-ended questions have nothing to grade -- move on as soon as the
   // prompt's been read instead of waiting on a tap that never comes from
   // choose() below.
   useEffect(() => {
     advancedRef.current = false;
-    // "A. Solid. B. Liquid." -- the letter is the key they press, so it is
-    // read with every option, not just implied by the order.
-    const choiceText = options.map((o) => `${o.key.toUpperCase()}. ${o.label}.`).join(" ");
-    narration.speak(choiceText ? `${question.prompt} ${choiceText}` : question.prompt, {
-      onDone: openEnded ? advanceOnce : undefined,
-    });
+    readQuestionAloud();
     return () => narration.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [question.id]);
+
+  // Asked to hear it again. Only while the question is still open: once an
+  // answer is in, the read-back and verdict are already speaking and the card
+  // is about to move on, so re-reading would talk over them.
+  const lastRepeat = useRef(repeatSignal);
+  useEffect(() => {
+    if (repeatSignal === lastRepeat.current) return;
+    lastRepeat.current = repeatSignal;
+    if (answered || submitting) return;
+    readQuestionAloud();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repeatSignal]);
 
   async function choose(key: string) {
     if (submitting || answered) return;

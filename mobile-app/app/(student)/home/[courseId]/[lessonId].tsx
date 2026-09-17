@@ -10,6 +10,7 @@ import Button from "@/components/Button";
 import QuestionCard, { SubmitResult } from "@/components/QuestionCard";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
 import { useNarration } from "@/hooks/useNarration";
+import { useVoiceCommands } from "@/voice/useVoiceCommands";
 import {
   ApiSubmitResult,
   Variant,
@@ -93,6 +94,13 @@ export default function LessonPlayerScreen() {
   // taps past the feedback QuestionCard shows — the state transition (which
   // concept/variant comes next) was already decided server-side by then.
   const lastResult = useRef<ApiSubmitResult | null>(null);
+  // Bumped by the voice commands. `topicReplay` restarts the concept's
+  // narration from its first part; `questionRepeat` re-reads the open question.
+  const [topicReplay, setTopicReplay] = useState(0);
+  const [questionRepeat, setQuestionRepeat] = useState(0);
+  // True while an answer is on its way to the server. Leaving the question for
+  // the topic then would unmount the card mid-submit and lose its verdict.
+  const submittingRef = useRef(false);
 
   const inPathMode = pathStep !== null;
   const tracks = tracksFor(state);
@@ -196,7 +204,7 @@ export default function LessonPlayerScreen() {
       stopNarration();
       stopAudio();
     };
-  }, [phase, trackIndex, track?.audio_ready, track?.audio_url, track?.text, load, speak, stopNarration, stopAudio]);
+  }, [phase, trackIndex, track?.audio_ready, track?.audio_url, track?.text, load, speak, stopNarration, stopAudio, topicReplay]);
 
   // Belt and braces for the phases that have no audio effect of their own:
   // QuestionCard starts narrating from its own mount effect, which React runs
@@ -217,17 +225,47 @@ export default function LessonPlayerScreen() {
     );
   }, [phase, lesson?.has_questions, speak]);
 
+  // Voice commands for this screen. Add a handler here for each command in
+  // src/voice/commands.ts that should do something while a lesson is open.
+  useVoiceCommands(
+    {
+      // Play the topic again from its first part. Asked from a question, the
+      // learner goes back to the topic and returns to the same question after
+      // it -- but not while an answer is being graded or its verdict is
+      // playing, where leaving would drop the result.
+      repeatTopic: () => {
+        if (phase === "done") return;
+        if (phase === "questions" && (submittingRef.current || lastResult.current)) return;
+        setState((prev) => ({ ...prev, phase: "audio", trackIndex: prev.pathStep ? 0 : prev.trackIndex }));
+        setTopicReplay((n) => n + 1);
+      },
+      // Read the open question again. Asked while the topic is still playing,
+      // go on to the question now -- it is read aloud as it opens.
+      repeatQuestion: () => {
+        if (phase === "questions") setQuestionRepeat((n) => n + 1);
+        else if (phase === "audio" && canGrade) goToQuestions();
+      },
+    },
+    { enabled: !loading && !error }
+  );
+
   const progress = useMemo(() => {
     if (!player.durationMillis) return 0;
     return Math.min(1, player.positionMillis / player.durationMillis);
   }, [player.positionMillis, player.durationMillis]);
 
   async function onSubmitAnswer(answer: string): Promise<SubmitResult> {
-    const res = await submitResponse({
-      learning_state_id: learningStateId as number,
-      question_id: questions[questionIndex].id,
-      selected_answer: answer,
-    });
+    submittingRef.current = true;
+    let res: ApiSubmitResult;
+    try {
+      res = await submitResponse({
+        learning_state_id: learningStateId as number,
+        question_id: questions[questionIndex].id,
+        selected_answer: answer,
+      });
+    } finally {
+      submittingRef.current = false;
+    }
     lastResult.current = res;
     return { is_correct: res.is_correct, mastery: res.mastery, completed: res.completed };
   }
@@ -423,6 +461,7 @@ export default function LessonPlayerScreen() {
             total={questions.length}
             onSubmit={onSubmitAnswer}
             onNext={nextQuestion}
+            repeatSignal={questionRepeat}
           />
         )}
 
