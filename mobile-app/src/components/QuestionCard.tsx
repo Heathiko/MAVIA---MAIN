@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useNarration } from "@/hooks/useNarration";
+import { useBrailleKeypad } from "@/input/useBrailleKeypad";
 import { colors, radii, spacing } from "@/theme";
 
 // Mirrors lessons.Question from the API.
@@ -111,8 +112,14 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repeatSignal]);
 
+  // Set synchronously, unlike `submitting`: a keypad can deliver two presses
+  // before React re-renders, and the state flags would still read false for
+  // the second one -- submitting the same question twice.
+  const choosingRef = useRef(false);
+
   async function choose(key: string) {
-    if (submitting || answered) return;
+    if (choosingRef.current || submitting || answered) return;
+    choosingRef.current = true;
     setSelected(key);
     setSubmitting(true);
     setError(null);
@@ -139,6 +146,8 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
       speakVerdictWhenReady();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Couldn't submit your answer.";
+      // Not answered after all -- let the learner try again.
+      choosingRef.current = false;
       setSelected(null);
       setError(message);
       // Say it too -- a silent failure leaves a student who cannot read the
@@ -149,6 +158,31 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
       setSubmitting(false);
     }
   }
+
+  // Braille keypad over Bluetooth: 7, 8, 9 and + answer A, B, C and D (the
+  // mapping is src/input/brailleKeypad.ts). Answering goes through choose(),
+  // exactly like a tap, so the read-back and verdict are identical.
+  const numLockWarnedRef = useRef(false);
+  useBrailleKeypad(
+    (action) => {
+      if (action.kind === "numLockOff") {
+        // Once per question: a held or repeated arrow should not become a loop.
+        if (numLockWarnedRef.current) return;
+        numLockWarnedRef.current = true;
+        narration.speak("Number lock is off. Press Num Lock, then answer with 7, 8, 9, or plus.");
+        return;
+      }
+      if (choosingRef.current || answered || submitting) return;
+      const option = options.find((o) => o.key === action.letter);
+      if (!option) {
+        // e.g. + (D) on a True/False question: say so rather than do nothing.
+        narration.speak(`There is no option ${action.letter.toUpperCase()}.`);
+        return;
+      }
+      choose(option.key);
+    },
+    { enabled: !openEnded }
+  );
 
   return (
     <View style={styles.card}>
