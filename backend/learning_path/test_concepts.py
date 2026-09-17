@@ -1,6 +1,8 @@
 from django.test import SimpleTestCase
 
-from .services.concepts import is_structural, resolve_concept, strip_numbering
+from lessons.services.semantic_grouping import _GENERIC_INSTRUCTIONAL_LABELS
+
+from .services.concepts import STRUCTURAL_LABELS, is_structural, resolve_concept, strip_numbering
 
 
 class Chunk:
@@ -94,3 +96,13 @@ class NumberingAndStructureTests(SimpleTestCase):
             section_title="3. Comparing the Three States",
         )
         self.assertEqual(resolve_concept(chunk), "comparing the three states")
+
+    def test_structural_labels_do_not_drift_from_groupings_list(self):
+        """STRUCTURAL_LABELS mirrors grouping's `_GENERIC_INSTRUCTIONAL_LABELS`
+        by hand rather than by import, so this test is what keeps the two from
+        silently drifting apart."""
+        for label in _GENERIC_INSTRUCTIONAL_LABELS:
+            self.assertIn(label, STRUCTURAL_LABELS, msg=label)
+
+    def test_a_numbered_vocabulary_heading_is_structural(self):
+        self.assertTrue(is_structural(Chunk("3. Vocabulary")))

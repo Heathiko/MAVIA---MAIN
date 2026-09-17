@@ -30,11 +30,19 @@ from .text_signals import (
 # Generic instructional labels. A chunk headed "Examples" or "Key Points" is
 # document furniture -- it presents concepts, it does not name one, and nothing
 # should ever be recorded as depending on it.
+#
+# Mirrors grouping's `_GENERIC_INSTRUCTIONAL_LABELS`
+# (lessons/services/semantic_grouping.py) so the same headings are treated as
+# furniture in both places. Kept as a separate, self-contained list rather than
+# imported, so this module does not depend on `lessons`; a test in
+# test_concepts.py asserts the two sets cannot drift apart.
 STRUCTURAL_LABELS = frozenset({
     "introduction", "summary", "conclusion", "overview", "objectives",
     "example", "examples", "everyday examples", "key points", "key facts",
     "key points for students", "key facts to remember", "activity",
     "exercise", "review", "recap", "remember", "note", "notes",
+    "additional information", "definition", "diagram", "glossary",
+    "practice questions", "questions", "vocabulary", "worksheet",
 })
 
 
