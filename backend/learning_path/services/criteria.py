@@ -396,6 +396,10 @@ def decide(votes):
 # a model and slows the build, and whether contrast causes wrong edges in
 # practice had not yet been measured.
 # "than" added 2026-09-17: "more energy than in a solid" compares, it does not build on solids.
+# Two further gaps: "than" also matches phrases that are not contrasts ("more
+# than one flower"), so a genuine mention after it counts as contrastive; and
+# ``vetoed`` checks mentions of the full name only -- a reference counted
+# through the head word or through section containment is never vetoed.
 _CONTRAST = re.compile(r"\b(while|whereas|unlike|but not|although|however|than)\b", re.I)
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 

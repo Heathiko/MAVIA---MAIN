@@ -7,8 +7,8 @@ prerequisite map for two uploaded lessons (`backend/learning_path/fixtures/gold_
 
 | Topic | Required accepted | Forbidden accepted | Order matches |
 |---|---|---|---|
-| 62 Solid, Liquid and Gas | 0 / 10 | 1 | True |
-| 79 Reproduction Among Flowering Plants | 1 / 8 | 0 | True |
+| 62 Solid, Liquid and Gas | 0 / 10 | 1 | yes |
+| 79 Reproduction Among Flowering Plants | 1 / 8 | 0 | yes |
 
 ## After (RefD key-term reference, Examples structural, no cross-section cap)
 
@@ -30,8 +30,11 @@ Extra accepted edges (not required, not forbidden):
 
 ## Known gaps
 
-Two calibration runs (see `task-7-run2-report.md`) stopped short of the full
-gold standard. The user decided to stop tuning here and accept this result
+Two calibration runs stopped short of the full gold standard. The first, at
+the defaults, reached 6/10 on topic 62 and 0/8 on topic 79. The second, after
+the Task 7b amendment below, reached 9/10 and 4/8 at the defaults; its grid
+found no row with 0 forbidden edges above 14 of the 18 required edges, and the
+best such row differed from the defaults only in `REF_MARGIN` (the values above). The user decided to stop tuning here and accept this result
 rather than add lesson-specific rules, word lists, or thresholds tuned to a
 single edge. Four required edges on topic 79 (Reproduction Among Flowering
 Plants) are not accepted under any grid row that keeps 0 forbidden edges, and

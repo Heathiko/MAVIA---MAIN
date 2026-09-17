@@ -35,20 +35,22 @@ class GoldPathTests(SimpleTestCase):
 
     def _report(self, topic_id):
         data, concepts = load_gold(topic_id)
-        report = gold_report(data, concepts, criteria.decide_pairs(concepts, self.engine))
-        print(json.dumps(report, indent=2))
-        return report
+        return gold_report(data, concepts, criteria.decide_pairs(concepts, self.engine))
 
     def _assert_gold(self, report):
+        # The full report is shown only when an assertion fails.
+        details = f"\nFull report:\n{json.dumps(report, indent=2)}"
         self.assertEqual(
-            report["unexpected_missing"], [], "required edges not accepted and not in known_missing"
+            report["unexpected_missing"], [],
+            "required edges not accepted and not in known_missing" + details,
         )
         self.assertEqual(
             report["gaps_closed"], [],
-            "a known_missing edge is now accepted; update known_missing in the gold_map and gold_topic JSON",
+            "a known_missing edge is now accepted; update known_missing in the gold_map and gold_topic JSON"
+            + details,
         )
-        self.assertEqual(report["forbidden_accepted"], [], "forbidden edges accepted")
-        self.assertTrue(report["order_matches"], f"order was {report['order']}")
+        self.assertEqual(report["forbidden_accepted"], [], "forbidden edges accepted" + details)
+        self.assertTrue(report["order_matches"], f"order was {report['order']}" + details)
 
     def test_solid_liquid_and_gas(self):
         self._assert_gold(self._report(62))
