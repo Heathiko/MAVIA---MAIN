@@ -280,3 +280,24 @@ without a lesson-specific rule, stop and report to the user rather than add one.
   units stay as separate concepts (no regression).
 - Merge deletes rows; correctness of split depends on the snapshot being
   complete. Tested field by field.
+
+## 6. Amendment (2026-09-17, after calibration stopped)
+
+Calibration reached 7/10 and 0/8 required edges with 0 forbidden. Diagnosis:
+multi-word names are never said in full (dependents say the head word: "seed",
+"stamen", "reproduction"), and overview concepts name their children while the
+children never name the overview, so RefD reads those edges backwards. The user
+approved two general revisions to the reference measure, then re-calibration:
+
+- **Head-word mention.** A concept's *head word* is the first word of its name
+  that is not a stop word and is at least `MIN_TERM_LENGTH` long ("seed
+  formation" -> "seed", "stamen male part" -> "stamen"). When B's text does not
+  mention A's full multi-word name but mentions A's head word, the name term
+  counts as mentioned. A head word shared by two or more concepts' names is
+  ambiguous and never counts.
+- **Section containment** (Wang et al. 2016: position in textbook sections).
+  When any member of B sits under a section heading whose name equals A's name,
+  B's text is treated as referring to A with full weight: `ref(B -> A) = 1.0`.
+  A concept never contains itself. Foundationality reads the same matrix.
+- Matched evidence records these as `"head:<word>"` and `"section:<name>"`.
+- The stop condition still applies after re-calibration.

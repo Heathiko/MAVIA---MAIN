@@ -2836,3 +2836,197 @@ git commit -m "Record live re-run of both lessons and rebuild frontend
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
+
+---
+
+### Task 7b: Head-word and section-containment reference (amendment)
+
+Added 2026-09-17 after Task 7 stopped (spec §6). Run before re-running Task 7.
+
+**Files:**
+- Modify: `backend/learning_path/services/criteria.py` (`reference_details`, new helpers)
+- Modify: `backend/learning_path/services/concepts.py` (public `heading_name`)
+- Test: `backend/learning_path/test_criteria.py`
+
+**Interfaces:**
+- Consumes: `key_terms`, `concept_names`, `concept_text`, `mentions`, `singular`, `STOP_WORDS`, `MIN_TERM_LENGTH`; `concepts._heading_name`.
+- Produces:
+  - `concepts.heading_name(heading: str) -> str | None` (public wrapper of `_heading_name`).
+  - `criteria.head_words(names: dict[int, str | None]) -> dict[int, str]` — unambiguous head word per concept with a multi-word name.
+  - `criteria.contained_in(holder, target_name: str | None) -> bool` — any member of `holder` (or `holder` itself when it has no `members`) has `heading_name(section_title) == target_name`.
+  - `reference_details` keeps its `(matrix, matched)` shapes; containment sets `matrix[(a, b)] = 1.0` with `matched[(a, b)] == ["section:<name>"]`; head-word matches add `"head:<word>"` to `matched`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add `head_words` to the `from .services.criteria import (...)` block at the top of `backend/learning_path/test_criteria.py`, then append:
+
+```python
+class Headed:
+    """A stub concept whose members carry section headings."""
+
+    def __init__(self, id, order, title, content, sections=("",)):
+        self.id = id
+        self.order = order
+        self.title = title
+        self.content = content
+        self.member_text = content
+        self.section_title = sections[0]
+        self.kind = "text"
+        self.members = tuple(
+            type("Member", (), {"section_title": section, "title": title, "content": content})()
+            for section in sections
+        )
+
+
+class HeadWordTests(TestCase):
+    def test_the_head_word_is_the_first_significant_word(self):
+        names = {1: "seed formation", 2: "stamen male part", 3: "solid"}
+
+        self.assertEqual(head_words(names), {1: "seed", 2: "stamen"})
+
+    def test_a_shared_head_word_is_ambiguous(self):
+        names = {1: "seed formation", 2: "seed dispersal"}
+
+        self.assertEqual(head_words(names), {})
+
+    def test_saying_the_head_word_refers_to_a_multi_word_concept(self):
+        """Regression, topic 79: Fruit says "seed", never "seed formation"."""
+        seed = Stub(1, order=0, title="Seed formation", content="The ovule becomes a seed with stored food.")
+        fruit = Stub(2, order=1, title="Fruit formation", content="The ovary grows around the seed and ripens.")
+        others = [
+            Stub(3, order=2, title="Petals", content="Petals attract bees with colour."),
+            Stub(4, order=3, title="Roots", content="Roots take in water from soil."),
+        ]
+
+        matrix, matched = reference_details([seed, fruit, *others], KeywordRuntime())
+
+        self.assertIn("head:seed", matched[(1, 2)])
+        self.assertEqual(semantic_reference(seed, fruit, matrix), 1)
+
+
+class SectionContainmentTests(TestCase):
+    def test_a_concept_under_anothers_heading_refers_to_it(self):
+        """Regression, topic 62: Solid sits under the "Matter" heading but never
+        says "matter"; the overview names solid, so RefD read it backwards."""
+        matter = Headed(1, 0, "Matter", "Matter has mass. It can be a solid, a liquid or a gas.", ("Matter",))
+        solid = Headed(2, 1, "Solid", "A solid keeps its shape.", ("Matter", "Solids"))
+        others = [
+            Headed(3, 2, "Roots", "Roots take in water."),
+            Headed(4, 3, "Leaves", "Leaves make food."),
+        ]
+
+        matrix, matched = reference_details([matter, solid, *others], KeywordRuntime())
+
+        self.assertEqual(matrix[(1, 2)], 1.0)
+        self.assertEqual(matched[(1, 2)], ["section:matter"])
+        self.assertEqual(semantic_reference(matter, solid, matrix), 1)
+        self.assertEqual(semantic_reference(solid, matter, matrix), 0)
+
+    def test_a_concept_never_contains_itself(self):
+        matter = Headed(1, 0, "Matter", "Matter has mass.", ("Matter",))
+        roots = Headed(2, 1, "Roots", "Roots take in water.")
+
+        matrix, matched = reference_details([matter, roots], KeywordRuntime())
+
+        self.assertNotIn((1, 1), matrix)
+        self.assertFalse(any(term.startswith("section:") for terms in matched.values() for term in terms))
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `python manage.py test learning_path.test_criteria -v 2`
+Expected: ImportError for `head_words`.
+
+- [ ] **Step 3: Implement**
+
+In `backend/learning_path/services/concepts.py`, after `_heading_name`, add:
+
+```python
+def heading_name(heading):
+    """What a section heading names, or ``None``. Public for the criteria."""
+    return _heading_name(heading)
+```
+
+In `backend/learning_path/services/criteria.py`:
+
+- Change the concepts import to `from .concepts import heading_name, is_structural, resolve_concept`.
+- Add after `concept_text`:
+
+```python
+def head_words(names):
+    """``{concept id: head word}`` for multi-word names, where unambiguous.
+
+    Lessons name a concept by its whole heading ("seed formation") but refer
+    to it by its first significant word ("the seed"). A head word that two
+    names share points at neither, so it never counts.
+    """
+    candidates = {}
+    for concept_id, name in names.items():
+        if not name or len(name.split()) < 2:
+            continue
+        for word in name.split():
+            if word not in STOP_WORDS and len(word) >= MIN_TERM_LENGTH:
+                candidates[concept_id] = singular(word)
+                break
+    counts = Counter(candidates.values())
+    return {concept_id: word for concept_id, word in candidates.items() if counts[word] == 1}
+
+
+def contained_in(holder, target_name):
+    """True when any of ``holder``'s members sits under a heading naming the target.
+
+    Wang et al. (2016) read textbook section structure as prerequisite
+    evidence: a passage under the "Matter" heading builds on Matter even when
+    it never says "matter".
+    """
+    if not target_name:
+        return False
+    members = getattr(holder, "members", None) or (holder,)
+    return any(
+        heading_name(getattr(member, "section_title", "") or "") == target_name
+        for member in members
+    )
+```
+
+- In `reference_details`, after the `phrase_hits = ...` line add `heads = head_words(names)`, and replace the body of the inner `for holder in concepts:` loop (after the `if holder.id == target_id: continue`) with:
+
+```python
+            if contained_in(holder, names.get(target_id)):
+                matrix[(target_id, holder.id)] = 1.0
+                matched[(target_id, holder.id)] = [f"section:{names[target_id]}"]
+                continue
+            found, score = [], 0.0
+            for term, weight in weights.items():
+                if mentions(texts[holder.id], term) or (holder.id, term) in phrase_hits:
+                    found.append(term)
+                    score += weight
+                elif (
+                    term == names.get(target_id)
+                    and target_id in heads
+                    and mentions(texts[holder.id], heads[target_id])
+                ):
+                    found.append(f"head:{heads[target_id]}")
+                    score += weight
+            matrix[(target_id, holder.id)] = score / total
+            matched[(target_id, holder.id)] = sorted(found)
+```
+
+- [ ] **Step 4: Run the learning-path suite**
+
+Run: `python manage.py test learning_path -v 2`
+Expected: new tests PASS; only `GoldPathTests` may fail. Apply the Task 5 Step 6 rule to any other failure.
+
+- [ ] **Step 5: Measure**
+
+Run: `python manage.py evaluate_gold_paths` and record per topic: required hits, forbidden, order.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add learning_path/services/criteria.py learning_path/services/concepts.py learning_path/test_criteria.py
+git commit -m "Count head-word mentions and section containment as reference
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+Then re-run Task 7 from Step 1.
