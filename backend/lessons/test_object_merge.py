@@ -161,6 +161,63 @@ class MergeTests(MergeFixture):
         with self.assertRaises(MergeError):
             merge_learning_objects([self.shape])
 
+    def test_the_title_comes_from_the_first_heading_not_the_first_member(self):
+        figure = self._object(self.material, "Okay, let's describe this figure", "A diagram.", 0, "")
+        LearningObject.objects.filter(pk=self.intro.pk).update(order=1)
+        self.intro.refresh_from_db()
+
+        kept, _ = merge_learning_objects([figure, self.intro])
+
+        self.assertEqual(kept.title, "Matter")
+        self.assertEqual(kept.section_title, "Matter")
+
+    def test_members_without_any_heading_keep_the_first_member_title(self):
+        figure = self._object(self.material, "A figure", "A diagram.", 5, "")
+        tail = self._object(self.material, "Another", "More.", 6, "")
+
+        kept, _ = merge_learning_objects([figure, tail])
+
+        self.assertEqual(kept.title, "A figure")
+        self.assertEqual(kept.section_title, "")
+
+    def test_an_explicit_title_wins_over_the_heading(self):
+        kept, _ = merge_learning_objects([self.shape, self.volume], title="States of matter")
+
+        self.assertEqual(kept.title, "States of matter")
+
+    def test_the_kept_row_stops_being_taught_through_another_object(self):
+        self.comparing.group = self.shape.group
+        self.comparing.save(update_fields=["group"])
+        LearningObject.objects.filter(pk=self.shape.pk).update(represented_by=self.comparing)
+        self.shape.refresh_from_db()
+
+        kept, _ = merge_learning_objects([self.shape, self.volume])
+
+        self.assertEqual(kept.id, self.shape.id)
+        self.assertIsNone(kept.represented_by_id)
+        self.comparing.refresh_from_db()
+        self.assertIsNone(self.comparing.represented_by_id)
+        self.assertEqual(self.comparing.group_id, kept.group_id)
+
+    def test_an_unlocked_group_label_follows_the_merged_title(self):
+        kept, _ = merge_learning_objects([self.shape, self.volume, self.flow])
+
+        kept.group.refresh_from_db()
+        self.assertEqual(kept.group.label, "Comparing")
+        self.assertEqual(kept.group.version_selection, {})
+
+    def test_a_locked_group_label_and_its_lock_survive_the_merge(self):
+        group = self.shape.group
+        group.label = "Teacher's name"
+        group.version_selection = {"label_locked": True, "representative_id": 999}
+        group.save(update_fields=["label", "version_selection"])
+
+        kept, _ = merge_learning_objects([self.shape, self.volume])
+
+        kept.group.refresh_from_db()
+        self.assertEqual(kept.group.label, "Teacher's name")
+        self.assertEqual(kept.group.version_selection, {"label_locked": True})
+
     def test_a_published_topic_is_unpublished(self):
         OutlineNode.objects.filter(pk=self.topic.pk).update(published=True)
 

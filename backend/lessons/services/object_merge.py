@@ -164,18 +164,37 @@ def merge_learning_objects(members, *, title=None):
     LessonVariant.objects.filter(learning_object_id__in=member_ids).delete()
     LessonVariant.objects.filter(source_learning_object_id__in=member_ids).delete()
 
+    # The heading names the concept, but the earliest member need not carry it:
+    # a figure extracted ahead of the text has no section at all, and taking its
+    # empty heading would title the merged row with the figure's narration. The
+    # learning path names concepts from this title, so take the first heading
+    # any member actually has, in document order.
+    heading = next((item.section_title for item in members if item.section_title), "")
     kept.content = merge_text(members)
-    kept.title = (title or first.section_title or first.title)[:255]
+    kept.title = (title or heading or first.title)[:255]
     kept.kind = LearningObject.Kind.TEXT
     kept.order = first.order
-    kept.section_title = first.section_title
+    kept.section_title = heading
     kept.image_url = ""
+    # Version assignment re-decides which object a concept is taught through
+    # after the merge, and the variants the old representative supplied were
+    # just deleted -- a stale marker only makes the versions screen send the
+    # teacher to a row that no longer teaches this.
+    kept.represented_by = None
     kept.merged_from = snapshot
     kept.mark_grouping_current()
     kept.save()
     if kept.group_id:
-        # The stored representative may have been one of the deleted rows.
-        LearningObjectGroup.objects.filter(pk=kept.group_id).update(version_selection={})
+        # The stored representative may have been one of the deleted rows, but a
+        # teacher's locked label is their decision and survives the merge; an
+        # unlocked label still shows the pre-merge title, so follow the merge.
+        group = LearningObjectGroup.objects.filter(pk=kept.group_id).first()
+        if group is not None:
+            locked = bool((group.version_selection or {}).get("label_locked"))
+            group.version_selection = {"label_locked": True} if locked else {}
+            if not locked:
+                group.label = kept.title[:255]
+            group.save(update_fields=["version_selection", "label"])
 
     LearningObject.objects.filter(pk__in=[item.pk for item in others]).delete()
     _renumber(material)
