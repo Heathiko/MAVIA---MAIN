@@ -58,3 +58,43 @@ The amendment landed in Task 7b (head-word mention and section containment as
 reference, `criteria.py` `head_words`/`contained_in`, spec §6) closed 7 of the
 original 11 missing edges (6/10 -> 10/10 on topic 62, 0/8 -> 4/8 on topic 79)
 before calibration; the remaining four are the ones above.
+
+## Live re-run (2026-09-18)
+
+Both topics were merged by the teacher in the UI and republished, then the
+derived paths were compared with the gold standard.
+
+| Topic | Required accepted | Forbidden accepted | Order matches |
+|---|---|---|---|
+| 62 Solid, Liquid and Gas | 10 / 10 | 0 | yes |
+| 79 Reproduction Among Flowering Plants | 4 / 8 | 0 | yes |
+
+Live matches the fixture-based measurement exactly, including which four edges
+are missing (the documented known gaps in topic 79). Extra accepted edges:
+topic 62 `matter -> comparing`, `matter -> changing`; topic 79
+`reproduction -> pollination`. All three are transitive or plausible, none
+forbidden.
+
+Merges the teacher applied on topic 62: the four comparison items with the
+comparison section and its table; Solid, Liquid and Gas each with the other
+file's section, diagram and examples; both Everyday Examples sections; the
+particle figure with Matter; "Changing From One State to Another" with its
+figure; the two-part Matter introduction. On topic 79: the flower figure with
+the introduction in each file. 23 concepts became 7 (topic 62) and 10 became 9
+(topic 79).
+
+Three defects surfaced during the run and were fixed before the comparison
+above (`object_merge.py`, plus two UI bugs):
+
+1. A merged concept took its title from the first member, so a figure with no
+   heading named the concept ("Okay, let's describe this figure for the
+   student"). The concept then had no usable name and lost its edges. The title
+   now comes from the first heading among the members. Measured before the fix:
+   7/10 and 1/8.
+2. A merged row kept a stale "taught through" marker, so the versions screen
+   refused to generate its missing versions.
+3. Resetting the group's version selection discarded a locked label, and the
+   group label kept the pre-merge title.
+
+Rows merged before the fix were repaired in place from their stored snapshots,
+and both paths were re-derived.
