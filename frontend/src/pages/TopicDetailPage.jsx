@@ -1588,9 +1588,13 @@ function RunProgress({
   const callerReports = Boolean(currentOverride) || indexOverride !== null;
   const index = callerReports ? indexOverride : progress?.data?.index;
   const total = callerReports ? totalOverride : progress?.data?.total;
+  // A caller may name what it is working on without counting it, which leaves
+  // the position undefined -- so check for a real number rather than for any
+  // total, or the bar reads "NaN%" beside a blank count.
+  const counted = Number.isFinite(index) && Number.isFinite(total) && total > 0;
   // Indeterminate until the first counter arrives -- a bar pinned at zero
   // reads as "nothing is happening", which is the opposite of the truth.
-  const percent = !failed && total ? Math.round((index / total) * 100) : null;
+  const percent = !failed && counted ? Math.round((index / total) * 100) : null;
   const currentLine = currentOverride || latest?.message || "Starting…";
 
   if (dismissed && !running) return null;
@@ -1617,7 +1621,7 @@ function RunProgress({
             <h3>{heading}</h3>
           </div>
           <div className="run-progress-head-side">
-            {total && !failed ? (
+            {counted && !failed ? (
               <span className="run-progress-count">
                 {unit} {index} of {total}
               </span>

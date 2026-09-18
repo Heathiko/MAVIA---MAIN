@@ -4533,9 +4533,68 @@ button {
   overflow: hidden;
 }
 
+/* Four rows, each child pinned to its own: the unit-merge note is only present
+   on some cards, and with automatic placement its absence slid the scrolling
+   pair up into the note's row -- which let the note ride over the "possible
+   match" divider in the narrow review panel. An empty row two collapses to
+   nothing when there is no note. */
 .match-suggestion-card {
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   align-items: stretch;
+}
+
+.match-suggestion-card > .match-suggestion-score {
+  grid-row: 1;
+}
+
+.match-suggestion-card > p.muted-text {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  margin: 0 0 0.35rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 8px;
+  background: #f4f7f9;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.match-suggestion-card > .match-suggestion-pair {
+  grid-row: 3;
+}
+
+.match-suggestion-card > .match-suggestion-actions {
+  grid-row: 4;
+}
+
+/* Several merged members stack inside one side of the pair, so they need to
+   read as a list rather than as one run-on block of text. */
+.match-unit-member {
+  display: block;
+  min-width: 0;
+}
+
+.match-unit-member + .match-unit-member {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed #dde5ea;
+}
+
+.match-unit-member > strong {
+  display: block;
+  margin-bottom: 0.2rem;
+  font-size: 0.88rem;
+  line-height: 1.35;
+}
+
+.match-unit-member > .match-source-content {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: #586878;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .match-suggestion-pair {
