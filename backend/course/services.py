@@ -3,7 +3,18 @@ from django.db import transaction
 from lessons.models import CourseGroup, LearningObject, OutlineNode, LearningMaterial
 from question_generation.models import GeneratedQuestion
 
-from .models import CourseModule, LessonNode, LessonVariant, ModuleQuestion, normal_variant_for
+from lessons.services.concept_bundles import bundle_text, bundles_for_group
+
+from .models import (
+    CourseModule,
+    LessonNode,
+    LessonVariant,
+    ModuleQuestion,
+    bundle_segments,
+    normal_bundle_for,
+    normal_variant_for,
+)
+from .version_assignment import version_bundles
 
 
 VARIANT_KEYS = ("normal", "elaborated", "simplified")
@@ -237,33 +248,88 @@ def _correct_answer_key(question):
     return answer
 
 
+def _generated_versions(objects):
+    """``{role: {"segments": [...], "origin": ...}}`` written for this bundle.
+
+    A generated version is written per object of the Normal bundle, so its
+    segments line up with the Normal ones; an object still missing its row
+    simply has no segment rather than shifting the rest out of step.
+    """
+    versions = {}
+    for item in objects:
+        for row in item.variants.all():
+            # Extras are retained for the interaction pipeline to rule on
+            # later. They are not one of the three versions a student is
+            # offered.
+            if row.variant == "EXTRA":
+                continue
+            version = versions.setdefault(row.variant, {"segments": [], "origin": row.origin})
+            version["segments"].append({"text": row.narration, "audio_url": row.audio_url})
+    return versions
+
+
+def _leads_its_bundle(learning_object):
+    """Is this object the one its concept's chunk is built from?
+
+    A chunk now carries the concept's whole bundle, so every other member of
+    that bundle would repeat it. The lead -- the bundle's first object in
+    document order -- speaks for the concept, exactly as it does everywhere
+    else.
+    """
+    if learning_object.group_id is None:
+        return True
+    bundle = bundles_for_group(learning_object.group).get(learning_object.material_id) or []
+    return not bundle or bundle[0].id == learning_object.id
+
+
 def _build_chunk(learning_object):
+    """One concept, served as its versions -- each an ordered bundle.
+
+    The chunk is still keyed by the object that leads the concept, so existing
+    readers keep working: ``text`` is the whole version joined, and
+    ``segments`` is what it is actually made of, in document order.
+    """
     variants = {}
+    normal_objects = normal_bundle_for(learning_object)
 
     normal = normal_variant_for(learning_object)
-    if normal:
-        variants["normal"] = {
-            "text": normal["narration"],
-            "audio_url": normal["audio_url"],
-            "origin": "original",
-        }
-    else:
-        variants["normal"] = {
-            "text": learning_object.content,
-            "audio_url": "",
-            "origin": "original",
+    variants["normal"] = {
+        "text": normal["narration"] if normal else bundle_text(normal_objects),
+        "audio_url": normal["audio_url"] if normal else "",
+        "segments": bundle_segments(normal_objects),
+        "origin": "original",
+    }
+
+    for role, version in _generated_versions(normal_objects).items():
+        segments = version["segments"]
+        variants[role.lower()] = {
+            "text": "\n".join(
+                segment["text"].strip() for segment in segments if segment["text"].strip()
+            ),
+            "audio_url": next(
+                (segment["audio_url"] for segment in segments if segment["audio_url"]), ""
+            ),
+            "segments": segments,
+            "origin": version["origin"],
         }
 
-    for row in learning_object.variants.all():
-        # Extras are retained for the interaction pipeline to rule on later.
-        # They are not one of the three versions a student is offered.
-        if row.variant == "EXTRA":
-            continue
-        variants[row.variant.lower()] = {
-            "text": row.narration,
-            "audio_url": row.audio_url,
-            "origin": row.origin,
-        }
+    # A version a PDF supplies is that PDF's own objects -- nothing is copied
+    # into a row -- and it outranks anything generated for the same role.
+    if learning_object.group_id is not None:
+        for role, objects in version_bundles(learning_object.group).items():
+            # Normal is already built above, and an extra bundle is not one
+            # of the three versions a student is offered.
+            if role in ("NORMAL", "EXTRA"):
+                continue
+            segments = bundle_segments(objects)
+            variants[role.lower()] = {
+                "text": bundle_text(objects),
+                "audio_url": next(
+                    (segment["audio_url"] for segment in segments if segment["audio_url"]), ""
+                ),
+                "segments": segments,
+                "origin": LessonVariant.Origin.SOURCE_PDF,
+            }
 
     return {
         "id": learning_object.id,
@@ -300,9 +366,13 @@ class LessonPackageService:
 
         sync_module_questions(node)
 
-        learning_objects = list(
-            node.learning_objects.filter(represented_by__isnull=True).order_by("order", "id")
-        )
+        learning_objects = [
+            item
+            for item in node.learning_objects.filter(
+                represented_by__isnull=True
+            ).order_by("order", "id")
+            if _leads_its_bundle(item)
+        ]
         chunks = [_build_chunk(lo) for lo in learning_objects]
 
         module_questions = node.module_questions.select_related("question").order_by("order", "id")

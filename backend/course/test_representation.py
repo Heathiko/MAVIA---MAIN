@@ -12,9 +12,12 @@ from lessons.models import (
     OutlineNode,
 )
 
-from .models import LessonVariant
+from .models import CourseModule, LessonNode, LessonVariant
+from .services import LessonPackageService, _build_chunk
 from .version_assignment import (
+    assign_group_versions,
     bundle_roles,
+    set_bundle_role,
     release_from_group,
     release_learning_object,
     settle_group,
@@ -326,3 +329,84 @@ class CrossGroupRepairMigrationTests(TestCase):
         self.assertEqual(partner.represented_by_id, solid.id)
         self.assertFalse(LessonVariant.objects.filter(pk=stale.pk).exists())
         self.assertTrue(LessonVariant.objects.filter(pk=valid.pk).exists())
+
+
+class BundleChunkTests(TestCase):
+    """A chunk serves each version as the ordered objects it is taught as."""
+
+    def setUp(self):
+        self.course = CourseGroup.objects.create(title="Science")
+        self.topic = OutlineNode.objects.create(course=self.course, title="States")
+        confirmed = {"learning_objects_confirmed": True}
+        self.first = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="A", generated_json=dict(confirmed))
+        self.second = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="B", generated_json=dict(confirmed))
+        self.group = LearningObjectGroup.objects.create(outline_node=self.topic, label="Solid")
+        self.normal = LearningObject.objects.create(
+            material=self.first, group=self.group, title="Solid", order=0,
+            content="A solid keeps its shape.",
+        )
+        self.normal_tail = LearningObject.objects.create(
+            material=self.first, group=self.group, title="Particle diagram", order=1,
+            section_title="Solid", content="Particles sit in a grid.",
+        )
+        self.simple = LearningObject.objects.create(
+            material=self.second, group=self.group, title="Solids", order=0, section_title="Solids",
+            content="Packed tight.",
+        )
+        self.simple_tail = LearningObject.objects.create(
+            material=self.second, group=self.group, title="Examples", order=1,
+            section_title="Solids", content="Ice cubes.",
+        )
+        assign_group_versions(self.group)
+        # Readability cannot rank four-word samples, so the teacher's own
+        # ruling stands in for it: the second PDF supplies SIMPLIFIED.
+        set_bundle_role(self.group, self.second.id, "SIMPLIFIED")
+        self.group.refresh_from_db()
+
+    def test_a_versions_segments_follow_bundle_order(self):
+        chunk = _build_chunk(self.normal)
+
+        self.assertEqual(
+            [segment["text"] for segment in chunk["variants"]["normal"]["segments"]],
+            ["A solid keeps its shape.", "Particles sit in a grid."],
+        )
+        self.assertEqual(
+            chunk["variants"]["normal"]["text"],
+            "A solid keeps its shape.\nParticles sit in a grid.",
+        )
+        self.assertEqual(
+            [segment["text"] for segment in chunk["variants"]["simplified"]["segments"]],
+            ["Packed tight.", "Ice cubes."],
+        )
+
+    def test_a_generated_versions_segments_follow_the_normal_bundle(self):
+        for item, text in (
+            (self.normal, "Solids hold their shape at length."),
+            (self.normal_tail, "The grid of particles barely moves."),
+        ):
+            LessonVariant.objects.create(
+                learning_object=item, variant="ELABORATED", narration=text,
+                origin=LessonVariant.Origin.GENERATED,
+            )
+
+        elaborated = _build_chunk(self.normal)["variants"]["elaborated"]
+
+        self.assertEqual(
+            [segment["text"] for segment in elaborated["segments"]],
+            ["Solids hold their shape at length.", "The grid of particles barely moves."],
+        )
+        self.assertEqual(
+            elaborated["text"],
+            "Solids hold their shape at length.\nThe grid of particles barely moves.",
+        )
+        self.assertEqual(elaborated["origin"], LessonVariant.Origin.GENERATED)
+
+    def test_the_package_serves_one_chunk_per_concept(self):
+        module = CourseModule.objects.create(source=self.topic)
+        node = LessonNode.objects.create(module=module, source=self.first)
+
+        package = LessonPackageService.build_package(node.id)
+
+        self.assertEqual([chunk["id"] for chunk in package["chunks"]], [self.normal.id])
