@@ -605,10 +605,16 @@ def semantic_decision(
     for item in all_objects:
         if item.id != source_object_id:
             members[item.group_id].append(item)
+    # A concept may hold several objects from one PDF (a section, its diagram
+    # and its examples), so a group is no longer disqualified for already
+    # holding one of this material's objects. It must still teach the same
+    # kind of content and come from confirmed files.
     eligible_groups = {
         group_id for group_id, rows in members.items()
-        if all(item.material_id != material.id and item.kind == kind
-               and (item.material.generated_json or {}).get("learning_objects_confirmed") for item in rows)
+        if any(item.material_id != material.id for item in rows)
+        and all(item.kind == kind
+                and (item.material.generated_json or {}).get("learning_objects_confirmed")
+                for item in rows)
     }
     rejected_ids = set()
     if source_object_id:
