@@ -3670,6 +3670,73 @@ button {
   border-bottom: 0;
 }
 
+/* A concept's objects from one PDF, kept together in that file's own order.
+   Same rhythm as .connection-object-row, so a bundle reads as a group of those
+   rows rather than as a new kind of card. */
+.concept-bundle-list {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0 1rem 0.4rem;
+}
+
+.concept-bundle {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid #e7edf0;
+  border-radius: 9px;
+  background: #fbfcfd;
+}
+
+.concept-bundle-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.7rem 0.8rem 0;
+}
+
+.concept-bundle-head h5 {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.concept-bundle-head small {
+  color: #64748b;
+}
+
+.concept-bundle-role {
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: #334155;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.concept-bundle .connection-object-list {
+  padding: 0 0.8rem;
+}
+
+.concept-bundle-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.concept-bundle-move-to select {
+  padding: 0.3rem 0.45rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #ffffff;
+  font-size: 0.78rem;
+}
+
+.concept-bundle-nudge {
+  min-width: 2.1rem;
+  line-height: 1;
+}
+
 .connection-object-row:hover {
   background: #fbfdfd;
 }

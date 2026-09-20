@@ -27,8 +27,10 @@ from course.version_assignment import (
     assign_group_versions,
     assign_source_as_representative,
     assign_source_to_slot,
+    bundle_role_provenance,
     release_from_group,
 )
+from .services.concept_bundles import bundle_text, bundles_for_group, material_order
 
 from .models import (
     CourseGroup,
@@ -90,6 +92,7 @@ from .services.object_merge import (
     merge_learning_objects,
     split_learning_object,
 )
+from .services.unit_matching import place_unit, unpublish_topic
 from .services.regrouping import (
     RegroupingUnavailable,
     apply_regrouping,
@@ -288,6 +291,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             for group_id in group_ids:
                 confirmed_questions_by_group[group_id].append(question)
 
+        order_index = {
+            material_id: index for index, material_id in enumerate(material_order(node))
+        }
+
         groups = []
         for group in group_queryset:
             learning_objects = [
@@ -298,8 +305,45 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             if not learning_objects:
                 continue
             version_state = assign_group_versions(group)
+            group_bundles = bundles_for_group(group)
+            # Shown per PDF. Built from the same rows as the flat list -- only
+            # confirmed files, no extraction leftovers -- so the two views of a
+            # concept cannot disagree, and ordered as `bundles_for_group` does.
+            display_bundles = defaultdict(list)
+            for item in learning_objects:
+                display_bundles[item.material_id].append(item)
+            for objects in display_bundles.values():
+                objects.sort(key=lambda item: (item.order, item.id))
             slot_rows = {}
             extra_rows = []
+            # A version a PDF supplies *is* its bundle's objects -- nothing is
+            # copied into a LessonVariant row -- so the roles are read first and
+            # the variant table only fills what was generated. Reading the table
+            # alone left such a slot empty and the concept forever "incomplete".
+            role_provenance = bundle_role_provenance(group)
+            for material_id, role in (version_state.get("bundle_roles") or {}).items():
+                supplied = [
+                    item
+                    for item in group_bundles.get(material_id, [])
+                    if (item.content or "").strip()
+                ]
+                if not supplied:
+                    continue
+                entry = {
+                    "id": None,
+                    "material": material_id,
+                    "text": bundle_text(supplied),
+                    "origin": LessonVariant.Origin.SOURCE_PDF,
+                    "assigned_by": role_provenance.get(material_id, ""),
+                    "source_learning_object_id": supplied[0].id,
+                    # Teacher text, never written from the Normal wording, so
+                    # it cannot go stale the way a generated version does.
+                    "stale": False,
+                }
+                if role == "EXTRA":
+                    extra_rows.append(entry)
+                else:
+                    slot_rows[role.lower()] = entry
             if version_state["representative_id"] is not None:
                 representative = next(
                     (item for item in learning_objects if item.id == version_state["representative_id"]),
@@ -331,7 +375,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     if row.variant == "EXTRA":
                         extra_rows.append(entry)
                     else:
-                        slot_rows[row.variant.lower()] = entry
+                        # A bundle that already supplies this role keeps it: the
+                        # PDF's own wording outranks a leftover generated row.
+                        slot_rows.setdefault(row.variant.lower(), entry)
             groups.append(
                 {
                     "id": group.id,
@@ -344,8 +390,28 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                         "slots": slot_rows,
                         "extras": extra_rows,
                         "needs_confirmation": version_state["needs_confirmation"],
+                        # A primary role counts as done whether a PDF supplies
+                        # it or a generator wrote it.
                         "complete": {"simplified", "elaborated"}.issubset(slot_rows.keys()),
                     },
+                    # One block per PDF, in upload order, so the teacher sees
+                    # what each file contributed to this concept as a unit.
+                    "bundles": [
+                        {
+                            "material": material_id,
+                            "role": version_state["bundle_roles"].get(
+                                material_id,
+                                "NORMAL" if material_id == version_state["normal_material_id"] else None,
+                            ),
+                            "learning_objects": LearningObjectSerializer(
+                                objects, many=True, context={"request": request},
+                            ).data,
+                        }
+                        for material_id, objects in sorted(
+                            display_bundles.items(),
+                            key=lambda pair: order_index.get(pair[0], len(order_index)),
+                        )
+                    ],
                     "learning_objects": LearningObjectSerializer(
                         learning_objects,
                         many=True,
@@ -618,6 +684,121 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             recompute=False,
         )
         return Response(self._learning_resources_payload(node, request))
+
+    def _node_and_object(self, course, node_id, object_id):
+        """Resolve one of this course's objects, or say which half was missing."""
+        try:
+            node = course.nodes.get(pk=node_id)
+            learning_object = LearningObject.objects.select_related("material", "group").get(
+                pk=object_id, material__outline_node=node,
+            )
+        except (OutlineNode.DoesNotExist, LearningObject.DoesNotExist):
+            return None, None
+        return node, learning_object
+
+    def _bundle_correction_response(self, node, learning_object, request):
+        self._refresh_relationship_snapshots({learning_object.material}, recompute=False)
+        return Response(self._learning_resources_payload(node, request))
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"outline-nodes/(?P<node_id>[^/.]+)/learning-objects/(?P<object_id>[^/.]+)/move-out",
+    )
+    def move_learning_object_out(self, request, pk=None, node_id=None, object_id=None):
+        """Take one object out of its bundle and let it teach a concept alone."""
+        course = self.get_object()
+        node, learning_object = self._node_and_object(course, node_id, object_id)
+        if learning_object is None:
+            return Response({"detail": "Learning object not found."}, status=status.HTTP_404_NOT_FOUND)
+        if learning_object.group_id and learning_object.group.learning_objects.count() == 1:
+            return Response(self._learning_resources_payload(node, request))
+        target = LearningObjectGroup.objects.create(
+            outline_node=node,
+            label=(learning_object.title or "")[:255],
+        )
+        place_unit([learning_object], target)
+        unpublish_topic(node)
+        return self._bundle_correction_response(node, learning_object, request)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"outline-nodes/(?P<node_id>[^/.]+)/learning-objects/(?P<object_id>[^/.]+)/move-to",
+    )
+    def move_learning_object_to(self, request, pk=None, node_id=None, object_id=None):
+        """Move one object into another concept of the same topic."""
+        course = self.get_object()
+        node, learning_object = self._node_and_object(course, node_id, object_id)
+        if learning_object is None:
+            return Response({"detail": "Learning object not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            group_id = int(request.data.get("group_id"))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "group_id must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Scoped to the node: a concept from another topic would carry the
+        # object out of the lesson it belongs to.
+        target = node.learning_object_groups.filter(pk=group_id).first()
+        if target is None:
+            return Response(
+                {"detail": "That concept is not part of this topic."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if learning_object.group_id != target.id:
+            place_unit([learning_object], target)
+            unpublish_topic(node)
+        return self._bundle_correction_response(node, learning_object, request)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"outline-nodes/(?P<node_id>[^/.]+)/learning-objects/(?P<object_id>[^/.]+)/reorder",
+    )
+    def reorder_learning_object_in_bundle(self, request, pk=None, node_id=None, object_id=None):
+        """Change one object's place in its bundle, swapping with its neighbour.
+
+        Only its own bundle moves: order is what the PDF that wrote these
+        objects says, so an object never steps over another file's text.
+        """
+        course = self.get_object()
+        node, learning_object = self._node_and_object(course, node_id, object_id)
+        if learning_object is None:
+            return Response({"detail": "Learning object not found."}, status=status.HTTP_404_NOT_FOUND)
+        direction = request.data.get("direction")
+        if direction not in ("up", "down"):
+            return Response(
+                {"detail": "direction must be \"up\" or \"down\"."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if learning_object.group_id is None:
+            return Response(self._learning_resources_payload(node, request))
+        siblings = [
+            item
+            for item in bundles_for_group(learning_object.group).get(learning_object.material_id, [])
+        ]
+        position = next(
+            (index for index, item in enumerate(siblings) if item.id == learning_object.id),
+            None,
+        )
+        if position is None:
+            return Response(self._learning_resources_payload(node, request))
+        neighbour_index = position - 1 if direction == "up" else position + 1
+        if neighbour_index < 0 or neighbour_index >= len(siblings):
+            # Already at the edge of its bundle; the teacher still gets the
+            # current state back rather than an error they cannot act on.
+            return Response(self._learning_resources_payload(node, request))
+        neighbour = siblings[neighbour_index]
+        learning_object.order, neighbour.order = neighbour.order, learning_object.order
+        if learning_object.order == neighbour.order:
+            # Equal `order` values were resolved by id, so a swap alone changes
+            # nothing. Push the mover clear of its neighbour instead.
+            learning_object.order += -1 if direction == "up" else 1
+        LearningObject.objects.filter(pk=learning_object.id).update(order=learning_object.order)
+        LearningObject.objects.filter(pk=neighbour.id).update(order=neighbour.order)
+        return self._bundle_correction_response(node, learning_object, request)
 
     @action(
         detail=True,

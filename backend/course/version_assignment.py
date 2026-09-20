@@ -216,6 +216,21 @@ def bundle_roles(group):
     }
 
 
+def bundle_role_provenance(group):
+    """``{material_id: who decided its role}`` for this concept's bundles.
+
+    The value is usually an ``AssignedBy`` choice, but a bundle pushed out of a
+    primary slot carries ``displaced_by_teacher`` instead, so callers that show
+    it must have wording for that case too.
+    """
+    bundles = _eligible_bundles(group)
+    return {
+        material_id: who
+        for material_id, who in _stored_provenance(group.version_selection or {}).items()
+        if material_id in bundles
+    }
+
+
 def set_bundle_role(group, material_id, role, assigned_by=None):
     """Record one bundle's role, by default as the teacher's own decision.
 
