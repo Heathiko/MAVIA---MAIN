@@ -1,0 +1,64 @@
+"""A concept's objects from one PDF, in document order.
+
+Two PDFs chunk the same lesson at different grain: one teaches Solid in a
+single passage, the other as a section plus a diagram plus examples. A concept
+therefore holds a *bundle* per PDF rather than a single object. Nothing is
+stored: a bundle is derived here, and every consumer -- version assignment,
+audio, questions, the learning path, the API -- reads it through this module so
+their ordering can never drift apart.
+"""
+
+from collections import defaultdict
+
+
+def material_order(node):
+    """The topic's material ids, oldest upload first."""
+    return list(
+        node.materials.order_by("created_at", "id").values_list("id", flat=True)
+    )
+
+
+def bundles_for_group(group):
+    """``{material_id: [objects in document order]}`` for one concept."""
+    bundles = defaultdict(list)
+    for item in group.learning_objects.select_related("material").all():
+        bundles[item.material_id].append(item)
+    for objects in bundles.values():
+        objects.sort(key=lambda item: (item.order, item.id))
+    return dict(bundles)
+
+
+def ordered_members(group):
+    """Every member: materials in upload order, objects in document order."""
+    bundles = bundles_for_group(group)
+    node = group.outline_node
+    ranked = {material_id: rank for rank, material_id in enumerate(material_order(node))}
+    members = []
+    for material_id in sorted(bundles, key=lambda mid: (ranked.get(mid, len(ranked)), mid)):
+        members.extend(bundles[material_id])
+    return members
+
+
+def bundle_text(objects):
+    """The bundle's text: each object's content, in order."""
+    return "\n".join(
+        (item.content or "").strip() for item in objects if (item.content or "").strip()
+    )
+
+
+def bundle_lead(objects):
+    """The object that speaks for the bundle -- its first."""
+    return objects[0] if objects else None
+
+
+def bundle_heading(objects):
+    """What the bundle is called: its first heading, else its first title.
+
+    Taken from the heading rather than the first object because a bundle often
+    opens with a figure that has no heading of its own; naming the concept
+    after that figure cost the learning path its edges when merging did it.
+    """
+    for item in objects:
+        if (item.section_title or "").strip():
+            return item.section_title.strip()
+    return (objects[0].title or "").strip() if objects else ""
