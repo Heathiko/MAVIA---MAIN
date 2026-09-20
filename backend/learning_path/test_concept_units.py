@@ -407,3 +407,19 @@ class BundleConceptTests(TestCase):
         self.assertEqual(len(titles), 2)
         self.assertEqual(len(set(titles)), 2, f"both concepts were named the same: {titles}")
         self.assertNotIn("Matter", titles)
+
+    def test_a_merged_split_passages_fallback_title_drops_the_part_marker(self):
+        """Regression: when the representative's own bundle has only one
+        object, the title falls back to `representative.title` -- but a
+        merged split passage's representative is still titled with the
+        chunker's "(Part 1 of 2)" marker. Left unstripped, that marker
+        reaches the teacher's concept list and is what the criteria match
+        against."""
+        opening = self._group("SOLID")
+        self._object(opening, self.first, "SOLID (Part 1 of 2)", 0)
+        rest = self._group("SOLID rest")
+        self._object(rest, self.first, "SOLID (Part 2 of 2)", 1)
+
+        concept = self._concept_for(opening)
+
+        self.assertEqual(concept.title, "SOLID")

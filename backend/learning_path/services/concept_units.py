@@ -17,7 +17,7 @@ from typing import Any
 from course.version_assignment import assign_group_versions
 from lessons.services.concept_bundles import bundle_heading, ordered_members
 
-from .text_signals import part_marker
+from .text_signals import part_marker, strip_part_suffix
 
 
 @dataclass(frozen=True)
@@ -362,7 +362,12 @@ def concepts_for_topic(node):
                 # representative's title, then the group's label.
                 title=(
                     (bundle_heading(representative_bundle) if len(representative_bundle) >= 2 else "")
-                    or representative.title
+                    # A bundle of one falls back to the representative's own
+                    # title -- but a merged split passage's representative is
+                    # still titled with the chunker's "(Part 1 of 2)" marker,
+                    # and that marker is what the criteria would match
+                    # against if it reached the concept list unstripped.
+                    or strip_part_suffix(representative.title)
                     or group.label
                     or ""
                 ).strip(),
