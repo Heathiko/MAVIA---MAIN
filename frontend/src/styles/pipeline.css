@@ -6966,3 +6966,27 @@ button {
 
 .path-chip.is-floating { background: #eef0f4; color: #4b5563; }
 .path-chip.is-moved { background: #fbeed8; color: #8a5410; }
+
+/* A bundle row's controls get their own line.
+   The row is a three-column grid -- number, copy, controls -- and at the
+   review panel's width (~380px) that third column squeezed "Move out" and the
+   "Move to…" menu on top of the object's number and title. Spanning the whole
+   row puts them underneath instead, so the title stays readable at every
+   width. Every control, its aria-label and its aria-disabled behaviour are
+   untouched: this is layout only. */
+.concept-bundle .connection-object-row,
+.concept-bundle .connection-object-row:last-child {
+  grid-template-columns: 2rem minmax(0, 1fr);
+}
+
+.concept-bundle .concept-bundle-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+  margin-top: 0.15rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.concept-bundle .concept-bundle-move-to select {
+  max-width: 100%;
+}
