@@ -4846,3 +4846,66 @@ class FinalReviewDeletionTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertTrue(LearningObject.objects.filter(pk=item.id).exists())
+
+
+class MobileLessonTrackBundleTests(TestCase):
+    """A concept's mobile tracks stay one per object, in document order.
+
+    The course package serves a version as an ordered bundle; the mobile
+    package already reads the playlist object by object, and this pins that it
+    keeps doing so rather than collapsing a concept into a single track.
+    """
+
+    def setUp(self):
+        from .services.lesson_package import build_lesson_payload
+
+        self.build_lesson_payload = build_lesson_payload
+        course = CourseGroup.objects.create(title="Science")
+        self.topic = OutlineNode.objects.create(course=course, title="States")
+        self.material = LearningMaterial.objects.create(
+            course=course,
+            outline_node=self.topic,
+            title="A",
+            status=LearningMaterial.Status.COMPLETED,
+        )
+        group = LearningObjectGroup.objects.create(outline_node=self.topic, label="Solid")
+        self.lead = LearningObject.objects.create(
+            material=self.material, group=group, title="Solid", order=0,
+            content="A solid keeps its shape.",
+        )
+        self.tail = LearningObject.objects.create(
+            material=self.material, group=group, title="Particle diagram", order=1,
+            section_title="Solid", content="Particles sit in a grid.",
+        )
+        self.material.generated_json = {
+            "learning_objects_confirmed": True,
+            "lesson_audio_generated": True,
+            "lesson_playlist": [
+                {
+                    "learning_object_id": self.lead.id,
+                    "title": "Solid",
+                    "narration": "A solid keeps its shape.",
+                    "audio_url": "/media/audio_lessons/lead.mp3",
+                },
+                {
+                    "learning_object_id": self.tail.id,
+                    "title": "Particle diagram",
+                    "narration": "Particles sit in a grid.",
+                    "audio_url": "/media/audio_lessons/tail.mp3",
+                },
+            ],
+        }
+        self.material.save(update_fields=["generated_json"])
+
+    def test_a_concepts_tracks_are_one_per_object_in_document_order(self):
+        payload = self.build_lesson_payload(self.topic)
+
+        self.assertEqual(
+            [(track["order"], track["text"], track["audio_url"]) for track in payload["tracks"]],
+            [
+                (0, "A solid keeps its shape.", "/media/audio_lessons/lead.mp3"),
+                (1, "Particles sit in a grid.", "/media/audio_lessons/tail.mp3"),
+            ],
+        )
+        self.assertEqual(payload["track_count"], 2)
+        self.assertTrue(all(track["audio_ready"] for track in payload["tracks"]))

@@ -410,3 +410,32 @@ class BundleChunkTests(TestCase):
         package = LessonPackageService.build_package(node.id)
 
         self.assertEqual([chunk["id"] for chunk in package["chunks"]], [self.normal.id])
+
+    def test_a_versions_text_is_exactly_its_segments_joined(self):
+        # Narration is TTS-adapted wording, so it differs from the source
+        # text; a caption built from "text" must still match the segments.
+        self.second.generated_json = {
+            "learning_objects_confirmed": True,
+            "lesson_audio_generated": True,
+            "lesson_playlist": [
+                {"learning_object_id": self.simple.id,
+                 "narration": "The bits are packed really tight.",
+                 "audio_url": "/media/simple-0.mp3"},
+                {"learning_object_id": self.simple_tail.id,
+                 "narration": "Think of an ice cube.",
+                 "audio_url": "/media/simple-1.mp3"},
+            ],
+        }
+        self.second.save(update_fields=["generated_json"])
+
+        simplified = _build_chunk(self.normal)["variants"]["simplified"]
+
+        self.assertEqual(
+            [segment["text"] for segment in simplified["segments"]],
+            ["The bits are packed really tight.", "Think of an ice cube."],
+        )
+        self.assertEqual(
+            simplified["text"],
+            "\n".join(segment["text"] for segment in simplified["segments"]),
+        )
+        self.assertEqual(simplified["audio_url"], "/media/simple-0.mp3")

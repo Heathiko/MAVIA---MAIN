@@ -183,23 +183,20 @@ def normal_variant_for(learning_object):
     back to the source text.
     """
     objects = normal_bundle_for(learning_object)
-    clips = [audio_clip_for(item) for item in objects]
-    if not any(clips):
+    if not any(audio_clip_for(item) for item in objects):
         return None
 
-    narration = "\n".join(
-        text
-        for clip, item in zip(clips, objects)
-        for text in [((clip or {}).get("narration") or item.content or "").strip()]
-        if text
-    )
-    audio_url = next(
-        (clip["audio_url"] for clip in clips if clip and clip.get("audio_url")), ""
-    )
+    # Built from the very segments a reader is served, so the joined narration
+    # and the segments can never tell a caller two different things.
+    segments = bundle_segments(objects)
     return {
         "variant": "NORMAL",
-        "narration": narration,
-        "audio_url": audio_url,
+        "narration": "\n".join(
+            segment["text"] for segment in segments if segment["text"]
+        ),
+        "audio_url": next(
+            (segment["audio_url"] for segment in segments if segment["audio_url"]), ""
+        ),
     }
 
 
