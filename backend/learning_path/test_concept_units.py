@@ -218,6 +218,25 @@ class ConceptUnitTests(TestCase):
         self.assertEqual(len(concepts[0].members), 3)
         self.assertEqual(concepts[0].representative, first)
 
+    def test_a_merged_split_passage_reads_in_document_order_not_group_order(self):
+        """Regression: merging concatenates each source group's members in
+        the order `_merge_split_passages` visits the groups -- their queryset
+        order, which has no relation to the document. Creating part 2's group
+        before part 1's flips that concatenation unless the result is
+        re-sorted by document position afterwards."""
+        second_group = self._group()
+        self._object(self.first, 1, "SOLID (Part 2 of 2)", "Its particles vibrate.", second_group)
+        opening = self._group("Solid")
+        self._object(self.first, 0, "SOLID (Part 1 of 2)", "A solid keeps its shape.", opening)
+
+        concepts = concepts_for_topic(self.topic)
+
+        self.assertEqual(len(concepts), 1)
+        self.assertEqual(
+            concepts[0].member_text,
+            "A solid keeps its shape.\nIts particles vibrate.",
+        )
+
     def test_repeated_titles_are_told_apart_by_position(self):
         """One file carries three passages all titled "Diagram description
         (Part 1 of 2)" / "(Part 2 of 2)", one per state of matter. Matching on

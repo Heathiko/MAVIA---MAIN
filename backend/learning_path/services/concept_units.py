@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from course.version_assignment import assign_group_versions
-from lessons.services.concept_bundles import bundle_heading, bundles_for_group, ordered_members
+from lessons.services.concept_bundles import bundle_heading, ordered_members
 
 from .text_signals import part_marker
 
@@ -312,12 +312,23 @@ def concepts_for_topic(node):
     for position, record in enumerate(records):
         group, members = record["group"], record["members"]
         representative = _representative_for(group, members)
-        # Members are already in bundle order (materials by upload order,
-        # objects within a material in document order) -- from
-        # `ordered_members` per group, and preserved by `_merge_split_passages`
-        # when groups are combined -- so the concept speaks in that order too.
-        member_text = "\n".join(item.content or "" for item in members)
-        representative_bundle = bundles_for_group(group).get(representative.material_id, [])
+        # `members` is in bundle order per its own source group, but
+        # `_merge_split_passages` concatenates *several* groups' member lists
+        # in whatever order the groups' queryset happened to return them --
+        # not document order. Re-sorting the whole set by scan position
+        # (material upload order, then document order) gives the concept one
+        # coherent order regardless of merging. For a concept from a single,
+        # unmerged group this reproduces the same order `ordered_members`
+        # already gave it: both rank by (material rank, object order, id).
+        ordered = sorted(members, key=lambda item: _member_scan_key(item, material_rank))
+        member_text = "\n".join(item.content or "" for item in ordered)
+        # The representative's own bundle: its material's objects among
+        # `ordered`, in document order. Built from members already in hand
+        # rather than a fresh `bundles_for_group(group)` query, which would
+        # also miss a representative merged in from a different source group.
+        representative_bundle = [
+            item for item in ordered if item.material_id == representative.material_id
+        ]
         concepts.append(
             Concept(
                 id=group.id,
@@ -341,7 +352,7 @@ def concepts_for_topic(node):
                 member_text=member_text,
                 group=group,
                 representative=representative,
-                members=tuple(members),
+                members=tuple(ordered),
             )
         )
     return concepts
