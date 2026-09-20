@@ -2089,6 +2089,13 @@ function LearningObjectConnections({
   // again once a correction has come back. See `bundleControlKey`.
   const bundleControlRefs = useRef(new Map());
   const refocusAfterCorrection = useRef("");
+  // The review panel itself: rendered for the whole "objects" step regardless
+  // of filter or search, so it is where focus lands when a correction's own
+  // control (and its row's "Move to..." fallback) is no longer rendered --
+  // Move out on the last object of another PDF in a filtered/searched view
+  // sends the object into a one-PDF concept the view then hides, leaving
+  // neither control mounted.
+  const reviewPanelRef = useRef(null);
 
   const materialSignature = useMemo(
     () => materials
@@ -2369,7 +2376,12 @@ function LearningObjectConnections({
   // another concept, where the "Move out" button is gone the moment its new
   // concept holds it alone -- so the row's "Move to..." menu, which is always
   // rendered, is the fallback that keeps the teacher on the object they just
-  // moved instead of at the top of the page.
+  // moved instead of at the top of the page. Under a filter or search that
+  // new concept's row can itself be hidden -- a one-PDF concept Move out just
+  // created is filtered out by "Grouped", for instance -- so neither control
+  // exists to receive focus. The review panel landmark is the last resort:
+  // it is rendered for the whole "objects" step no matter what the filter or
+  // search hides, so focus never falls all the way back to the document body.
   useEffect(() => {
     if (busyAction || !refocusAfterCorrection.current) return;
     const [objectId] = refocusAfterCorrection.current.split("-");
@@ -2378,6 +2390,7 @@ function LearningObjectConnections({
       .find((element) => element && element.isConnected && !element.disabled);
     refocusAfterCorrection.current = "";
     if (target) target.focus();
+    else if (reviewPanelRef.current) reviewPanelRef.current.focus();
   }, [busyAction, resources]);
 
   function moveObjectOutOfBundle(item) {
@@ -2786,6 +2799,8 @@ function LearningObjectConnections({
       <section
         className="connection-review-panel"
         aria-labelledby="connection-review-title"
+        ref={reviewPanelRef}
+        tabIndex={-1}
       >
       <div className="connection-review-heading">
         <div>
