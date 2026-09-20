@@ -23,7 +23,7 @@ from ..models import (
     OutlineNode,
 )
 from .learning_resource_linker import normalize_learning_object_title
-from .concept_bundles import bundle_lead, bundle_text
+from .concept_bundles import bundle_heading, bundle_lead, bundle_text
 from . import semantic_grouping
 
 METHOD = "heading_unit_v1"
@@ -213,11 +213,65 @@ def place_unit(objects, target_group):
 
     Placement replaces the old merge: the objects keep their own text and
     order, and the concept simply holds them all.
+
+    The move itself is the easy half. A concept it leaves keeps bookkeeping
+    about the object that is going: members it represented would keep pointing
+    at an object that is no longer in their concept, and every consumer of the
+    published lesson filters on ``represented_by__isnull=True`` -- so those
+    companions would silently vanish from the lesson, its audio and the mobile
+    package. The release therefore happens here, for every caller, rather than
+    in one of the three.
     """
-    emptied = {item.group_id for item in objects if item.group_id and item.group_id != target_group.id}
-    for item in objects:
-        if item.group_id == target_group.id:
+    from course.version_assignment import prune_bundle_role, release_from_group
+
+    movers = [item for item in objects if item.group_id != target_group.id]
+    if not movers:
+        return
+    moving_ids = {item.id for item in movers}
+
+    # A material arriving in a concept it has no object in yet brings no
+    # history with it: any role stored for it is a ruling about text that has
+    # since left, and inheriting it would hand a teacher's old decision to
+    # wording nobody has looked at.
+    present = set(
+        target_group.learning_objects.exclude(pk__in=moving_ids).values_list(
+            "material_id", flat=True,
+        )
+    )
+    for material_id in {item.material_id for item in movers} - present:
+        prune_bundle_role(target_group, material_id)
+
+    by_group = defaultdict(list)
+    for item in movers:
+        if item.group_id:
+            by_group[item.group_id].append(item)
+    for group_id, leaving in by_group.items():
+        staying = list(
+            LearningObject.objects.filter(group_id=group_id)
+            .exclude(pk__in=moving_ids)
+            .select_related("material")
+        )
+        if not staying:
             continue
+        for item in leaving:
+            release_from_group(item, staying)
+        # ``release_from_group`` undoes what each leaver is responsible for one
+        # at a time; this is the guarantee for the whole move -- no object that
+        # stays is taught through one that left.
+        LearningObject.objects.filter(
+            group_id=group_id, represented_by_id__in=moving_ids,
+        ).exclude(pk__in=moving_ids).update(represented_by=None)
+        gone = {item.material_id for item in leaving} - {
+            item.material_id for item in staying
+        }
+        if gone:
+            # Re-read: the releases above rewrite this concept's selection.
+            group = LearningObjectGroup.objects.filter(pk=group_id).first()
+            for material_id in gone:
+                prune_bundle_role(group, material_id)
+
+    emptied = {item.group_id for item in movers if item.group_id}
+    for item in movers:
         item.group = target_group
         item.represented_by = None
         item.mark_grouping_current()
@@ -303,7 +357,10 @@ def refresh_heading_unit_suggestions(node, runtime_instance=None):
             target = next(
                 (item.group for item in [*left, *right] if item.group_id), None,
             ) or LearningObjectGroup.objects.create(
-                outline_node=node, label=(left[0].title or "")[:255],
+                # A run often opens with a figure whose own title names
+                # nothing, so the concept is called after the run's heading.
+                outline_node=node,
+                label=(bundle_heading(left) or bundle_heading(right))[:255],
             )
             place_unit([*left, *right], target)
             placed += 1

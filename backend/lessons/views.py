@@ -30,7 +30,12 @@ from course.version_assignment import (
     bundle_role_provenance,
     release_from_group,
 )
-from .services.concept_bundles import bundle_text, bundles_for_group, material_order
+from .services.concept_bundles import (
+    bundle_heading,
+    bundle_text,
+    bundles_for_group,
+    material_order,
+)
 
 from .models import (
     CourseGroup,
@@ -696,22 +701,18 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         return node, learning_object
 
     def _leave_old_group(self, learning_object):
-        """Undo the old concept's version links, then say who stayed behind.
+        """Who stays behind in the concept this object is leaving.
 
-        Call this **before** the object's group changes. ``place_unit`` clears
-        only the mover's own ``represented_by``; the members it represented
-        would keep pointing at an object that has left their concept, and every
-        consumer of the published lesson filters on
-        ``represented_by__isnull=True`` -- so the rest of the concept would
-        silently vanish from the lesson and its audio.
+        Call this **before** the object's group changes. Undoing the old
+        concept's version links is ``place_unit``'s job -- it does the same for
+        the automatic and accept-a-card paths, which do not come through here
+        -- so this only reports the companions the caller still has to record a
+        teacher decision against.
         """
         old_group = learning_object.group
-        companions = list(
+        return list(
             old_group.learning_objects.exclude(pk=learning_object.id).select_related("material")
         ) if old_group else []
-        if companions:
-            release_from_group(learning_object, companions)
-        return companions
 
     def _bundle_correction_response(self, node, learning_object, request, companions=()):
         self._refresh_relationship_snapshots(
@@ -741,7 +742,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         companions = self._leave_old_group(learning_object)
         target = LearningObjectGroup.objects.create(
             outline_node=node,
-            label=(learning_object.title or "")[:255],
+            # The bundle's heading, not the object's title: an object taken out
+            # of a bundle is often a figure whose own title names nothing.
+            label=bundle_heading([learning_object])[:255],
         )
         place_unit([learning_object], target)
         # A teacher breaking a bundle up is a decision, not a gap in the
@@ -1036,7 +1039,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             if rejected_across_sides(source_objects, candidate_objects, exclude_pk=suggestion.pk):
                 raise SuggestionAcceptError("A teacher declined connecting these objects; review it first.")
             place_unit(objects, source.group or candidate.group or LearningObjectGroup.objects.create(
-                outline_node=node, label=(source.title or "")[:255],
+                outline_node=node,
+                label=(
+                    bundle_heading(source_objects) or bundle_heading(candidate_objects)
+                )[:255],
             ))
             unpublished = unpublish_topic(node)
             source.refresh_from_db()

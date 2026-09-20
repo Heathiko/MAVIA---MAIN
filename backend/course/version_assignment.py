@@ -258,6 +258,36 @@ def set_bundle_role(group, material_id, role, assigned_by=None):
     group.save(update_fields=["version_selection"])
 
 
+def prune_bundle_role(group, material_id):
+    """Forget everything stored about one material's bundle in this concept.
+
+    Called when a material stops contributing to a concept, and again before
+    it starts: a role is a ruling about the text that was there, so a material
+    that leaves and later returns with different objects must not inherit the
+    role its previous objects were given. All three stores go together --
+    leaving ``bundle_roles_decided_at`` behind would let a stale timestamp win
+    a contested primary slot for a decision that no longer exists.
+    """
+    if group is None:
+        return None
+    selection = dict(group.version_selection or {})
+    roles = dict(selection.get("bundle_roles") or {})
+    provenance = dict(selection.get("bundle_roles_assigned_by") or {})
+    decided_at = dict(selection.get("bundle_roles_decided_at") or {})
+    key = str(material_id)
+    if key not in roles and key not in provenance and key not in decided_at:
+        return None
+    dropped = roles.pop(key, None)
+    provenance.pop(key, None)
+    decided_at.pop(key, None)
+    selection["bundle_roles"] = roles
+    selection["bundle_roles_assigned_by"] = provenance
+    selection["bundle_roles_decided_at"] = decided_at
+    group.version_selection = selection
+    group.save(update_fields=["version_selection"])
+    return dropped
+
+
 def version_bundles(group):
     """``{role: [objects]}`` for the versions a PDF supplies."""
     bundles = _eligible_bundles(group)
@@ -828,17 +858,9 @@ def release_from_group(learning_object, companions):
         if group is not None and not any(
             item.material_id == learning_object.material_id for item in companions
         ):
-            selection = dict(group.version_selection or {})
-            roles = dict(selection.get("bundle_roles") or {})
-            provenance = dict(selection.get("bundle_roles_assigned_by") or {})
-            dropped = roles.pop(str(learning_object.material_id), None)
-            provenance.pop(str(learning_object.material_id), None)
+            dropped = prune_bundle_role(group, learning_object.material_id)
             if dropped is not None:
                 removed = [dropped]
-                selection["bundle_roles"] = roles
-                selection["bundle_roles_assigned_by"] = provenance
-                group.version_selection = selection
-                group.save(update_fields=["version_selection"])
 
     if learning_object.represented_by_id in companion_ids:
         learning_object.represented_by = None
