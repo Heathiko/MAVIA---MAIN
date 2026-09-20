@@ -10,6 +10,7 @@ import os
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from .models import (
     CourseGroup,
@@ -143,8 +144,11 @@ class PlacementTests(UnitFixture):
             return refresh_heading_unit_suggestions(self.topic, runtime_instance=runtime)
 
     def test_a_confident_match_is_placed_without_a_card(self):
+        emptied_group_id = self.solids_b.group_id
+
         counts = self._refresh(0.8)
 
+        self.assertFalse(LearningObjectGroup.objects.filter(pk=emptied_group_id).exists())
         self.solids_b.refresh_from_db()
         self.diagram_b.refresh_from_db()
         self.solid_a.refresh_from_db()
@@ -162,11 +166,17 @@ class PlacementTests(UnitFixture):
         self._refresh(0.45)
 
         self.solids_b.refresh_from_db()
+        self.diagram_b.refresh_from_db()
         self.assertNotEqual(self.solids_b.group_id, self.solid_a.group_id)
-        self.assertTrue(
-            LearningObjectMatchSuggestion.objects.filter(
-                status=LearningObjectMatchSuggestion.Status.PENDING,
-            ).exists()
+        self.assertNotEqual(self.diagram_b.group_id, self.solid_a.group_id)
+        card = LearningObjectMatchSuggestion.objects.get(
+            status=LearningObjectMatchSuggestion.Status.PENDING,
+            evidence__label="solid",
+        )
+        self.assertEqual(
+            {card.source_learning_object_id, card.candidate_learning_object_id,
+             *card.source_extra_ids, *card.candidate_extra_ids},
+            {self.solid_a.id, self.solids_b.id, self.diagram_b.id},
         )
 
     def test_a_score_below_the_review_threshold_does_nothing(self):
@@ -432,6 +442,55 @@ class UnitDecisionTests(UnitFixture):
         self.assertEqual(declined.status, LearningObjectMatchSuggestion.Status.REJECTED)
         self.assertEqual(unit.status, LearningObjectMatchSuggestion.Status.PENDING)
 
+    def test_a_decline_within_one_side_does_not_block_the_accept(self):
+        """Two objects of the same PDF declined against each other say nothing
+        about whether the two PDFs teach one concept; vetoing on that would
+        strand the card forever."""
+        LearningObjectMatchSuggestion.objects.create(
+            outline_node=self.topic,
+            source_learning_object=self.solids_b,
+            candidate_learning_object=self.diagram_b,
+            similarity_score=0.9,
+            confidence=LearningObjectMatchSuggestion.Confidence.TEACHER_CONFIRMED,
+            status=LearningObjectMatchSuggestion.Status.REJECTED,
+            evidence={"teacher_reviewed": True, "teacher_decision": "rejected"},
+        )
+        unit = self._unit_row()
+
+        response = authenticated_api_client().post(self._url(unit, "accept"), format="json")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.solid_a.refresh_from_db()
+        self.solids_b.refresh_from_db()
+        self.diagram_b.refresh_from_db()
+        self.assertEqual(self.solids_b.group_id, self.solid_a.group_id)
+        self.assertEqual(self.diagram_b.group_id, self.solid_a.group_id)
+
+    def test_an_extra_id_from_the_wrong_side_is_out_of_date(self):
+        unit = self._unit_row(source_extra_ids=[self.liquid_a.id])
+        unit.candidate_extra_ids = [self.solids_b.id, self.volume.id]
+        unit.save(update_fields=["candidate_extra_ids"])
+
+        response = authenticated_api_client().post(self._url(unit, "accept"), format="json")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("out of date", response.data["detail"])
+        self.solid_a.refresh_from_db()
+        self.solids_b.refresh_from_db()
+        self.assertNotEqual(self.solids_b.group_id, self.solid_a.group_id)
+
+    def test_an_id_repeated_across_the_two_lists_is_not_counted_twice(self):
+        unit = self._unit_row(source_extra_ids=[self.solid_a.id])
+
+        response = authenticated_api_client().post(self._url(unit, "accept"), format="json")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.solid_a.refresh_from_db()
+        self.solids_b.refresh_from_db()
+        self.diagram_b.refresh_from_db()
+        self.assertEqual(self.solids_b.group_id, self.solid_a.group_id)
+        self.assertEqual(self.diagram_b.group_id, self.solid_a.group_id)
+
     def test_an_accepted_lead_pair_keeps_its_teacher_evidence(self):
         accepted = LearningObjectMatchSuggestion.objects.create(
             outline_node=self.topic,
@@ -459,3 +518,158 @@ class UnitDecisionTests(UnitFixture):
         self.assertTrue(accepted.evidence["teacher_reviewed"])
         self.assertEqual(accepted.evidence["teacher_decision"], "accepted")
         self.assertEqual((accepted.source_extra_ids, accepted.candidate_extra_ids), ([], []))
+
+
+class PlacementGuardTests(UnitFixture):
+    """What outranks a confident score: a decline, a locked name, a duplicate."""
+
+    def _refresh(self, score):
+        runtime = FakeRuntime()
+        runtime.pair_scores = lambda pairs: [score for _ in pairs]
+        with patch.dict(os.environ, SEMANTIC_ENV):
+            return refresh_heading_unit_suggestions(self.topic, runtime_instance=runtime)
+
+    def test_a_rejected_unit_is_never_placed_however_confident(self):
+        self._refresh(0.45)
+        rejected = LearningObjectMatchSuggestion.objects.get(evidence__label="solid")
+        rejected.status = LearningObjectMatchSuggestion.Status.REJECTED
+        rejected.save(update_fields=["status"])
+
+        self._refresh(0.8)
+
+        self.solids_b.refresh_from_db()
+        self.diagram_b.refresh_from_db()
+        self.solid_a.refresh_from_db()
+        self.assertNotEqual(self.solids_b.group_id, self.solid_a.group_id)
+        self.assertNotEqual(self.diagram_b.group_id, self.solid_a.group_id)
+        rejected.refresh_from_db()
+        self.assertEqual(rejected.status, LearningObjectMatchSuggestion.Status.REJECTED)
+        self.assertFalse(
+            LearningObjectMatchSuggestion.objects.filter(
+                status=LearningObjectMatchSuggestion.Status.PENDING,
+                evidence__label="solid",
+            ).exists()
+        )
+
+    def test_a_represented_duplicate_never_joins_a_unit(self):
+        self.diagram_b.represented_by = self.solids_b
+        self.diagram_b.save(update_fields=["represented_by"])
+        original_group_id = self.diagram_b.group_id
+
+        self._refresh(0.8)
+
+        for candidate in heading_unit_candidates(self.topic):
+            for side in (candidate["left"], candidate["right"]):
+                self.assertNotIn(self.diagram_b.id, [item.id for item in side])
+        self.diagram_b.refresh_from_db()
+        self.solids_b.refresh_from_db()
+        self.solid_a.refresh_from_db()
+        self.assertEqual(self.diagram_b.group_id, original_group_id)
+        self.assertEqual(self.diagram_b.represented_by_id, self.solids_b.id)
+        self.assertNotEqual(self.solids_b.group_id, self.solid_a.group_id)
+
+    def test_a_locked_concept_name_is_never_dissolved_automatically(self):
+        group = self.solids_b.group
+        group.version_selection = {"label_locked": True}
+        group.save(update_fields=["version_selection"])
+
+        self._refresh(0.8)
+
+        self.solids_b.refresh_from_db()
+        self.solid_a.refresh_from_db()
+        self.assertNotEqual(self.solids_b.group_id, self.solid_a.group_id)
+        self.assertTrue(LearningObjectGroup.objects.filter(pk=group.id).exists())
+        self.assertTrue(
+            LearningObjectMatchSuggestion.objects.filter(
+                status=LearningObjectMatchSuggestion.Status.PENDING,
+                evidence__label="solid",
+            ).exists()
+        )
+
+    def test_a_teacher_may_still_accept_the_card_for_a_locked_concept(self):
+        group = self.solids_b.group
+        group.version_selection = {"label_locked": True}
+        group.save(update_fields=["version_selection"])
+        self._refresh(0.8)
+        suggestion = LearningObjectMatchSuggestion.objects.get(evidence__label="solid")
+
+        response = authenticated_api_client().post(
+            f"/api/courses/{self.course.id}/outline-nodes/{self.topic.id}"
+            f"/match-suggestions/{suggestion.id}/accept/",
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.solids_b.refresh_from_db()
+        self.diagram_b.refresh_from_db()
+        self.solid_a.refresh_from_db()
+        self.assertEqual(self.solids_b.group_id, self.solid_a.group_id)
+        self.assertEqual(self.diagram_b.group_id, self.solid_a.group_id)
+
+    def test_placing_unpublishes_the_topic_and_the_payload_says_so(self):
+        self.topic.published = True
+        self.topic.published_at = timezone.now()
+        self.topic.save(update_fields=["published", "published_at"])
+
+        counts = self._refresh(0.8)
+
+        self.assertGreaterEqual(counts["placed"], 1)
+        self.topic.refresh_from_db()
+        self.assertFalse(self.topic.published)
+        self.assertIsNone(self.topic.published_at)
+        response = authenticated_api_client().get(
+            f"/api/courses/{self.course.id}/outline-nodes/{self.topic.id}/learning-resources/",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(response.data["outline_node"]["published"])
+
+    def test_a_card_alone_leaves_the_topic_published(self):
+        self.topic.published = True
+        self.topic.published_at = timezone.now()
+        self.topic.save(update_fields=["published", "published_at"])
+
+        self._refresh(0.45)
+
+        self.topic.refresh_from_db()
+        self.assertTrue(self.topic.published)
+
+
+class ConnectivityRecheckTests(TestCase):
+    """Three PDFs name the same concept: placing the first pair connects the
+    run, which disqualifies the second pair in the very same pass."""
+
+    def setUp(self):
+        self.course = CourseGroup.objects.create(title="Science")
+        self.topic = OutlineNode.objects.create(course=self.course, title="States")
+        confirmed = {"learning_objects_confirmed": True}
+        self.a, self.b, self.c = (
+            LearningMaterial.objects.create(
+                course=self.course, outline_node=self.topic, title=name,
+                generated_json=dict(confirmed),
+            )
+            for name in ("A", "B", "C")
+        )
+        self.a_solid = self._object(self.a, "Solid", "", 0)
+        self.b_solid = self._object(self.b, "Solids", "Solids", 0)
+        self.b_diagram = self._object(self.b, "Diagram description", "Solids", 1)
+        self.c_solid = self._object(self.c, "Solid", "", 0)
+
+    def _object(self, material, title, section, order, kind="text"):
+        group = LearningObjectGroup.objects.create(outline_node=self.topic, label=title)
+        return LearningObject.objects.create(
+            material=material, group=group, title=title, content=f"{title} text.",
+            section_title=section, order=order, kind=kind,
+        )
+
+    def test_a_placement_disqualifies_a_later_candidate_in_the_same_pass(self):
+        runtime = FakeRuntime()
+        runtime.pair_scores = lambda pairs: [0.8 for _ in pairs]
+        with patch.dict(os.environ, SEMANTIC_ENV):
+            counts = refresh_heading_unit_suggestions(self.topic, runtime_instance=runtime)
+
+        self.assertEqual(counts["placed"], 1)
+        for item in (self.a_solid, self.b_solid, self.b_diagram, self.c_solid):
+            item.refresh_from_db()
+        self.assertEqual(self.b_solid.group_id, self.a_solid.group_id)
+        self.assertEqual(self.b_diagram.group_id, self.a_solid.group_id)
+        self.assertNotEqual(self.c_solid.group_id, self.a_solid.group_id)

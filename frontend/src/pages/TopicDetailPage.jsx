@@ -2109,6 +2109,19 @@ function LearningObjectConnections({
     if (resources) logLearningObjectMatchDebug(resources);
   }, [resources]);
 
+  // Grouping can place corroborated objects into one concept on its own, and a
+  // placement unpublishes the topic so the published lesson never describes
+  // content that changed. Nothing else announces that, so the panel says it.
+  // The payload's flag is fresh; the course record the page was loaded with is
+  // not, so a disagreement means grouping is what changed it.
+  const payloadPublished = resources?.outline_node?.published;
+  const sawPublishedRef = useRef(Boolean(topic?.published));
+  useEffect(() => {
+    if (payloadPublished) sawPublishedRef.current = true;
+  }, [payloadPublished]);
+  const unpublishedByGrouping = payloadPublished === false
+    && (sawPublishedRef.current || Boolean(topic?.published));
+
   const groups = resources?.learning_object_groups || [];
   const matchSuggestions = resources?.match_suggestions || [];
   const allQuestionPairings = resources?.question_pairings || [];
@@ -2717,6 +2730,11 @@ function LearningObjectConnections({
           {(resources?.grouping_warnings || []).map((warning) => (
             <p role="alert" key={warning}>{warning}</p>
           ))}
+          {unpublishedByGrouping && (
+            <p role="status" className="connection-unpublished-note">
+              Grouping changed, so this topic was unpublished. Republish when you are ready.
+            </p>
+          )}
           <p>
             Review learning objects from every PDF and connect equivalent content into one concept group.
             Each object remains a separate variation for the learning-path module.

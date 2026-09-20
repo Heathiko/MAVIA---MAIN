@@ -822,8 +822,11 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         try:
             unpublished = self._accept_suggestion(node, suggestion, source, candidate)
         except MergeError as exc:
-            # Raised inside the transaction, so nothing was merged or saved.
+            # Raised inside the transaction, so nothing was moved or saved.
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        # Placement unpublishes with an UPDATE, so the cached node is stale and
+        # the payload would still report the topic as published.
+        node.refresh_from_db()
         payload = self._learning_resources_payload(node, request)
         payload["unpublished"] = unpublished
         return Response(payload)
@@ -833,31 +836,36 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         """Place (for units), connect and record the decision in one transaction."""
         unpublished = False
         if suggestion.source_extra_ids or suggestion.candidate_extra_ids:
-            from .services.unit_matching import place_unit, unpublish_topic
-
-            objects = list(
-                LearningObject.objects.filter(
-                    pk__in=[
-                        suggestion.source_learning_object_id,
-                        suggestion.candidate_learning_object_id,
-                        *suggestion.source_extra_ids,
-                        *suggestion.candidate_extra_ids,
-                    ],
-                    material__outline_node=node,
-                )
+            from .services.unit_matching import (
+                place_unit,
+                rejected_across_sides,
+                unpublish_topic,
             )
-            expected = 2 + len(suggestion.source_extra_ids) + len(suggestion.candidate_extra_ids)
-            if len(objects) != expected:
-                raise MergeError(
-                    "This suggestion is out of date. Refresh the page and review it again."
+
+            # Each side is its own PDF's run, so an extra id belongs to the
+            # material of the side that lists it. Built as sets, so an id
+            # repeated within or across the two lists cannot inflate the count.
+            source_ids = {suggestion.source_learning_object_id, *suggestion.source_extra_ids}
+            candidate_ids = {suggestion.candidate_learning_object_id, *suggestion.candidate_extra_ids}
+            sides = []
+            for ids, primary in ((source_ids, source), (candidate_ids, candidate)):
+                members = list(
+                    LearningObject.objects.filter(
+                        pk__in=ids,
+                        material_id=primary.material_id,
+                        material__outline_node=node,
+                    )
                 )
+                if len(members) != len(ids):
+                    raise MergeError(
+                        "This suggestion is out of date. Refresh the page and review it again."
+                    )
+                sides.append(members)
+            source_objects, candidate_objects = sides
+            objects = [*source_objects, *candidate_objects]
             # Checked before anything moves: a teacher may have declined a pair
             # this unit would put into one concept.
-            if LearningObjectMatchSuggestion.objects.filter(
-                status=LearningObjectMatchSuggestion.Status.REJECTED,
-                source_learning_object__in=objects,
-                candidate_learning_object__in=objects,
-            ).exclude(pk=suggestion.pk).exists():
+            if rejected_across_sides(source_objects, candidate_objects, exclude_pk=suggestion.pk):
                 raise MergeError("A teacher declined connecting these objects; review it first.")
             place_unit(objects, source.group or candidate.group or LearningObjectGroup.objects.create(
                 outline_node=node, label=(source.title or "")[:255],

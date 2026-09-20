@@ -14,6 +14,8 @@ sees a card first. Nothing is merged -- each object keeps its own text.
 from collections import defaultdict
 from dataclasses import dataclass
 
+from django.db.models import Q
+
 from ..models import (
     LearningObject,
     LearningObjectGroup,
@@ -77,22 +79,40 @@ def find_units(objects):
     return units
 
 
+def _connected_across_pdfs(objects):
+    """How many of these objects sit in a concept another PDF already reaches.
+
+    Read from the database rather than from the passed rows: one refresh places
+    several units in turn, and an earlier placement changes the answer for a
+    later candidate.
+    """
+    rows = LearningObject.objects.filter(
+        pk__in=[item.id for item in objects],
+    ).values_list("group_id", "material_id")
+    return sum(
+        1 for group_id, material_id in rows
+        if group_id and LearningObject.objects.filter(group_id=group_id)
+        .exclude(material_id=material_id).exists()
+    )
+
+
 def _agrees_across_pdfs(unit):
     """Two or more members already connected to other PDFs: they agree at a finer grain."""
-    connected = [
-        item for item in unit.members
-        if item.group_id and LearningObject.objects.filter(group_id=item.group_id)
-        .exclude(material_id=item.material_id).exists()
-    ]
-    return len(connected) >= 2
+    return _connected_across_pdfs(unit.members) >= 2
 
 
 def heading_unit_candidates(node):
-    """``[{"label", "left": [...], "right": [...]}]`` -- unit pairs worth scoring."""
+    """``[{"label", "left": [...], "right": [...]}]`` -- unit pairs worth scoring.
+
+    An object whose ``represented_by`` points elsewhere is a suppressed
+    duplicate -- ``semantic_grouping`` skips those too. It never joins a unit,
+    because placing it would clear that pointer and put it back in the lesson.
+    """
     objects = list(
         LearningObject.objects.filter(
             material__outline_node=node,
             material__generated_json__learning_objects_confirmed=True,
+            represented_by__isnull=True,
         ).select_related("material")
     )
     by_material = defaultdict(list)
@@ -212,6 +232,34 @@ def place_unit(objects, target_group):
     ).delete()
 
 
+def rejected_across_sides(left, right, exclude_pk=None):
+    """A teacher declined connecting one of these objects to one of those.
+
+    Only cross-side pairs count: a decline *within* one PDF's run says nothing
+    about whether the two PDFs teach the same concept, and treating it as a
+    veto would strand the unit forever.
+    """
+    left_ids = [item.id for item in left]
+    right_ids = [item.id for item in right]
+    rows = LearningObjectMatchSuggestion.objects.filter(
+        status=LearningObjectMatchSuggestion.Status.REJECTED,
+    ).filter(
+        Q(source_learning_object_id__in=left_ids, candidate_learning_object_id__in=right_ids)
+        | Q(source_learning_object_id__in=right_ids, candidate_learning_object_id__in=left_ids)
+    )
+    if exclude_pk is not None:
+        rows = rows.exclude(pk=exclude_pk)
+    return rows.exists()
+
+
+def _label_is_locked(objects):
+    """A teacher named one of these concepts: only a teacher may dissolve it."""
+    group_ids = {item.group_id for item in objects if item.group_id}
+    return bool(group_ids) and LearningObjectGroup.objects.filter(
+        pk__in=group_ids, version_selection__label_locked=True,
+    ).exists()
+
+
 def unpublish_topic(node):
     """A placement changes what the lesson teaches, so the topic leaves print.
 
@@ -248,7 +296,15 @@ def refresh_heading_unit_suggestions(node, runtime_instance=None):
             continue
         if score < threshold:
             continue
-        if automatic and score >= auto:
+        if rejected_across_sides(left, right):
+            # A teacher's decline outranks the score: no placement, no card.
+            continue
+        if any(_connected_across_pdfs(side) >= 2 for side in (left, right)):
+            # The same rule ``open_units`` applies, re-read from the database:
+            # an earlier placement in this very pass can have connected a side
+            # since the candidates were listed.
+            continue
+        if automatic and score >= auto and not _label_is_locked([*left, *right]):
             target = next(
                 (item.group for item in [*left, *right] if item.group_id), None,
             ) or LearningObjectGroup.objects.create(
