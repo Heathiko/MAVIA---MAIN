@@ -218,15 +218,18 @@ button {
   transition: filter 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
 }
 
-.btn:hover:not(:disabled) {
+.btn:hover:not(:disabled):not([aria-disabled="true"]) {
   filter: brightness(1.05);
   transform: translateY(-1px);
 }
 
 .btn:disabled,
 /* The bundle controls stay in the tab order while they cannot be used, so a
-   screen reader still reads their names; they look the part all the same. */
-.btn[aria-disabled="true"] {
+   screen reader still reads their names; they look the part all the same.
+   The "Move to..." control is a <select>, not a `.btn`, but it sits in the
+   same row and needs the same disabled look. */
+.btn[aria-disabled="true"],
+.concept-bundle-move-to select[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.55;
 }

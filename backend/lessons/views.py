@@ -1074,8 +1074,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         candidate.group = target_group
         candidate.mark_grouping_current()
         candidate.save(update_fields=["group", "grouping_content_hash"])
+        source.group = target_group
         source.mark_grouping_current()
-        source.save(update_fields=["grouping_content_hash"])
+        source.save(update_fields=["group", "grouping_content_hash"])
         if old_group and old_group.id != target_group.id and not old_group.learning_objects.exists():
             old_group.delete()
 

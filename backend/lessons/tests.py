@@ -1359,6 +1359,46 @@ class LearningResourceRelationshipTests(TestCase):
         )
         self.assertEqual(response.data["match_suggestions"], [])
 
+    def test_accepting_a_suggestion_groups_an_ungrouped_source_too(self):
+        """Regression: the plain-connect branch of `_accept_suggestion` built
+        a new group for an ungrouped source but only assigned it to
+        `candidate`, leaving the source out of the very concept the teacher
+        just connected it to. Not reachable through normal grouping -- every
+        object is grouped by `ensure_learning_object_groups` -- but a bug
+        this direct is worth pinning regardless."""
+        first_material = self._material("first")
+        second_material = self._material("second")
+        first = LearningObject.objects.create(
+            material=first_material,
+            title="Shape",
+            content="A solid keeps its shape.",
+        )
+        second = LearningObject.objects.create(
+            material=second_material,
+            group=LearningObjectGroup.objects.create(outline_node=self.node, label="Form"),
+            title="Form of a solid",
+            content="Rigid matter retains its form.",
+        )
+        suggestion = LearningObjectMatchSuggestion.objects.create(
+            outline_node=self.node,
+            source_learning_object=first,
+            candidate_learning_object=second,
+            similarity_score=0.48,
+            confidence=LearningObjectMatchSuggestion.Confidence.MEDIUM,
+            evidence={"method": "hybrid_tfidf_v2"},
+        )
+
+        response = self.client.post(
+            f"/api/courses/{self.course.id}/outline-nodes/{self.node.id}/match-suggestions/{suggestion.id}/accept/",
+            format="json",
+        )
+        first.refresh_from_db()
+        second.refresh_from_db()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(first.group_id)
+        self.assertEqual(first.group_id, second.group_id)
+
     def test_teacher_can_reject_a_pending_match_suggestion(self):
         first_material = self._material("first")
         second_material = self._material("second")
