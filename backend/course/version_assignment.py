@@ -698,7 +698,7 @@ def settle_group(group):
     decides where its text belongs, removing it from the lesson would drop
     content rather than deduplicate it.
     """
-    from .variant_generator import fill_missing_slots
+    from .variant_generator import fill_missing_bundle_slots
 
     outcome = assign_group_versions(group, use_llm=True)
     if outcome["representative_id"] is None:
@@ -716,14 +716,8 @@ def settle_group(group):
 
     # A role another PDF already supplies is never generated: that wording
     # exists as its own objects, so writing it again would teach it twice.
-    supplied = {
-        role for role in outcome["bundle_roles"].values() if role in PRIMARY_SLOTS
-    }
-    missing = [slot for slot in PRIMARY_SLOTS if slot not in supplied]
-    filled = (
-        fill_missing_slots(representative, missing) if missing
-        else {"generated": [], "errors": []}
-    )
+    # Missing versions are written one object of the Normal bundle at a time.
+    filled = fill_missing_bundle_slots(group)
 
     # A bundle whose role is still a question stays its own teaching step:
     # hiding it would drop content nobody has ruled on yet.
