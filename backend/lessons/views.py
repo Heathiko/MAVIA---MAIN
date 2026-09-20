@@ -1571,9 +1571,11 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             )
 
         representative = LearningObject.objects.get(pk=representative_id)
-        previous = LessonVariant.objects.filter(learning_object=representative, variant=slot).first() if slot != "EXTRA" else None
-        displaced_id = previous.source_learning_object_id if previous else None
-        assign_source_to_slot(representative, learning_object, slot)
+        try:
+            moved = assign_source_to_slot(representative, learning_object, slot)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        displaced_id = moved["displaced_learning_object_id"]
         payload = self._learning_resources_payload(node, request)
         payload["version_assignment"] = {
             "slot": slot,

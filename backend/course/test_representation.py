@@ -13,7 +13,12 @@ from lessons.models import (
 )
 
 from .models import LessonVariant
-from .version_assignment import release_from_group, release_learning_object, settle_group
+from .version_assignment import (
+    bundle_roles,
+    release_from_group,
+    release_learning_object,
+    settle_group,
+)
 
 
 SHORT = "Solid has a fixed shape. It holds its form. It does not flow."
@@ -82,10 +87,13 @@ class RepresentationTests(TestCase):
         result = settle_group(self.group)
 
         self.assertEqual(result["generated"], ["SIMPLIFIED"])
-        elaborated = LessonVariant.objects.get(learning_object=self.first, variant="ELABORATED")
-        self.assertEqual(elaborated.origin, "source_pdf")
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        self.assertEqual(result["bundle_roles"], {self.second.material_id: "ELABORATED"})
         simplified = LessonVariant.objects.get(learning_object=self.first, variant="SIMPLIFIED")
         self.assertEqual(simplified.origin, "generated")
+        self.assertFalse(
+            LessonVariant.objects.filter(origin=LessonVariant.Origin.SOURCE_PDF).exists()
+        )
 
     @patch("course.variant_generator._request_variants")
     def test_llm_selects_original_and_only_missing_slot_is_generated(self, request_variants):
@@ -103,11 +111,8 @@ class RepresentationTests(TestCase):
 
         self.assertEqual(result["representative_id"], self.second.id)
         self.assertEqual(result["generated"], ["ELABORATED"])
-        simplified = LessonVariant.objects.get(
-            learning_object=self.second,
-            variant="SIMPLIFIED",
-        )
-        self.assertEqual(simplified.source_learning_object, self.first)
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        self.assertEqual(result["bundle_roles"], {self.first.material_id: "SIMPLIFIED"})
         elaborated = LessonVariant.objects.get(
             learning_object=self.second,
             variant="ELABORATED",
@@ -123,11 +128,11 @@ class RepresentationTests(TestCase):
 
         self.second.refresh_from_db()
         self.assertIsNone(self.second.represented_by)
-        # The released object supplied the elaborated rung; it leaves with it.
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        # The released object supplied the elaborated rung as its own text; no
+        # copy of it was ever stored on the original.
         self.assertFalse(
-            LessonVariant.objects.filter(
-                learning_object=self.first, source_learning_object=self.second
-            ).exists()
+            LessonVariant.objects.filter(origin=LessonVariant.Origin.SOURCE_PDF).exists()
         )
         # The generated rung existed only to complete a triple that no longer
         # has a partner, so it goes too.
@@ -145,20 +150,15 @@ class RepresentationTests(TestCase):
             "together very closely. It cannot flow the way that water does.",
         )
         settle_group(self.group)
-        self.assertTrue(
-            LessonVariant.objects.filter(
-                learning_object=self.first, source_learning_object=third
-            ).exists()
-        )
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        self.group.refresh_from_db()
+        self.assertIn(third.material_id, bundle_roles(self.group))
 
         release_learning_object(self.second)
 
         # Another member's teacher-written text is untouched by this release.
-        self.assertTrue(
-            LessonVariant.objects.filter(
-                learning_object=self.first, source_learning_object=third
-            ).exists()
-        )
+        self.group.refresh_from_db()
+        self.assertIn(third.material_id, bundle_roles(self.group))
 
     @patch("course.variant_generator._request_variants")
     def test_llm_classified_member_is_represented_despite_thin_readability_margin(self, request_variants):
@@ -193,43 +193,41 @@ class ReleaseFromGroupTests(TestCase):
             material=material, group=self.group, title="Gas examples", content=MIDDLING, order=2,
             represented_by=self.original,
         )
-        self.supplied = LessonVariant.objects.create(
-            learning_object=self.original, variant="EXTRA", narration=LONG,
-            origin=LessonVariant.Origin.SOURCE_PDF, source_learning_object=self.member,
-        )
-        self.kept_source = LessonVariant.objects.create(
-            learning_object=self.original, variant="ELABORATED", narration=MIDDLING,
-            origin=LessonVariant.Origin.SOURCE_PDF, source_learning_object=self.other,
-        )
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
         self.generated = LessonVariant.objects.create(
             learning_object=self.original, variant="SIMPLIFIED", narration="Short.",
             origin=LessonVariant.Origin.GENERATED, assigned_by=LessonVariant.AssignedBy.TEACHER,
         )
 
     def test_a_leaving_member_takes_back_only_its_own_text(self):
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        # All three objects come from one PDF, so the bundle -- and its role --
+        # stays behind with the companions; only the flag on the leaver goes.
         outcome = release_from_group(self.member, [self.original, self.other])
 
         self.member.refresh_from_db()
         self.assertIsNone(self.member.represented_by_id)
-        self.assertFalse(LessonVariant.objects.filter(pk=self.supplied.pk).exists())
-        self.assertTrue(LessonVariant.objects.filter(pk=self.kept_source.pk).exists())
         self.assertTrue(LessonVariant.objects.filter(pk=self.generated.pk).exists())
-        self.assertEqual(outcome, {"was_original": False, "removed_version_slots": ["extra"]})
+        self.assertEqual(outcome, {"was_original": False, "removed_version_slots": []})
 
     def test_a_leaving_original_releases_everyone_it_represented(self):
-        self.group.version_selection = {"representative_id": self.original.id}
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        self.group.version_selection = {
+            "normal_material_id": self.original.material_id,
+            "bundle_roles": {str(self.original.material_id): "EXTRA"},
+        }
         self.group.save()
 
         outcome = release_from_group(self.original, [self.member, self.other])
 
         self.assertTrue(outcome["was_original"])
+        self.assertEqual(outcome["removed_version_slots"], ["extra"])
         self.member.refresh_from_db()
         self.other.refresh_from_db()
         self.group.refresh_from_db()
         self.assertIsNone(self.member.represented_by_id)
         self.assertIsNone(self.other.represented_by_id)
         self.assertEqual(self.group.version_selection, {})
-        self.assertFalse(LessonVariant.objects.filter(source_learning_object__isnull=False).exists())
         # Generated text, including a teacher's edit, is never removed here.
         self.assertTrue(LessonVariant.objects.filter(pk=self.generated.pk).exists())
 

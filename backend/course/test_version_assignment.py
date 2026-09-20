@@ -15,8 +15,11 @@ from lessons.models import (
 from .models import LessonVariant
 from .version_assignment import (
     assign_group_versions,
+    bundle_roles,
     choose_representative,
     clean_group_label,
+    set_bundle_role,
+    version_bundles,
 )
 
 
@@ -136,16 +139,18 @@ class VersionAssignmentTests(TestCase):
         self.assertEqual(len(result["assigned"]), 1)
         self.assertEqual(result["needs_confirmation"], [])
 
-        row = LessonVariant.objects.get(learning_object=first)
-        self.assertEqual(row.variant, "ELABORATED")
-        self.assertEqual(row.narration, LONG)
-        self.assertEqual(row.origin, "source_pdf")
-        self.assertEqual(row.source_learning_object, second)
-        self.assertEqual(row.assigned_by, "llm_validated")
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        self.assertEqual(result["bundle_roles"], {second.material_id: "ELABORATED"})
+        self.assertFalse(LessonVariant.objects.filter(learning_object=first).exists())
+        self.assertEqual(
+            self.group.version_selection["bundle_roles_assigned_by"][str(second.material_id)],
+            "llm_validated",
+        )
         self.assertTrue(result["classification_complete"])
 
         # The model result is durable: opening the review payload again does
         # not make another expensive classification request.
+        self.group.refresh_from_db()
         refreshed = assign_group_versions(self.group)
         self.assertTrue(refreshed["classification_complete"])
         self.assertEqual(refreshed["representative_id"], first.id)
@@ -164,8 +169,8 @@ class VersionAssignmentTests(TestCase):
 
         self.assertEqual(result["needs_confirmation"], [])
         self.assertEqual(result["assigned"][0]["slot"], "SIMPLIFIED")
-        row = LessonVariant.objects.get(learning_object=first, variant="SIMPLIFIED")
-        self.assertEqual(row.source_learning_object, second)
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        self.assertEqual(result["bundle_roles"], {second.material_id: "SIMPLIFIED"})
 
     @patch("course.version_assignment.classify_group_versions")
     def test_grouped_original_is_selected_by_llm_not_upload_order(self, classify):
@@ -179,11 +184,8 @@ class VersionAssignmentTests(TestCase):
         result = assign_group_versions(self.group, use_llm=True)
 
         self.assertEqual(result["representative_id"], second.id)
-        simplified = LessonVariant.objects.get(
-            learning_object=second,
-            variant="SIMPLIFIED",
-        )
-        self.assertEqual(simplified.source_learning_object, first)
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        self.assertEqual(result["bundle_roles"], {first.material_id: "SIMPLIFIED"})
 
     @patch("course.version_assignment.classify_group_versions")
     def test_llm_extra_is_stored_automatically(self, classify):
@@ -197,8 +199,9 @@ class VersionAssignmentTests(TestCase):
         result = assign_group_versions(self.group, use_llm=True)
 
         self.assertEqual(result["needs_confirmation"], [])
-        extra = LessonVariant.objects.get(learning_object=first, variant="EXTRA")
-        self.assertEqual(extra.source_learning_object, second)
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        self.assertEqual(result["bundle_roles"], {second.material_id: "EXTRA"})
+        self.assertEqual(result["extras"], 1)
 
     def test_thin_margin_is_routed_to_the_teacher_not_stored(self):
         first = self._object(self._material("PDF one", 0), SHORT)
@@ -231,10 +234,11 @@ class VersionAssignmentTests(TestCase):
         }
         result = assign_group_versions(self.group, use_llm=True)
 
-        elaborated = LessonVariant.objects.get(learning_object=first, variant="ELABORATED")
-        self.assertEqual(elaborated.source_learning_object, bigger)
-        extra = LessonVariant.objects.get(learning_object=first, variant="EXTRA")
-        self.assertEqual(extra.source_learning_object, smaller)
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        self.assertEqual(
+            result["bundle_roles"],
+            {bigger.material_id: "ELABORATED", smaller.material_id: "EXTRA"},
+        )
         self.assertEqual(result["extras"], 1)
 
     def test_singleton_group_assigns_nothing(self):
@@ -253,21 +257,18 @@ class VersionAssignmentTests(TestCase):
         }
 
         assign_group_versions(self.group, use_llm=True)
-        assign_group_versions(self.group, use_llm=True)
+        self.group.refresh_from_db()
+        outcome = assign_group_versions(self.group, use_llm=True)
 
-        self.assertEqual(LessonVariant.objects.filter(variant="ELABORATED").count(), 1)
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        self.assertEqual(outcome["bundle_roles"], {second.material_id: "ELABORATED"})
+        self.assertFalse(LessonVariant.objects.exists())
 
     def test_saved_teacher_decision_is_not_returned_for_confirmation_again(self):
         first = self._object(self._material("PDF one", 0), SHORT)
         second = self._object(self._material("PDF two", 5), MIDDLING)
-        LessonVariant.objects.create(
-            learning_object=first,
-            variant="SIMPLIFIED",
-            narration=second.content,
-            origin=LessonVariant.Origin.SOURCE_PDF,
-            source_learning_object=second,
-            assigned_by=LessonVariant.AssignedBy.TEACHER,
-        )
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        set_bundle_role(self.group, second.material_id, "SIMPLIFIED")
 
         result = assign_group_versions(self.group)
 
@@ -288,3 +289,69 @@ class VersionAssignmentTests(TestCase):
         self.assertEqual(result["representative_id"], second.id)
         self.assertFalse(LessonVariant.objects.filter(learning_object=first).exists())
         self.assertEqual(assign_group_versions(self.group)["representative_id"], second.id)
+
+
+class BundleRoleTests(TestCase):
+    """Roles are decided per bundle, not per object.
+
+    One PDF teaches Solid as a section, its diagram and its examples; the other
+    as a single passage. The whole bundle takes one role.
+    """
+
+    def setUp(self):
+        self.course = CourseGroup.objects.create(title="Science")
+        self.topic = OutlineNode.objects.create(course=self.course, title="States")
+        confirmed = {"learning_objects_confirmed": True}
+        self.first = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="A", generated_json=dict(confirmed))
+        self.second = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="B", generated_json=dict(confirmed))
+        self.group = LearningObjectGroup.objects.create(outline_node=self.topic, label="Solid")
+        self.normal = LearningObject.objects.create(
+            material=self.first, group=self.group, title="Solid", order=0,
+            content=(
+                "A solid has a definite shape and a definite volume because its constituent "
+                "particles occupy fixed positions within a rigid lattice arrangement."
+            ),
+        )
+        self.simple_lead = LearningObject.objects.create(
+            material=self.second, group=self.group, title="Solids", order=0, section_title="Solids",
+            content="In a solid, bits are packed tight. They stay in place.",
+        )
+        self.simple_tail = LearningObject.objects.create(
+            material=self.second, group=self.group, title="Everyday examples", order=1,
+            section_title="Solids", content="Ice cubes. A rock. A book.",
+        )
+
+    def test_the_whole_bundle_takes_one_role(self):
+        outcome = assign_group_versions(self.group)
+
+        self.assertEqual(outcome["normal_material_id"], self.first.id)
+        self.assertEqual(outcome["representative_id"], self.normal.id)
+        self.assertEqual(outcome["bundle_roles"], {self.second.id: "SIMPLIFIED"})
+
+    def test_a_pdf_supplied_version_stores_no_copied_text(self):
+        assign_group_versions(self.group)
+
+        self.assertFalse(
+            LessonVariant.objects.filter(origin=LessonVariant.Origin.SOURCE_PDF).exists()
+        )
+        self.assertEqual(
+            version_bundles(self.group)["SIMPLIFIED"], [self.simple_lead, self.simple_tail],
+        )
+
+    def test_a_teacher_role_change_survives_a_refresh(self):
+        assign_group_versions(self.group)
+
+        set_bundle_role(self.group, self.second.id, "EXTRA")
+        outcome = assign_group_versions(self.group)
+
+        self.assertEqual(outcome["bundle_roles"], {self.second.id: "EXTRA"})
+
+    def test_the_normal_bundle_is_reported_in_document_order(self):
+        extra = LearningObject.objects.create(
+            material=self.first, group=self.group, title="Particle diagram", order=1,
+            section_title="Solid", content="Particles sit in a grid.",
+        )
+
+        self.assertEqual(version_bundles(self.group)["NORMAL"], [self.normal, extra])
