@@ -154,6 +154,46 @@ def _print_material_summary(material, node_count, all_questions, stats):
     )
 
 
+def concept_source_text(node):
+    """The text a concept's questions are written from.
+
+    A concept may be taught as several objects of one PDF, and the Normal
+    track speaks all of them. Generating from the lead object alone would ask
+    about a fraction of what the student hears.
+    """
+    from course.version_assignment import version_bundles
+    from lessons.services.concept_bundles import bundle_text
+
+    if node.group_id is None:
+        return node.content or ""
+    normal = version_bundles(node.group).get("NORMAL") or []
+    if not any(item.id == node.id for item in normal):
+        return node.content or ""
+    return bundle_text(normal) or (node.content or "")
+
+
+def _is_concept_source(node):
+    """Whether ``node`` is the one object of its concept that generates.
+
+    A concept's Normal bundle can be several objects (see
+    ``concept_source_text``); every one of them would otherwise read the same
+    bundle text and generate the same bank. Only the bundle's lead -- the
+    object questions are saved against -- generates. An ungrouped object, or
+    one whose bundle is not the concept's Normal source, is unaffected and
+    always generates from its own text.
+    """
+    if node.group_id is None:
+        return True
+    from course.version_assignment import version_bundles
+    from lessons.services.concept_bundles import bundle_lead
+
+    normal = version_bundles(node.group).get("NORMAL") or []
+    if not any(item.id == node.id for item in normal):
+        return True
+    lead = bundle_lead(normal)
+    return lead is not None and lead.id == node.id
+
+
 # ── Phase 1: generation (LLM) ──
 
 def _draft_questions_for_node(
@@ -249,7 +289,7 @@ def _draft_questions_for_node(
             )
 
         questions = generate_questions(
-            content=node.content,
+            content=concept_source_text(node),
             thinking_order=thinking_order,
             format_split=padded,
             on_metrics=record_metrics,
@@ -497,9 +537,9 @@ def generate_questions_for_material(
     )
     if node_ids is not None:
         nodes_qs = nodes_qs.filter(id__in=node_ids)
-    nodes = list(nodes_qs)
+    nodes = [node for node in nodes_qs if _is_concept_source(node)]
     fingerprints = {
-        node.id: question_bank_fingerprint(node.content, QUESTION_DISTRIBUTION)
+        node.id: question_bank_fingerprint(concept_source_text(node), QUESTION_DISTRIBUTION)
         for node in nodes
     }
     reusable = {
