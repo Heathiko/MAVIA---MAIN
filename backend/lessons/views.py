@@ -32,7 +32,7 @@ from course.version_assignment import (
     release_from_group,
 )
 from .services.concept_bundles import (
-    bundle_heading,
+    bundle_label,
     bundle_text,
     bundles_for_group,
     material_order,
@@ -743,9 +743,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         companions = self._leave_old_group(learning_object)
         target = LearningObjectGroup.objects.create(
             outline_node=node,
-            # The bundle's heading, not the object's title: an object taken out
-            # of a bundle is often a figure whose own title names nothing.
-            label=bundle_heading([learning_object])[:255],
+            # One object on its own keeps its own title (design 3.5):
+            # naming it after the heading it sat under gave every object of a
+            # shared section the same concept name.
+            label=bundle_label([learning_object])[:255],
         )
         place_unit([learning_object], target)
         # A teacher breaking a bundle up is a decision, not a gap in the
@@ -1042,7 +1043,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             place_unit(objects, source.group or candidate.group or LearningObjectGroup.objects.create(
                 outline_node=node,
                 label=(
-                    bundle_heading(source_objects) or bundle_heading(candidate_objects)
+                    bundle_label(source_objects) or bundle_label(candidate_objects)
                 )[:255],
             ))
             unpublished = unpublish_topic(node)
@@ -1052,11 +1053,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         suggestion.save(update_fields=["status", "updated_at"])
         target_group = source.group or LearningObjectGroup.objects.create(
             outline_node=node,
-            # Named the way every other concept is named -- through the
-            # bundle's heading. `source.title` alone named a concept after a
-            # figure when the source was one, which is what cost the learning
-            # path its edges before bundles.
-            label=(bundle_heading([source]) or source.title)[:255],
+            # Named the way every other concept is named. A bundle of two
+            # or more takes its heading; this one object takes its own title,
+            # so objects sharing a section do not all become one name.
+            label=(bundle_label([source]) or source.title)[:255],
         )
         old_group = candidate.group
         if old_group and old_group.id != target_group.id:

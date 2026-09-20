@@ -23,7 +23,7 @@ from ..models import (
     OutlineNode,
 )
 from .learning_resource_linker import normalize_learning_object_title
-from .concept_bundles import bundle_heading, bundle_lead, bundle_text
+from .concept_bundles import bundle_label, bundle_lead, bundle_text
 from . import semantic_grouping
 
 METHOD = "heading_unit_v1"
@@ -358,9 +358,10 @@ def refresh_heading_unit_suggestions(node, runtime_instance=None):
                 (item.group for item in [*left, *right] if item.group_id), None,
             ) or LearningObjectGroup.objects.create(
                 # A run often opens with a figure whose own title names
-                # nothing, so the concept is called after the run's heading.
+                # nothing, so a run of two or more is called after its
+                # heading; a lone object keeps its own title (design 3.5).
                 outline_node=node,
-                label=(bundle_heading(left) or bundle_heading(right))[:255],
+                label=(bundle_label(left) or bundle_label(right))[:255],
             )
             place_unit([*left, *right], target)
             placed += 1

@@ -345,6 +345,47 @@ class VersionAssignmentTests(TestCase):
         self.assertEqual(self.group.label, "States of Matter")
         self.assertTrue(self.group.version_selection["label_locked"])
 
+    def test_a_lone_object_is_named_after_itself_not_its_shared_heading(self):
+        """Design 3.5. Solid, Liquid and Gas all sit under "Matter"."""
+        self._object(self._material("PDF one", 0), SHORT, title="3. Solid")
+        LearningObject.objects.filter(group=self.group).update(
+            section_title="Matter",
+        )
+
+        assign_group_versions(self.group)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.label, "Solid")
+        self.assertEqual(self.group.version_selection["auto_label"], "Solid")
+
+    def test_a_bundle_of_two_is_still_named_after_its_heading(self):
+        material = self._material("PDF one", 0)
+        LearningObject.objects.create(
+            material=material, group=self.group, title="Figure 3",
+            content=SHORT, order=0,
+        )
+        LearningObject.objects.create(
+            material=material, group=self.group, title="Shape",
+            section_title="Comparing the Three States", content=LONG, order=1,
+        )
+
+        assign_group_versions(self.group)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.label, "Comparing the Three States")
+
+    def test_a_locked_label_survives_the_single_object_rule(self):
+        self.group.label = "Teacher's concept name"
+        self.group.version_selection = {"label_locked": True}
+        self.group.save(update_fields=["label", "version_selection"])
+        self._object(self._material("PDF one", 0), SHORT, title="Solid")
+        LearningObject.objects.filter(group=self.group).update(section_title="Matter")
+
+        assign_group_versions(self.group)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.label, "Teacher's concept name")
+
     def test_a_label_this_module_wrote_is_still_followed(self):
         self._object(self._material("PDF one", 0), SHORT, title="Solid")
 

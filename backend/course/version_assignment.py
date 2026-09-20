@@ -24,6 +24,7 @@ from django.utils import timezone
 
 from lessons.services.concept_bundles import (
     bundle_heading,
+    bundle_label,
     bundle_lead,
     bundle_text,
     bundles_for_group,
@@ -341,7 +342,7 @@ def assign_group_versions(group, *, use_llm=False):
             group,
             lead,
             members=all_objects,
-            heading=bundle_heading(bundles[only_id]) if only_id is not None else "",
+            heading=bundle_label(bundles[only_id]) if only_id is not None else "",
         )
         return {
             "representative_id": lead.id if lead is not None else None,
@@ -599,7 +600,7 @@ def assign_group_versions(group, *, use_llm=False):
         group,
         representative,
         members=all_objects,
-        heading=bundle_heading(normal_bundle),
+        heading=bundle_label(normal_bundle),
     )
 
     return {
@@ -726,7 +727,7 @@ def assign_source_as_representative(group, source):
         group,
         bundle_lead(new_normal),
         members=[item for objects in bundles.values() for item in objects],
-        heading=bundle_heading(new_normal),
+        heading=bundle_label(new_normal),
     )
     return source
 

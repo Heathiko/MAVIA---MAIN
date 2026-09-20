@@ -16,6 +16,7 @@ from .models import (
 )
 from .services.concept_bundles import (
     bundle_heading,
+    bundle_label,
     bundle_lead,
     bundle_text,
     bundles_for_group,
@@ -102,3 +103,30 @@ class BundleTests(BundleFixture):
         only = self._object(self.first, "Changing From One State to Another", 0)
 
         self.assertEqual(bundle_heading([only]), "Changing From One State to Another")
+
+
+class BundleLabelTests(BundleFixture):
+    """Design 3.5: the heading names a concept only for a bundle of 2+."""
+
+    def test_a_lone_object_under_a_shared_heading_keeps_its_own_title(self):
+        # Solid, Liquid and Gas all sit under "Matter" in the first PDF.
+        solid = self._object(self.first, "Solid", 1, "Matter")
+        liquid = self._object(self.first, "Liquid", 2, "Matter")
+        gas = self._object(self.first, "Gas", 3, "Matter")
+
+        self.assertEqual(bundle_label([solid]), "Solid")
+        self.assertEqual(bundle_label([liquid]), "Liquid")
+        self.assertEqual(bundle_label([gas]), "Gas")
+
+    def test_a_multi_object_bundle_still_takes_the_heading(self):
+        shape = self._object(self.second, "Shape", 1, "Comparing the Three States")
+        volume = self._object(self.second, "Volume", 2, "Comparing the Three States")
+
+        self.assertEqual(bundle_label([shape, volume]), "Comparing the Three States")
+        # Even when the bundle opens with a figure that names nothing.
+        figure = self._object(self.first, "Figure", 0)
+        matter = self._object(self.first, "Matter", 1, "Matter")
+        self.assertEqual(bundle_label([figure, matter]), "Matter")
+
+    def test_an_empty_bundle_names_nothing(self):
+        self.assertEqual(bundle_label([]), "")

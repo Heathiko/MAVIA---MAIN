@@ -222,14 +222,20 @@ class PlainConnectAcceptTests(TestCase):
         )
         self.assertEqual(response.status_code, 200, response.data)
 
-    def test_a_new_concept_is_named_after_the_sources_heading(self):
-        figure = self._object(self.a, "Okay, let us describe this figure", "Matter", 0)
-        matter_b = self._object(self.b, "Matter", "", 0)
+    def test_a_new_concept_from_a_lone_object_is_named_after_that_object(self):
+        """Design 3.5: the heading names a concept only for a bundle of 2+.
 
-        self._accept(figure, matter_b)
+        Solid, Liquid and Gas all sit under the heading "Matter" in the first
+        PDF, so naming each of them after that heading gave three concepts one
+        name and the criteria's same-name veto then deleted their edges.
+        """
+        solid_a = self._object(self.a, "Solid", "Matter", 0)
+        solid_b = self._object(self.b, "Solid", "", 0)
 
-        matter_b.refresh_from_db()
-        self.assertEqual(matter_b.group.label, "Matter")
+        self._accept(solid_a, solid_b)
+
+        solid_b.refresh_from_db()
+        self.assertEqual(solid_b.group.label, "Solid")
 
     def test_a_material_joining_the_concept_inherits_no_stale_role(self):
         group = LearningObjectGroup.objects.create(outline_node=self.topic, label="Solid")

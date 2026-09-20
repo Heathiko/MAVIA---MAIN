@@ -80,3 +80,21 @@ def bundle_heading(objects):
         if (item.section_title or "").strip():
             return item.section_title.strip()
     return (objects[0].title or "").strip() if objects else ""
+
+
+def bundle_label(objects):
+    """What an automatic concept label takes from a bundle (design §3.5).
+
+    The heading names the concept only when the bundle holds more than one
+    object; a single-object bundle keeps that object's own title. Measured on
+    the real upload: Solid, Liquid and Gas each sit alone under the heading
+    "Matter", so naming them after their heading gave three concepts the same
+    name and the learning-path criteria's same-name veto then deleted their
+    edges. A multi-object bundle still needs the heading, because it often
+    opens with a figure whose own title names nothing.
+    """
+    if not objects:
+        return ""
+    if len(objects) > 1:
+        return bundle_heading(objects)
+    return (objects[0].title or "").strip()
