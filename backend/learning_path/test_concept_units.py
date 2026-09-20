@@ -384,3 +384,26 @@ class BundleConceptTests(TestCase):
         titles = {self._concept_for(group).title for group in (solid, liquid, gas)}
 
         self.assertEqual(titles, {"Solid", "Liquid", "Gas"})
+
+    def test_a_split_passage_does_not_borrow_its_sections_heading(self):
+        """Finding 8: `_merge_split_passages` folds other groups' members into
+        one concept, so the representative's "bundle" could count parts merged
+        in from elsewhere and cross the two-object threshold that takes the
+        section heading. Real material puts "SOLID" and "LIQUID" under one
+        "Matter" section; naming both concepts "Matter" hands the criteria's
+        same-name veto every edge between them -- exactly what amending §3.5
+        was meant to prevent."""
+        solid_first = self._group("Solid")
+        self._object(solid_first, self.first, "SOLID (Part 1 of 2)", 0, section="Matter")
+        solid_rest = self._group("Solid rest")
+        self._object(solid_rest, self.first, "SOLID (Part 2 of 2)", 1, section="Matter")
+        liquid_first = self._group("Liquid")
+        self._object(liquid_first, self.first, "LIQUID (Part 1 of 2)", 2, section="Matter")
+        liquid_rest = self._group("Liquid rest")
+        self._object(liquid_rest, self.first, "LIQUID (Part 2 of 2)", 3, section="Matter")
+
+        titles = [concept.title for concept in concepts_for_topic(self.topic)]
+
+        self.assertEqual(len(titles), 2)
+        self.assertEqual(len(set(titles)), 2, f"both concepts were named the same: {titles}")
+        self.assertNotIn("Matter", titles)

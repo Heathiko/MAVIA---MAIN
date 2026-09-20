@@ -428,11 +428,6 @@ class DecidePairTests(TestCase):
         self.assertIn(self._pair("Matter", "Solid"), self._decisions())
 
     def _verdicts_with_sections(self, solid_section, liquid_section):
-        # Looked up by id, not title: a concept's title now follows its
-        # bundle's heading (task 7), so setting both objects' section to the
-        # same text would also make their concepts share a name -- which is
-        # exactly what "same name" vetoes (see `vetoed`), and the pair would
-        # not appear in `decide_pairs` at all under a title-keyed lookup.
         solid_id, liquid_id = self.by_title["Solid"].id, self.by_title["Liquid"].id
         LearningObject.objects.filter(title="Solid").update(section_title=solid_section)
         LearningObject.objects.filter(title="Liquid").update(section_title=liquid_section)
@@ -447,23 +442,9 @@ class DecidePairTests(TestCase):
     def test_crossing_sections_is_recorded_but_no_longer_caps_the_verdict(self):
         """Changed 2026-09-17: the cap's evidence (35 wrong cross-section edges)
         came from per-state Examples and diagrams, now excluded or merged; the
-        teacher's gold edge Solid -> Comparing crosses sections.
-
-        The no-crossing baseline uses no section at all rather than the same
-        section on both: since a concept's title now follows its bundle's
-        heading (task 7), giving Solid and Liquid the identical section text
-        would also give their concepts the identical name, which the "same
-        name" veto (correctly) drops -- there would be no verdict to compare.
-
-        The crossing case reuses "Solid"/"Liquid" themselves as the section
-        text, not a paraphrase like "Solids"/"Liquids": the concept's name now
-        comes from its heading too, and RefD looks for that name's *singular*
-        form in the other concept's wording ("a solid that melted"), so a
-        heading that does not match how the lesson actually refers to the
-        concept would drop the reference this test means to hold constant.
-        """
-        same, _ = self._verdicts_with_sections("", "")
-        crossing, _ = self._verdicts_with_sections("Solid", "Liquid")
+        teacher's gold edge Solid -> Comparing crosses sections."""
+        same, _ = self._verdicts_with_sections("States", "States")
+        crossing, _ = self._verdicts_with_sections("Solids", "Liquids")
 
         self.assertFalse(same["cross_section"])
         self.assertTrue(crossing["cross_section"])

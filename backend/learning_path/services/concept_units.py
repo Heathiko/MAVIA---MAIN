@@ -296,7 +296,9 @@ def concepts_for_topic(node):
         # are the other PDFs' versions of it. Filtering them out made every
         # concept report a single source and hid the cross-PDF grouping
         # entirely -- 11 multi-PDF concepts came back as none.
-        members = ordered_members(group)
+        # `material_rank` is the same upload ranking `ordered_members`
+        # would otherwise derive per concept, at two queries each.
+        members = ordered_members(group, ranked=material_rank)
         if not members:
             continue
         records.append({
@@ -322,12 +324,24 @@ def concepts_for_topic(node):
         # already gave it: both rank by (material rank, object order, id).
         ordered = sorted(members, key=lambda item: _member_scan_key(item, material_rank))
         member_text = "\n".join(item.content or "" for item in ordered)
-        # The representative's own bundle: its material's objects among
-        # `ordered`, in document order. Built from members already in hand
-        # rather than a fresh `bundles_for_group(group)` query, which would
-        # also miss a representative merged in from a different source group.
+        # The representative's own bundle: the objects its *own* concept holds
+        # from its material, in document order. Built from members already in
+        # hand rather than a fresh `bundles_for_group(group)` query, which
+        # would miss a representative merged in from a different source group
+        # -- hence the match on `group_id` rather than on `group`.
+        #
+        # Restricted to that one group on purpose: `_merge_split_passages`
+        # concatenates several groups' members here, so counting every member
+        # of the material would let "SOLID (Part 1 of 2)", a bundle of one,
+        # reach two and take its section heading. Real material files SOLID
+        # and LIQUID under a single "Matter" section, so both concepts would
+        # be named "Matter" and the criteria's same-name veto would delete
+        # every edge between them -- the very failure §3.5 was amended to
+        # close.
         representative_bundle = [
-            item for item in ordered if item.material_id == representative.material_id
+            item for item in ordered
+            if item.material_id == representative.material_id
+            and item.group_id == representative.group_id
         ]
         concepts.append(
             Concept(
