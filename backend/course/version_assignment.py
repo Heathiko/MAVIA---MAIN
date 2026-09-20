@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 
 from lessons.services.concept_bundles import (
     bundle_heading,
@@ -38,6 +39,19 @@ logger = logging.getLogger(__name__)
 
 PRIMARY_SLOTS = ("SIMPLIFIED", "ELABORATED")
 ROLES = (*PRIMARY_SLOTS, "EXTRA")
+
+# Provenance for a bundle pushed out of a primary slot by a teacher's newer
+# choice. It is deliberately not ``teacher``: the teacher chose the winner, not
+# this bundle's consolation role, so the record shows it was displaced and the
+# role stays open to reclassification.
+DISPLACED_BY_TEACHER = "displaced_by_teacher"
+
+
+def _displaced_provenance(current):
+    """What a bundle's provenance becomes when another claim takes its slot."""
+    if current == LessonVariant.AssignedBy.TEACHER:
+        return DISPLACED_BY_TEACHER
+    return current or LessonVariant.AssignedBy.HEURISTIC
 
 
 _PART_SUFFIX = re.compile(
@@ -70,35 +84,45 @@ def _sync_automatic_group_label(group, representative, members=None, heading=Non
     selection = group.version_selection or {}
     if representative is None or selection.get("label_locked"):
         return
-    # Labels saved before label provenance existed may have been supplied by a
-    # teacher. Automatic labels always came from one member's title or heading,
-    # so an existing label unlike every raw/cleaned candidate is safest to
-    # treat as manual rather than overwrite on the first classification after
-    # this upgrade.
-    existing = (group.label or "").strip().casefold()
-    group_members = list(members) if members is not None else list(
-        group.learning_objects.only("title", "section_title")
-    )
-    raw_candidates = [
-        value
-        for item in group_members
-        for value in ((item.title or "").strip(), (item.section_title or "").strip())
-    ]
-    raw_candidates.append((heading or "").strip())
-    automatic_labels = {
-        candidate.casefold()
-        for value in raw_candidates
-        for candidate in (value, clean_group_label(value))
-        if candidate
-    }
-    if existing and existing not in automatic_labels:
-        group.version_selection = {**selection, "label_locked": True}
-        group.save(update_fields=["version_selection"])
-        return
+    existing = (group.label or "").strip()
+    written = (selection.get("auto_label") or "").strip()
+    if existing and existing.casefold() != written.casefold():
+        if written or not _looks_automatic(existing, members, group):
+            # Either this label is not the one this function last wrote, or --
+            # for a concept labelled before that was recorded -- it is unlike
+            # any member's title. Both mean a teacher named it.
+            group.version_selection = {**selection, "label_locked": True}
+            group.save(update_fields=["version_selection"])
+            return
     label = clean_group_label(heading or representative.title)[:255]
-    if label and group.label != label:
+    if not label:
+        return
+    if group.label != label:
         group.label = label
         group.save(update_fields=["label"])
+    if written != label:
+        group.version_selection = {**selection, "auto_label": label}
+        group.save(update_fields=["version_selection"])
+
+
+def _looks_automatic(existing, members, group):
+    """Was a label written before ``auto_label`` was recorded an automatic one?
+
+    Only a member's own title was ever used, so a label matching one is the
+    pipeline's; anything else was typed by a teacher. Section headings are not
+    candidates: a teacher naming a concept after its heading is still a
+    teacher, and treating that as automatic would overwrite their wording.
+    """
+    group_members = list(members) if members is not None else list(
+        group.learning_objects.only("title")
+    )
+    automatic_labels = {
+        candidate.casefold()
+        for item in group_members
+        for candidate in ((item.title or "").strip(), clean_group_label(item.title))
+        if candidate
+    }
+    return existing.casefold() in automatic_labels
 
 
 def choose_representative(members):
@@ -192,17 +216,29 @@ def bundle_roles(group):
     }
 
 
-def set_bundle_role(group, material_id, role):
-    """Record the teacher's role for one bundle."""
+def set_bundle_role(group, material_id, role, assigned_by=None):
+    """Record one bundle's role, by default as the teacher's own decision.
+
+    ``assigned_by`` is explicit so that displacing a bundle out of a slot does
+    not silently claim the teacher decided its new role: a role only carries
+    ``teacher`` provenance when a teacher actually chose it, and only such a
+    role is frozen against reclassification.
+    """
     if role not in ROLES:
         raise ValueError("Unknown version slot")
+    who = assigned_by or LessonVariant.AssignedBy.TEACHER
     selection = dict(group.version_selection or {})
     roles = dict(selection.get("bundle_roles") or {})
     provenance = dict(selection.get("bundle_roles_assigned_by") or {})
+    decided_at = dict(selection.get("bundle_roles_decided_at") or {})
     roles[str(material_id)] = role
-    provenance[str(material_id)] = LessonVariant.AssignedBy.TEACHER
+    provenance[str(material_id)] = who
+    # The most recent teacher decision wins a contested slot, so when a role
+    # was decided has to survive the write.
+    decided_at[str(material_id)] = timezone.now().isoformat()
     selection["bundle_roles"] = roles
     selection["bundle_roles_assigned_by"] = provenance
+    selection["bundle_roles_decided_at"] = decided_at
     group.version_selection = selection
     group.save(update_fields=["version_selection"])
 
@@ -390,12 +426,19 @@ def assign_group_versions(group, *, use_llm=False):
         })
 
     by_material = {proposal["material_id"]: proposal for proposal in proposals}
-    teacher_ids = [
-        material_id
-        for material_id in candidate_ids
-        if stored_provenance.get(material_id) == LessonVariant.AssignedBy.TEACHER
-        and stored_roles.get(material_id) in ROLES
-    ]
+    decided_at = selection.get("bundle_roles_decided_at") or {}
+    teacher_ids = sorted(
+        (
+            material_id
+            for material_id in candidate_ids
+            if stored_provenance.get(material_id) == LessonVariant.AssignedBy.TEACHER
+            and stored_roles.get(material_id) in ROLES
+        ),
+        # Most recent first: when two teacher decisions claim one slot, the
+        # newer one wins it and the older is displaced.
+        key=lambda material_id: (decided_at.get(str(material_id)) or "", material_id),
+        reverse=True,
+    )
     # A teacher's ruling claims its slot before anything automatic, then a
     # decision already taken, then the strongest margin -- so a collision
     # resolves in favour of the clearer claim rather than the first one seen.
@@ -417,9 +460,15 @@ def assign_group_versions(group, *, use_llm=False):
             slot = stored_roles[material_id]
             who = LessonVariant.AssignedBy.TEACHER
             persisted.add(material_id)
-        elif classification_complete and stored_roles.get(material_id) in ROLES:
+        elif (
+            classification_complete
+            and stored_roles.get(material_id) in ROLES
+            and stored_provenance.get(material_id) == LessonVariant.AssignedBy.LLM_VALIDATED
+        ):
+            # Only a decision the model actually made is durable. A heuristic
+            # guess is re-derived every time, so it keeps reaching the teacher.
             slot = stored_roles[material_id]
-            who = stored_provenance.get(material_id) or proposal["assigned_by"]
+            who = LessonVariant.AssignedBy.LLM_VALIDATED
             persisted.add(material_id)
         else:
             slot = proposal["slot"]
@@ -428,6 +477,8 @@ def assign_group_versions(group, *, use_llm=False):
             # Wording that loses a primary slot is kept as an extra rather
             # than dropped: a teacher wrote it.
             slot = "EXTRA"
+            who = _displaced_provenance(who)
+            persisted.discard(material_id)
         if slot in PRIMARY_SLOTS:
             claimed[slot] = material_id
         roles[material_id] = slot
@@ -459,7 +510,22 @@ def assign_group_versions(group, *, use_llm=False):
         selection["bundle_roles"] = stored_role_json
         selection["bundle_roles_assigned_by"] = stored_provenance_json
 
-    if use_llm and settings.CONTENT_VERSION_LLM_ENABLED and not classification_error:
+    # Completion means every bundle was actually ruled on. A bundle the model
+    # returned no slot for is still an open question, so recording the run as
+    # complete would bury it: it would come back as a persisted decision and
+    # never reach the teacher again.
+    fully_classified = all(
+        by_material[material_id]["llm_slot"]
+        or material_id in teacher_ids
+        or material_id in persisted
+        for material_id in candidate_ids
+    )
+    if (
+        use_llm
+        and settings.CONTENT_VERSION_LLM_ENABLED
+        and not classification_error
+        and fully_classified
+    ):
         # Persist both completion and the model evidence. A later GET can then
         # render only genuine review cases without making another slow LLM call.
         selection.update({
@@ -471,6 +537,12 @@ def assign_group_versions(group, *, use_llm=False):
         })
         changed = True
         classification_complete = True
+    elif use_llm and settings.CONTENT_VERSION_LLM_ENABLED and not classification_error:
+        # The Normal bundle was still chosen; only the roles stay open.
+        selection["normal_material_id"] = normal_id
+        selection.pop("roles_signature", None)
+        changed = True
+        classification_complete = False
     if changed:
         group.version_selection = selection
         group.save(update_fields=["version_selection"])
@@ -528,8 +600,17 @@ def assign_source_to_slot(representative, source, slot):
         )
         if displaced_id is not None:
             # The teacher's new choice wins the primary slot, but the wording
-            # it displaces is another PDF's and is kept as an extra.
-            set_bundle_role(group, displaced_id, "EXTRA")
+            # it displaces is another PDF's and is kept as an extra -- under
+            # its own provenance, because the teacher did not choose this role
+            # for it.
+            set_bundle_role(
+                group,
+                displaced_id,
+                "EXTRA",
+                assigned_by=_displaced_provenance(
+                    _stored_provenance(group.version_selection or {}).get(displaced_id)
+                ),
+            )
 
     set_bundle_role(group, source.material_id, slot)
     for item in bundles.get(source.material_id, [source]):
@@ -644,7 +725,12 @@ def settle_group(group):
         else {"generated": [], "errors": []}
     )
 
+    # A bundle whose role is still a question stays its own teaching step:
+    # hiding it would drop content nobody has ruled on yet.
+    pending = {entry["material_id"] for entry in outcome["needs_confirmation"]}
     for material_id in outcome["bundle_roles"]:
+        if material_id in pending:
+            continue
         for item in bundles.get(material_id, []):
             if item.represented_by_id != representative.id:
                 item.represented_by = representative

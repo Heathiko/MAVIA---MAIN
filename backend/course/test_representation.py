@@ -161,6 +161,35 @@ class RepresentationTests(TestCase):
         self.assertIn(third.material_id, bundle_roles(self.group))
 
     @patch("course.variant_generator._request_variants")
+    def test_a_bundle_awaiting_confirmation_stays_its_own_teaching_step(self, request_variants):
+        """Only a decided bundle is collapsed into the Normal one.
+
+        Removing a bundle nobody has ruled on would drop content rather than
+        deduplicate it, so it keeps its place in the lesson.
+        """
+        request_variants.return_value = {"SIMPLIFIED": "a", "ELABORATED": "b"}
+        thin = self._object(
+            "PDF three", timezone.now() + timedelta(minutes=9), MIDDLING
+        )
+        self.classify_group_versions.side_effect = None
+        # Gemma ruled on the second PDF and said nothing about the third.
+        self.classify_group_versions.return_value = {
+            self.first.id: {"slot": "ORIGINAL", "confidence": 0.95, "reason": "Baseline."},
+            self.second.id: {"slot": "ELABORATED", "confidence": 0.95, "reason": "Fuller."},
+        }
+
+        outcome = settle_group(self.group)
+
+        thin.refresh_from_db()
+        self.second.refresh_from_db()
+        self.assertEqual(
+            [entry["material_id"] for entry in outcome["needs_confirmation"]],
+            [thin.material_id],
+        )
+        self.assertIsNone(thin.represented_by)
+        self.assertEqual(self.second.represented_by, self.first)
+
+    @patch("course.variant_generator._request_variants")
     def test_llm_classified_member_is_represented_despite_thin_readability_margin(self, request_variants):
         request_variants.return_value = {"SIMPLIFIED": "a", "ELABORATED": "b"}
         LearningObject.objects.filter(pk=self.second.pk).update(group=None)
@@ -178,50 +207,66 @@ class ReleaseFromGroupTests(TestCase):
     """Leaving a group must not leave version links pointing across concepts."""
 
     def setUp(self):
+        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        # One object per PDF, so each member is a bundle of its own and a
+        # departure really does take a role with it.
         self.course = CourseGroup.objects.create(title="Grade 1 Science")
         self.node = OutlineNode.objects.create(course=self.course, title="Matter", order=0, depth=0)
         self.group = LearningObjectGroup.objects.create(outline_node=self.node)
-        material = LearningMaterial.objects.create(course=self.course, outline_node=self.node, title="PDF")
         self.original = LearningObject.objects.create(
-            material=material, group=self.group, title="Solid examples", content=SHORT, order=0,
+            material=self._material("PDF one"), group=self.group,
+            title="Solid examples", content=SHORT, order=0,
         )
         self.member = LearningObject.objects.create(
-            material=material, group=self.group, title="Liquid examples", content=LONG, order=1,
+            material=self._material("PDF two"), group=self.group,
+            title="Liquid examples", content=LONG, order=0,
             represented_by=self.original,
         )
         self.other = LearningObject.objects.create(
-            material=material, group=self.group, title="Gas examples", content=MIDDLING, order=2,
+            material=self._material("PDF three"), group=self.group,
+            title="Gas examples", content=MIDDLING, order=0,
             represented_by=self.original,
         )
-        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
+        self.group.version_selection = {
+            "normal_material_id": self.original.material_id,
+            "bundle_roles": {
+                str(self.member.material_id): "EXTRA",
+                str(self.other.material_id): "ELABORATED",
+            },
+            "bundle_roles_assigned_by": {
+                str(self.member.material_id): "teacher",
+                str(self.other.material_id): "teacher",
+            },
+        }
+        self.group.save(update_fields=["version_selection"])
         self.generated = LessonVariant.objects.create(
             learning_object=self.original, variant="SIMPLIFIED", narration="Short.",
             origin=LessonVariant.Origin.GENERATED, assigned_by=LessonVariant.AssignedBy.TEACHER,
         )
 
+    def _material(self, title):
+        return LearningMaterial.objects.create(
+            course=self.course, outline_node=self.node, title=title,
+        )
+
     def test_a_leaving_member_takes_back_only_its_own_text(self):
         # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
-        # All three objects come from one PDF, so the bundle -- and its role --
-        # stays behind with the companions; only the flag on the leaver goes.
         outcome = release_from_group(self.member, [self.original, self.other])
 
         self.member.refresh_from_db()
+        self.group.refresh_from_db()
         self.assertIsNone(self.member.represented_by_id)
+        # Its own bundle's role leaves with it; the other member's stays.
+        self.assertEqual(bundle_roles(self.group), {self.other.material_id: "ELABORATED"})
         self.assertTrue(LessonVariant.objects.filter(pk=self.generated.pk).exists())
-        self.assertEqual(outcome, {"was_original": False, "removed_version_slots": []})
+        self.assertEqual(outcome, {"was_original": False, "removed_version_slots": ["extra"]})
 
     def test_a_leaving_original_releases_everyone_it_represented(self):
         # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
-        self.group.version_selection = {
-            "normal_material_id": self.original.material_id,
-            "bundle_roles": {str(self.original.material_id): "EXTRA"},
-        }
-        self.group.save()
-
         outcome = release_from_group(self.original, [self.member, self.other])
 
         self.assertTrue(outcome["was_original"])
-        self.assertEqual(outcome["removed_version_slots"], ["extra"])
+        self.assertEqual(outcome["removed_version_slots"], ["elaborated", "extra"])
         self.member.refresh_from_db()
         self.other.refresh_from_db()
         self.group.refresh_from_db()

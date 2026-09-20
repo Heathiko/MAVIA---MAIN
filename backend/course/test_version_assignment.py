@@ -15,7 +15,7 @@ from lessons.models import (
 from .models import LessonVariant
 from .version_assignment import (
     assign_group_versions,
-    bundle_roles,
+    assign_source_to_slot,
     choose_representative,
     clean_group_label,
     set_bundle_role,
@@ -203,7 +203,7 @@ class VersionAssignmentTests(TestCase):
         self.assertEqual(result["bundle_roles"], {second.material_id: "EXTRA"})
         self.assertEqual(result["extras"], 1)
 
-    def test_thin_margin_is_routed_to_the_teacher_not_stored(self):
+    def test_thin_margin_is_routed_to_the_teacher_for_confirmation(self):
         first = self._object(self._material("PDF one", 0), SHORT)
         self._object(self._material("PDF two", 5), MIDDLING)
 
@@ -214,6 +214,146 @@ class VersionAssignmentTests(TestCase):
         self.assertFalse(result["needs_confirmation"][0]["confident"])
         self.assertFalse(result["classification_complete"])
         self.assertFalse(LessonVariant.objects.filter(learning_object=first).exists())
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_a_bundle_the_model_skipped_is_asked_about_again(self, classify):
+        """A run is only complete when every bundle was actually ruled on.
+
+        Recording a partial run as complete would turn the readability guess
+        for the bundle Gemma ignored into a settled decision, and the teacher
+        would never be asked about it again.
+        """
+        first = self._object(self._material("PDF one", 0), SHORT)
+        second = self._object(self._material("PDF two", 5), LONG)
+        third = self._object(self._material("PDF three", 10), MIDDLING)
+        classify.return_value = {
+            first.id: {"slot": "ORIGINAL", "confidence": 0.93, "reason": "Balanced."},
+            second.id: {"slot": "ELABORATED", "confidence": 0.94, "reason": "Fuller."},
+        }
+
+        result = assign_group_versions(self.group, use_llm=True)
+
+        self.assertFalse(result["classification_complete"])
+        self.assertEqual(
+            [entry["material_id"] for entry in result["needs_confirmation"]],
+            [third.material_id],
+        )
+
+        self.group.refresh_from_db()
+        again = assign_group_versions(self.group)
+
+        self.assertEqual(
+            [entry["material_id"] for entry in again["needs_confirmation"]],
+            [third.material_id],
+        )
+        # The bundle Gemma did rule on keeps its role.
+        self.assertEqual(again["bundle_roles"][second.material_id], "ELABORATED")
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_a_displaced_automatic_role_keeps_its_own_provenance(self, classify):
+        """Displacement is not a teacher's ruling about the bundle displaced.
+
+        Stamping it as the teacher's would freeze a readability guess the
+        teacher never saw, and no later classification could correct it.
+        """
+        first = self._object(self._material("PDF one", 0), LONG)
+        second = self._object(self._material("PDF two", 5), SHORT)
+        third = self._object(self._material("PDF three", 10), MIDDLING)
+        assign_group_versions(self.group)
+        self.group.refresh_from_db()
+        self.assertEqual(
+            self.group.version_selection["bundle_roles_assigned_by"][str(second.material_id)],
+            "heuristic",
+        )
+
+        assign_source_to_slot(first, third, "SIMPLIFIED")
+
+        self.group.refresh_from_db()
+        provenance = self.group.version_selection["bundle_roles_assigned_by"]
+        self.assertEqual(provenance[str(third.material_id)], "teacher")
+        self.assertEqual(provenance[str(second.material_id)], "heuristic")
+
+        # Still reclassifiable: a teacher-stamped role would stay an extra.
+        classify.return_value = {
+            first.id: {"slot": "ORIGINAL", "confidence": 0.9, "reason": "Baseline."},
+            second.id: {"slot": "ELABORATED", "confidence": 0.9, "reason": "Fuller."},
+            third.id: {"slot": "EXTRA", "confidence": 0.9, "reason": "Alternative."},
+        }
+        outcome = assign_group_versions(self.group, use_llm=True)
+
+        self.assertEqual(
+            outcome["bundle_roles"],
+            {second.material_id: "ELABORATED", third.material_id: "SIMPLIFIED"},
+        )
+
+    def test_the_newest_teacher_decision_wins_a_contested_slot(self):
+        """Two teacher rulings cannot both hold one slot.
+
+        The later ruling is the teacher's current intent; the earlier one is
+        recorded as displaced rather than as a role they chose.
+        """
+        first = self._object(self._material("PDF one", 0), LONG)
+        second = self._object(self._material("PDF two", 5), SHORT)
+        third = self._object(self._material("PDF three", 10), MIDDLING)
+
+        assign_source_to_slot(first, second, "SIMPLIFIED")
+        assign_source_to_slot(first, third, "SIMPLIFIED")
+
+        self.group.refresh_from_db()
+        roles = self.group.version_selection["bundle_roles"]
+        provenance = self.group.version_selection["bundle_roles_assigned_by"]
+        self.assertEqual(roles[str(third.material_id)], "SIMPLIFIED")
+        self.assertEqual(provenance[str(third.material_id)], "teacher")
+        self.assertEqual(roles[str(second.material_id)], "EXTRA")
+        self.assertEqual(provenance[str(second.material_id)], "displaced_by_teacher")
+
+    def test_two_teacher_roles_for_one_slot_are_settled_by_recency(self):
+        first = self._object(self._material("PDF one", 0), LONG)
+        second = self._object(self._material("PDF two", 5), SHORT)
+        third = self._object(self._material("PDF three", 10), MIDDLING)
+        # Written straight into the record, so nothing displaced either one.
+        set_bundle_role(self.group, second.material_id, "SIMPLIFIED")
+        set_bundle_role(self.group, third.material_id, "SIMPLIFIED")
+
+        outcome = assign_group_versions(self.group)
+
+        self.assertEqual(outcome["bundle_roles"][third.material_id], "SIMPLIFIED")
+        self.assertEqual(outcome["bundle_roles"][second.material_id], "EXTRA")
+        self.group.refresh_from_db()
+        self.assertEqual(
+            self.group.version_selection["bundle_roles_assigned_by"][str(second.material_id)],
+            "displaced_by_teacher",
+        )
+        self.assertEqual(first.id, outcome["representative_id"])
+
+    def test_a_teacher_label_matching_a_section_heading_is_kept(self):
+        """A teacher who names a concept after its heading is still a teacher.
+
+        The label this function writes is recorded, so anything else in the
+        field was typed by somebody and is never overwritten.
+        """
+        LearningObject.objects.create(
+            material=self._material("PDF one", 0), group=self.group,
+            title="Solid", section_title="States of Matter", content=SHORT, order=0,
+        )
+        self.group.label = "States of Matter"
+        self.group.save(update_fields=["label"])
+
+        assign_group_versions(self.group)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.label, "States of Matter")
+        self.assertTrue(self.group.version_selection["label_locked"])
+
+    def test_a_label_this_module_wrote_is_still_followed(self):
+        self._object(self._material("PDF one", 0), SHORT, title="Solid")
+
+        assign_group_versions(self.group)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.label, "Solid")
+        self.assertEqual(self.group.version_selection["auto_label"], "Solid")
+        self.assertFalse(self.group.version_selection.get("label_locked"))
 
     @patch("course.version_assignment.classify_group_versions")
     def test_slot_collision_keeps_the_larger_margin_and_stores_an_extra(self, classify):
@@ -265,7 +405,7 @@ class VersionAssignmentTests(TestCase):
         self.assertFalse(LessonVariant.objects.exists())
 
     def test_saved_teacher_decision_is_not_returned_for_confirmation_again(self):
-        first = self._object(self._material("PDF one", 0), SHORT)
+        self._object(self._material("PDF one", 0), SHORT)
         second = self._object(self._material("PDF two", 5), MIDDLING)
         # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
         set_bundle_role(self.group, second.material_id, "SIMPLIFIED")

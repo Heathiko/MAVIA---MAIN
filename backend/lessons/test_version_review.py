@@ -155,7 +155,7 @@ class VersionReviewTests(TestCase):
             LessonVariant.objects.filter(variant="ELABORATED").exists()
         )
 
-    def test_replacing_simplified_preserves_previous_source_as_extra(self):
+    def test_replacing_simplified_moves_the_previous_source_out_of_the_slot(self):
         third = self._object("PDF three", timezone.now(), "A solid keeps its own shape.")
         url = f"/api/courses/{self.course.id}/outline-nodes/{self.node.id}/version-assignment/"
         first_response = self.client.post(url, {"learning_object_id": self.second.id, "slot": "SIMPLIFIED"}, format="json")
@@ -165,16 +165,19 @@ class VersionReviewTests(TestCase):
         self.assertEqual(response.data["version_assignment"]["moved_to_extra"], self.second.id)
         # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
         self.group.refresh_from_db()
+        # Changed 2026-09-20: the displaced bundle is not erased and is not
+        # stamped as the teacher's choice either -- its role is re-derived, so
+        # it takes the primary slot its wording actually fits.
         self.assertEqual(
             bundle_roles(self.group),
-            {third.material_id: "SIMPLIFIED", self.second.material_id: "EXTRA"},
+            {third.material_id: "SIMPLIFIED", self.second.material_id: "ELABORATED"},
         )
         response = self.client.post(url, {"learning_object_id": self.second.id, "slot": "SIMPLIFIED"}, format="json")
         self.assertEqual(response.status_code, 200)
         self.group.refresh_from_db()
         self.assertEqual(
             bundle_roles(self.group),
-            {self.second.material_id: "SIMPLIFIED", third.material_id: "EXTRA"},
+            {self.second.material_id: "SIMPLIFIED", third.material_id: "ELABORATED"},
         )
 
     def test_object_outside_the_topic_is_rejected(self):
