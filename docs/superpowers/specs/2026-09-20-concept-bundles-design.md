@@ -115,9 +115,15 @@ Unchanged except:
 
 - `Concept.member_text` orders members by bundle, so each PDF's wording is read
   as a block;
-- the concept's name comes from its bundle's first heading rather than its
-  first object's title (the rule added for merged titles, moved to where
-  bundles are derived).
+- the concept's name comes from its bundle's first heading **only when the
+  bundle holds more than one object**; a single-object bundle keeps that
+  object's title. Amended 2026-09-20 after checking real data: in
+  `Lesson-1_Solid-Liquid-and-Gas` the Solid, Liquid and Gas objects all sit
+  under the heading "Matter", so the heading rule would name three concepts
+  "Matter" and the criteria's same-name veto would delete their edges. A
+  multi-object bundle still needs the heading (Shape + Volume + Particle
+  arrangement + Flow -> "Comparing the Three States"; figure + Matter ->
+  "Matter").
 
 Criteria, vote, ordering, gold fixtures and the gold test stay as they are.
 
