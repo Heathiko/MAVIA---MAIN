@@ -332,13 +332,22 @@ def concepts_for_topic(node):
         concepts.append(
             Concept(
                 id=group.id,
-                # The representative's bundle's own heading -- a bundle often
-                # opens with a figure that has no heading of its own, and
-                # naming the concept after that figure left it with no usable
-                # name for the criteria. Falls back to the representative's
-                # title, then the group's label, for a bundle with neither.
+                # The representative's bundle's own heading -- but only when
+                # the bundle actually holds several objects. A multi-object
+                # bundle often opens with a figure that has no heading of its
+                # own, and naming the concept after that figure left it with
+                # no usable name for the criteria; the heading fixes that
+                # ("figure + Matter" -> "Matter", "Shape + Volume + ..." ->
+                # "Comparing the Three States"). A *single*-object bundle has
+                # no such problem, and the section it sits under names the
+                # whole section, not the object -- real material has three
+                # objects, "Solid", "Liquid" and "Gas", each alone under a
+                # "Matter" heading; titling all three "Matter" would give them
+                # one shared name and the criteria's same-name veto would then
+                # delete every edge between them. Falls back to the
+                # representative's title, then the group's label.
                 title=(
-                    bundle_heading(representative_bundle)
+                    (bundle_heading(representative_bundle) if len(representative_bundle) >= 2 else "")
                     or representative.title
                     or group.label
                     or ""

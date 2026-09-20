@@ -366,3 +366,21 @@ class BundleConceptTests(TestCase):
             concept.member_text,
             "A solid keeps its shape.\nPacked tightly.\nIce cubes.",
         )
+
+    def test_a_single_object_bundle_keeps_its_own_title_not_the_shared_heading(self):
+        """Regression from real material: "Solid", "Liquid" and "Gas" each sit
+        alone under one section, "Matter". A bundle with only one object has
+        no figure-first problem for the heading to fix, and the section names
+        the whole section, not any one object in it -- titling all three
+        "Matter" would give them one shared name, and the criteria's
+        same-name veto would then delete every edge between them."""
+        solid = self._group("Solid")
+        self._object(solid, self.first, "Solid", 0, section="Matter")
+        liquid = self._group("Liquid")
+        self._object(liquid, self.first, "Liquid", 1, section="Matter")
+        gas = self._group("Gas")
+        self._object(gas, self.first, "Gas", 2, section="Matter")
+
+        titles = {self._concept_for(group).title for group in (solid, liquid, gas)}
+
+        self.assertEqual(titles, {"Solid", "Liquid", "Gas"})

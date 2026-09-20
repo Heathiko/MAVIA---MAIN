@@ -67,10 +67,11 @@ class TopicPreviewTests(TopicFixture):
 
         steps = {step["title"]: step for step in self._path()["steps"]}
 
-        # The concept's title now follows its bundle's heading too (task 7),
-        # so setting the object's section renames its step from "Solid" to
-        # "Solids" -- the same heading `branch` reports.
-        self.assertEqual(steps["Solids"]["branch"], "Solids")
+        # A single-object bundle keeps its own title even under a heading
+        # (spec 3.5, task 7 fix round 2): the fixture's "Solid" object is
+        # alone in its bundle, so the step stays "Solid" while `branch`
+        # still reports the section it sits under, "Solids".
+        self.assertEqual(steps["Solid"]["branch"], "Solids")
         self.assertEqual(steps["Matter"]["branch"], "")
 
     def test_a_topic_with_no_grouped_content_has_no_path(self):
