@@ -28,6 +28,7 @@ from course.version_assignment import (
     assign_source_as_representative,
     assign_source_to_slot,
     bundle_role_provenance,
+    prune_bundle_role,
     release_from_group,
 )
 from .services.concept_bundles import (
@@ -1051,7 +1052,11 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         suggestion.save(update_fields=["status", "updated_at"])
         target_group = source.group or LearningObjectGroup.objects.create(
             outline_node=node,
-            label=source.title[:255],
+            # Named the way every other concept is named -- through the
+            # bundle's heading. `source.title` alone named a concept after a
+            # figure when the source was one, which is what cost the learning
+            # path its edges before bundles.
+            label=(bundle_heading([source]) or source.title)[:255],
         )
         old_group = candidate.group
         if old_group and old_group.id != target_group.id:
@@ -1059,6 +1064,13 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                 candidate,
                 list(old_group.learning_objects.exclude(pk=candidate.pk)),
             )
+        if not target_group.learning_objects.filter(
+            material_id=candidate.material_id,
+        ).exclude(pk=candidate.pk).exists():
+            # This PDF contributes nothing to the concept yet, so any role
+            # stored against it is a ruling about text that has since left --
+            # see `place_unit`, which guards the same way.
+            prune_bundle_role(target_group, candidate.material_id)
         candidate.group = target_group
         candidate.mark_grouping_current()
         candidate.save(update_fields=["group", "grouping_content_hash"])

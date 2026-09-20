@@ -11,7 +11,11 @@ import os
 from unittest.mock import patch
 
 from django.test import TestCase
-from course.version_assignment import bundle_roles, set_bundle_role
+from course.version_assignment import (
+    bundle_role_provenance,
+    bundle_roles,
+    set_bundle_role,
+)
 from .models import (
     CourseGroup,
     LearningMaterial,
@@ -173,3 +177,72 @@ class AutomaticConceptNameTests(TestCase):
         self.figure.refresh_from_db()
         self.assertIsNotNone(self.figure.group_id)
         self.assertEqual(self.figure.group.label, "Comparing the Three States")
+
+
+class PlainConnectAcceptTests(TestCase):
+    """Accepting a one-object-per-side card is a placement too.
+
+    It takes a different branch from `place_unit`, and that branch has to leave
+    the same two things right: the concept's name, and the roles stored against
+    a PDF that is only now contributing to it.
+    """
+
+    def setUp(self):
+        self.course = CourseGroup.objects.create(title="Science")
+        self.topic = OutlineNode.objects.create(course=self.course, title="States")
+        confirmed = {"learning_objects_confirmed": True}
+        self.a = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="A",
+            generated_json=dict(confirmed),
+        )
+        self.b = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="B",
+            generated_json=dict(confirmed),
+        )
+        self.client = authenticated_api_client()
+
+    def _object(self, material, title, section="", order=0, group=None):
+        return LearningObject.objects.create(
+            material=material, group=group, title=title, section_title=section,
+            order=order, content=f"{title or 'figure'} text for this concept.",
+        )
+
+    def _accept(self, source, candidate):
+        suggestion = LearningObjectMatchSuggestion.objects.create(
+            outline_node=self.topic,
+            source_learning_object=source,
+            candidate_learning_object=candidate,
+            similarity_score=0.5,
+            confidence=LearningObjectMatchSuggestion.Confidence.MEDIUM,
+        )
+        response = self.client.post(
+            f"/api/courses/{self.course.id}/outline-nodes/{self.topic.id}"
+            f"/match-suggestions/{suggestion.id}/accept/",
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_a_new_concept_is_named_after_the_sources_heading(self):
+        figure = self._object(self.a, "Okay, let us describe this figure", "Matter", 0)
+        matter_b = self._object(self.b, "Matter", "", 0)
+
+        self._accept(figure, matter_b)
+
+        matter_b.refresh_from_db()
+        self.assertEqual(matter_b.group.label, "Matter")
+
+    def test_a_material_joining_the_concept_inherits_no_stale_role(self):
+        group = LearningObjectGroup.objects.create(outline_node=self.topic, label="Solid")
+        solid_a = self._object(self.a, "Solid", "", 0, group=group)
+        # B once contributed here and left; the ruling about its old text must
+        # not be handed to the object arriving now.
+        set_bundle_role(group, self.b.id, "ELABORATED", assigned_by="teacher")
+        solids_b = self._object(self.b, "Solids", "", 0)
+
+        self._accept(solid_a, solids_b)
+
+        group.refresh_from_db()
+        # The role may be decided again from the arriving text -- what must not
+        # survive is the teacher's ruling about text that is gone.
+        self.assertNotEqual(bundle_roles(group).get(self.b.id), "ELABORATED")
+        self.assertNotEqual(bundle_role_provenance(group).get(self.b.id), "teacher")
