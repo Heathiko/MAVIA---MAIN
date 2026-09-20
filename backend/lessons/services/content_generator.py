@@ -3099,6 +3099,10 @@ def build_narration_script_from_learning_objects(learning_objects: list[dict]) -
             {
                 "order": len(narration) + 1,
                 "type": item.get("type"),
+                # Carried through so the clip synthesised for this narration
+                # item can be found again by the object it speaks for; the
+                # lesson package reads a version's audio that way.
+                "learning_object_id": item.get("learning_object_id"),
                 "section_title": section_title,
                 "title": title,
                 "page": item.get("source_page"),
@@ -3207,6 +3211,7 @@ def build_lesson_playlist(narration_script: list[dict]) -> list[dict]:
                     )
                 ),
                 "type": item.get("type"),
+                "learning_object_id": item.get("learning_object_id"),
                 "narration_item_order": item.get("order"),
             }
         )

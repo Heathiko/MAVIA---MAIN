@@ -249,3 +249,100 @@ def generate_version_audio(material):
         LessonVariant.objects.filter(pk=row.pk, narration=row.narration).update(audio_url=url)
         generated += int(created)
     return {"generated_count": generated}
+
+
+def bundle_version_objects(material: LearningMaterial) -> list:
+    """This material's objects that supply another concept's version.
+
+    A concept's Simplified or Elaborated is sometimes another PDF's own
+    objects rather than written wording. Those objects are marked as
+    represented -- they are not teaching steps of their own material's lesson
+    -- so nothing else in the audio pipeline reaches them.
+    """
+    from course.version_assignment import version_bundles
+
+    supplying = {}
+    objects = []
+    for item in (
+        material.learning_objects.filter(group__isnull=False)
+        .select_related("group")
+        .order_by("order", "id")
+    ):
+        if item.group_id not in supplying:
+            supplying[item.group_id] = {
+                member.id
+                for role, bundle in version_bundles(item.group).items()
+                # Normal is the lesson itself and already has clips; an extra
+                # bundle is not one of the versions a student is offered.
+                if role not in ("NORMAL", "EXTRA")
+                for member in bundle
+            }
+        if item.id in supplying[item.group_id]:
+            objects.append(item)
+    return objects
+
+
+def generate_bundle_version_audio(material: LearningMaterial) -> dict:
+    """Give every PDF-supplied version a voice.
+
+    Such a version has no ``LessonVariant`` row to speak from, and its objects
+    are left out of the material's lesson playlist, so without this a blind
+    learner switching to Simplified would hear nothing at all -- and no error
+    would say so. The clips are kept in their own playlist rather than the
+    lesson one, because these objects are not steps of this material's lesson;
+    putting them there would teach the concept twice.
+    """
+    from .content_generator import build_narration_script_from_learning_objects
+
+    objects = bundle_version_objects(material)
+    generated_json = material.generated_json or {}
+    if not objects:
+        if generated_json.get("version_bundle_playlist"):
+            generated_json = {
+                **generated_json,
+                "version_bundle_playlist": [],
+                "version_bundle_audio_generated": False,
+            }
+            material.generated_json = generated_json
+            material.save(update_fields=["generated_json"])
+        return {"generated_count": 0, "version_bundle_playlist": []}
+
+    narration = build_narration_script_from_learning_objects([
+        {
+            "learning_object_id": item.id,
+            "title": item.title,
+            "content": item.content,
+            "type": "image_description" if item.kind == "image" else "teacher_text",
+            "section_title": item.section_title,
+            "source_page": item.source_page,
+        }
+        for item in objects
+    ])
+    audio_dir = Path(settings.MEDIA_ROOT) / "audio_versions" / f"material_{material.id}"
+    playlist = []
+    generated_count = 0
+    for entry in narration:
+        text = (entry.get("content") or "").strip()
+        if not text or entry.get("learning_object_id") is None:
+            continue
+        audio_path, created = cached_audio(text, audio_dir)
+        relative_path = audio_path.relative_to(settings.MEDIA_ROOT).as_posix()
+        playlist.append({
+            "order": len(playlist),
+            "learning_object_id": entry["learning_object_id"],
+            "title": entry.get("title") or "",
+            "narration": text,
+            "audio_url": f"{settings.MEDIA_URL}{relative_path}",
+            "audio_file": relative_path,
+            "audio_status": "generated",
+        })
+        generated_count += int(created)
+
+    generated_json = {
+        **generated_json,
+        "version_bundle_playlist": playlist,
+        "version_bundle_audio_generated": bool(playlist),
+    }
+    material.generated_json = generated_json
+    material.save(update_fields=["generated_json"])
+    return {"generated_count": generated_count, "version_bundle_playlist": playlist}

@@ -146,17 +146,28 @@ def normal_bundle_for(learning_object):
 
 
 def audio_clip_for(learning_object):
-    """The narration and clip generated for one object, or ``None``."""
-    generated_json = learning_object.material.generated_json or {}
-    if not generated_json.get("lesson_audio_generated"):
-        return None
+    """The narration and clip generated for one object, or ``None``.
 
-    for entry in generated_json.get("lesson_playlist", []):
-        if entry.get("learning_object_id") == learning_object.id:
-            return {
-                "narration": entry.get("narration") or entry.get("text", ""),
-                "audio_url": entry.get("audio_url") or entry.get("audio", ""),
-            }
+    Two playlists are searched. The lesson one holds the material's own
+    teaching steps. The second holds the objects that supply *another*
+    concept's version: they are marked as represented, so they are deliberately
+    absent from the lesson playlist, and a version built only from that one
+    would be served silently.
+    """
+    generated_json = learning_object.material.generated_json or {}
+    sources = []
+    if generated_json.get("lesson_audio_generated"):
+        sources.append(generated_json.get("lesson_playlist", []))
+    if generated_json.get("version_bundle_audio_generated"):
+        sources.append(generated_json.get("version_bundle_playlist", []))
+
+    for playlist in sources:
+        for entry in playlist:
+            if entry.get("learning_object_id") == learning_object.id:
+                return {
+                    "narration": entry.get("narration") or entry.get("text", ""),
+                    "audio_url": entry.get("audio_url") or entry.get("audio", ""),
+                }
     return None
 
 
