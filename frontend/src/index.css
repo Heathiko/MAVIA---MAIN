@@ -179,7 +179,10 @@ button {
   font-weight: 750;
 }
 
-.btn:disabled {
+.btn:disabled,
+/* The bundle controls stay in the tab order while they cannot be used, so a
+   screen reader still reads their names; they look the part all the same. */
+.btn[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.55;
 }

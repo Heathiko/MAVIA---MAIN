@@ -2085,6 +2085,10 @@ function LearningObjectConnections({
   const [regroupPreview, setRegroupPreview] = useState(null);
   const [regroupSelectedIds, setRegroupSelectedIds] = useState([]);
   const automaticClassificationRef = useRef("");
+  // The bundle controls, keyed `${object id}-${action}`, and the one to focus
+  // again once a correction has come back. See `bundleControlKey`.
+  const bundleControlRefs = useRef(new Map());
+  const refocusAfterCorrection = useRef("");
 
   const materialSignature = useMemo(
     () => materials
@@ -2161,6 +2165,27 @@ function LearningObjectConnections({
     });
     return result;
   }, [groups]);
+  // Keyboard focus across a bundle correction.
+  //
+  // Every correction replaces the whole payload, so the row the teacher just
+  // pressed in is unmounted and mounted again -- and when the object moves to
+  // another concept it is mounted somewhere else entirely. A teacher on a
+  // screen reader would land back at the top of the page after every press.
+  // The controls therefore keep themselves in the tab order (`aria-disabled`
+  // rather than `disabled`, which blurs a focused element the moment it is
+  // set), and the control that was pressed is focused again once the request
+  // has come back and the new payload has rendered.
+  function bundleControlKey(item, action) {
+    return `${item.id}-${action}`;
+  }
+
+  function registerBundleControl(key) {
+    return (element) => {
+      if (element) bundleControlRefs.current.set(key, element);
+      else bundleControlRefs.current.delete(key);
+    };
+  }
+
   // The destinations a "Move to..." menu offers: every other concept of this
   // topic, named the way the cards name them so the two cannot disagree.
   function conceptName(group) {
@@ -2171,15 +2196,24 @@ function LearningObjectConnections({
     return groups.filter((group) => group.id !== groupId);
   }
 
-  const connectedGroups = groups.filter((group) => group.learning_objects.length > 1);
-  const singletonGroups = groups.filter((group) => group.learning_objects.length === 1);
+  // How many PDFs teach this concept. That -- not how many objects one PDF
+  // chops it into -- is what "Grouped", "Standalone" and "N variations" are
+  // about: the teacher is judging cross-PDF corroboration here, and a concept
+  // one PDF teaches as three objects is still a single variation.
+  function variationCount(group) {
+    if (group.bundles) return group.bundles.length;
+    return new Set((group.learning_objects || []).map((item) => item.material)).size;
+  }
+
+  const connectedGroups = groups.filter((group) => variationCount(group) > 1);
+  const singletonGroups = groups.filter((group) => variationCount(group) === 1);
   const unclassifiedGroupSignature = groups
     .filter((group) => group.versions?.classification_complete === false)
     .map((group) => group.id)
     .join(",");
   const visibleGroups = groups.filter((group) => {
-    if (filter === "connected" && group.learning_objects.length <= 1) return false;
-    if (filter === "single" && group.learning_objects.length !== 1) return false;
+    if (filter === "connected" && variationCount(group) <= 1) return false;
+    if (filter === "single" && variationCount(group) !== 1) return false;
     const query = searchTerm.trim().toLocaleLowerCase();
     if (!query) return true;
     const searchableText = [
@@ -2310,8 +2344,9 @@ function LearningObjectConnections({
   // Every correction to an automatic bundle runs through one handler shape:
   // call, replace the payload, say what happened. Buttons only -- the teachers
   // this is built for work with a screen reader, so nothing is dragged.
-  async function runBundleCorrection(item, call, describe) {
-    if (reviewStep !== "objects") return;
+  async function runBundleCorrection(item, call, describe, focusKey = "") {
+    if (reviewStep !== "objects" || busyAction) return;
+    if (focusKey) refocusAfterCorrection.current = focusKey;
     setBusyAction(`move-${item.id}`);
     onError("");
     onMessage("");
@@ -2329,11 +2364,28 @@ function LearningObjectConnections({
     }
   }
 
+  // Runs after the corrected payload has rendered, so the control is the new
+  // DOM node rather than the unmounted one. The object may have moved into
+  // another concept, where the "Move out" button is gone the moment its new
+  // concept holds it alone -- so the row's "Move to..." menu, which is always
+  // rendered, is the fallback that keeps the teacher on the object they just
+  // moved instead of at the top of the page.
+  useEffect(() => {
+    if (busyAction || !refocusAfterCorrection.current) return;
+    const [objectId] = refocusAfterCorrection.current.split("-");
+    const target = [refocusAfterCorrection.current, `${objectId}-move-to`]
+      .map((key) => bundleControlRefs.current.get(key))
+      .find((element) => element && element.isConnected && !element.disabled);
+    refocusAfterCorrection.current = "";
+    if (target) target.focus();
+  }, [busyAction, resources]);
+
   function moveObjectOutOfBundle(item) {
     return runBundleCorrection(
       item,
       () => moveObjectOut(courseId, topicId, item.id),
       `“${item.title}” is now a concept of its own.`,
+      bundleControlKey(item, "move-out"),
     );
   }
 
@@ -2342,6 +2394,7 @@ function LearningObjectConnections({
       item,
       () => moveObjectToConcept(courseId, topicId, item.id, groupId),
       `“${item.title}” was moved to “${groupLabelText}”.`,
+      bundleControlKey(item, "move-to"),
     );
   }
 
@@ -2350,6 +2403,7 @@ function LearningObjectConnections({
       item,
       () => reorderObject(courseId, topicId, item.id, direction),
       `“${item.title}” moved ${direction} in its file’s bundle.`,
+      bundleControlKey(item, direction),
     );
   }
 
@@ -2829,7 +2883,8 @@ function LearningObjectConnections({
           ) : (
             <div className="connection-group-list">
               {visibleGroups.map((group, groupIndex) => {
-                const isConnected = group.learning_objects.length > 1;
+                const variations = variationCount(group);
+                const isConnected = variations > 1;
                 const groupNumber = groupIndex + 1;
                 return (
                   <article className={`connection-group-card ${isConnected ? "is-connected" : ""}`} key={group.id}>
@@ -2840,7 +2895,7 @@ function LearningObjectConnections({
                       </div>
                       <span className={`connection-status ${isConnected ? "is-connected" : "is-single"}`}>
                         {isConnected
-                          ? `${group.learning_objects.length} variations`
+                          ? `${variations} variations`
                           : "Single variation"}
                       </span>
                     </header>
@@ -2878,8 +2933,11 @@ function LearningObjectConnections({
                                         <input
                                           type="checkbox"
                                           checked={selectedIds.includes(item.id)}
-                                          disabled={Boolean(busyAction)}
-                                          onChange={() => toggleSelection(item.id)}
+                                          aria-disabled={Boolean(busyAction)}
+                                          onChange={() => {
+                                            if (busyAction) return;
+                                            toggleSelection(item.id);
+                                          }}
                                         />
                                         <span className="sr-only">Select {item.title}</span>
                                       </label>
@@ -2922,12 +2980,20 @@ function LearningObjectConnections({
                                       </small>
                                     </div>
                                     {reviewStep === "objects" && (
+                                      // Every control here is `aria-disabled`, never
+                                      // `disabled`: a disabled element is blurred the moment
+                                      // the flag is set and announces nothing at a bundle's
+                                      // edge. Each handler guards the press instead, and the
+                                      // effect above puts focus back on the control that was
+                                      // pressed once the corrected payload has rendered.
                                       <div className="concept-bundle-actions">
                                         {group.learning_objects.length > 1 && (
                                           <button
                                             type="button"
                                             className="btn btn-secondary btn-small"
-                                            disabled={Boolean(busyAction)}
+                                            ref={registerBundleControl(bundleControlKey(item, "move-out"))}
+                                            aria-disabled={Boolean(busyAction)}
+                                            aria-label={`Move ${item.title} out of this concept`}
                                             onClick={() => moveObjectOutOfBundle(item)}
                                           >
                                             {moving ? "Moving…" : "Move out"}
@@ -2937,13 +3003,15 @@ function LearningObjectConnections({
                                           <span className="sr-only">Move {item.title} to another concept</span>
                                           <select
                                             value=""
-                                            disabled={Boolean(busyAction) || otherConcepts(group.id).length === 0}
+                                            ref={registerBundleControl(bundleControlKey(item, "move-to"))}
+                                            aria-disabled={Boolean(busyAction) || otherConcepts(group.id).length === 0}
                                             onChange={(event) => {
                                               const target = otherConcepts(group.id).find(
                                                 (candidate) => String(candidate.id) === event.target.value,
                                               );
                                               event.target.value = "";
-                                              if (target) moveObjectToGroup(item, target.id, conceptName(target));
+                                              if (busyAction || !target) return;
+                                              moveObjectToGroup(item, target.id, conceptName(target));
                                             }}
                                           >
                                             <option value="">Move to…</option>
@@ -2957,18 +3025,26 @@ function LearningObjectConnections({
                                         <button
                                           type="button"
                                           className="btn btn-secondary btn-small concept-bundle-nudge"
-                                          disabled={Boolean(busyAction) || itemIndex === 0}
+                                          ref={registerBundleControl(bundleControlKey(item, "up"))}
+                                          aria-disabled={Boolean(busyAction) || itemIndex === 0}
                                           aria-label={`Move ${item.title} earlier in ${fileName}`}
-                                          onClick={() => moveObjectWithinBundle(item, "up")}
+                                          onClick={() => {
+                                            if (busyAction || itemIndex === 0) return;
+                                            moveObjectWithinBundle(item, "up");
+                                          }}
                                         >
                                           <span aria-hidden="true">↑</span>
                                         </button>
                                         <button
                                           type="button"
                                           className="btn btn-secondary btn-small concept-bundle-nudge"
-                                          disabled={Boolean(busyAction) || itemIndex === lastIndex}
+                                          ref={registerBundleControl(bundleControlKey(item, "down"))}
+                                          aria-disabled={Boolean(busyAction) || itemIndex === lastIndex}
                                           aria-label={`Move ${item.title} later in ${fileName}`}
-                                          onClick={() => moveObjectWithinBundle(item, "down")}
+                                          onClick={() => {
+                                            if (busyAction || itemIndex === lastIndex) return;
+                                            moveObjectWithinBundle(item, "down");
+                                          }}
                                         >
                                           <span aria-hidden="true">↓</span>
                                         </button>
