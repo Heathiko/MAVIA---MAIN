@@ -696,8 +696,29 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             return None, None
         return node, learning_object
 
-    def _bundle_correction_response(self, node, learning_object, request):
-        self._refresh_relationship_snapshots({learning_object.material}, recompute=False)
+    def _leave_old_group(self, learning_object):
+        """Undo the old concept's version links, then say who stayed behind.
+
+        Call this **before** the object's group changes. ``place_unit`` clears
+        only the mover's own ``represented_by``; the members it represented
+        would keep pointing at an object that has left their concept, and every
+        consumer of the published lesson filters on
+        ``represented_by__isnull=True`` -- so the rest of the concept would
+        silently vanish from the lesson and its audio.
+        """
+        old_group = learning_object.group
+        companions = list(
+            old_group.learning_objects.exclude(pk=learning_object.id).select_related("material")
+        ) if old_group else []
+        if companions:
+            release_from_group(learning_object, companions)
+        return companions
+
+    def _bundle_correction_response(self, node, learning_object, request, companions=()):
+        self._refresh_relationship_snapshots(
+            {learning_object.material, *(member.material for member in companions)},
+            recompute=False,
+        )
         return Response(self._learning_resources_payload(node, request))
 
     @action(
@@ -711,15 +732,28 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         node, learning_object = self._node_and_object(course, node_id, object_id)
         if learning_object is None:
             return Response({"detail": "Learning object not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not learning_objects_are_confirmed(learning_object.material):
+            return Response(
+                {"detail": "Confirm this learning object before reviewing connections."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if learning_object.group_id and learning_object.group.learning_objects.count() == 1:
             return Response(self._learning_resources_payload(node, request))
+        companions = self._leave_old_group(learning_object)
         target = LearningObjectGroup.objects.create(
             outline_node=node,
             label=(learning_object.title or "")[:255],
         )
         place_unit([learning_object], target)
+        # A teacher breaking a bundle up is a decision, not a gap in the
+        # evidence: without recording it the next automatic pass would place
+        # the object straight back. Only cross-PDF pairs are decided -- two
+        # objects of one file say nothing about whether the files agree.
+        for companion in companions:
+            if companion.material_id != learning_object.material_id:
+                record_teacher_match_decision(learning_object, companion, accepted=False)
         unpublish_topic(node)
-        return self._bundle_correction_response(node, learning_object, request)
+        return self._bundle_correction_response(node, learning_object, request, companions)
 
     @action(
         detail=True,
@@ -732,6 +766,11 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         node, learning_object = self._node_and_object(course, node_id, object_id)
         if learning_object is None:
             return Response({"detail": "Learning object not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not learning_objects_are_confirmed(learning_object.material):
+            return Response(
+                {"detail": "Confirm this learning object before reviewing connections."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             group_id = int(request.data.get("group_id"))
         except (TypeError, ValueError):
@@ -747,10 +786,12 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                 {"detail": "That concept is not part of this topic."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        companions = []
         if learning_object.group_id != target.id:
+            companions = self._leave_old_group(learning_object)
             place_unit([learning_object], target)
             unpublish_topic(node)
-        return self._bundle_correction_response(node, learning_object, request)
+        return self._bundle_correction_response(node, learning_object, request, companions)
 
     @action(
         detail=True,
@@ -767,6 +808,11 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         node, learning_object = self._node_and_object(course, node_id, object_id)
         if learning_object is None:
             return Response({"detail": "Learning object not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not learning_objects_are_confirmed(learning_object.material):
+            return Response(
+                {"detail": "Confirm this learning object before reviewing connections."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         direction = request.data.get("direction")
         if direction not in ("up", "down"):
             return Response(
@@ -790,14 +836,24 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             # Already at the edge of its bundle; the teacher still gets the
             # current state back rather than an error they cannot act on.
             return Response(self._learning_resources_payload(node, request))
-        neighbour = siblings[neighbour_index]
-        learning_object.order, neighbour.order = neighbour.order, learning_object.order
-        if learning_object.order == neighbour.order:
-            # Equal `order` values were resolved by id, so a swap alone changes
-            # nothing. Push the mover clear of its neighbour instead.
-            learning_object.order += -1 if direction == "up" else 1
-        LearningObject.objects.filter(pk=learning_object.id).update(order=learning_object.order)
-        LearningObject.objects.filter(pk=neighbour.id).update(order=neighbour.order)
+        moved = list(siblings)
+        moved[position], moved[neighbour_index] = moved[neighbour_index], moved[position]
+        # Renumber rather than swap the two values. Swapping is a no-op when
+        # two objects share an `order` (the tie is broken by id), and nudging
+        # one value clear of the other can walk `order` below zero, which the
+        # PositiveIntegerField does not allow.
+        #
+        # The bundle is renumbered over the places it already occupies, not
+        # 0..n-1: `order` is the whole PDF's document order, and a file's other
+        # concepts hold the places in between. Taking 0..n-1 here would move
+        # this bundle in front of them and rewrite the lesson's reading and
+        # audio order material-wide.
+        places = []
+        for value in sorted(item.order for item in siblings):
+            places.append(max(value, places[-1] + 1) if places else value)
+        for place, item in zip(places, moved):
+            if item.order != place:
+                LearningObject.objects.filter(pk=item.id).update(order=place)
         return self._bundle_correction_response(node, learning_object, request)
 
     @action(

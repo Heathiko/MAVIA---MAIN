@@ -2318,6 +2318,9 @@ function LearningObjectConnections({
     try {
       const data = await call();
       setResources(data);
+      // The object is not where it was, so a tick left on it would make the
+      // next "Connect selected objects" act on a stale selection.
+      setSelectedIds((current) => current.filter((id) => id !== item.id));
       onMessage(withUnpublishedNote(describe, data));
     } catch (err) {
       onError(err.message);
@@ -2920,17 +2923,16 @@ function LearningObjectConnections({
                                     </div>
                                     {reviewStep === "objects" && (
                                       <div className="concept-bundle-actions">
-                                        <button
-                                          type="button"
-                                          className="btn btn-secondary btn-small"
-                                          disabled={Boolean(busyAction) || group.learning_objects.length < 2}
-                                          title={group.learning_objects.length < 2
-                                            ? "This concept holds only this object."
-                                            : undefined}
-                                          onClick={() => moveObjectOutOfBundle(item)}
-                                        >
-                                          {moving ? "Moving…" : "Move out"}
-                                        </button>
+                                        {group.learning_objects.length > 1 && (
+                                          <button
+                                            type="button"
+                                            className="btn btn-secondary btn-small"
+                                            disabled={Boolean(busyAction)}
+                                            onClick={() => moveObjectOutOfBundle(item)}
+                                          >
+                                            {moving ? "Moving…" : "Move out"}
+                                          </button>
+                                        )}
                                         <label className="concept-bundle-move-to">
                                           <span className="sr-only">Move {item.title} to another concept</span>
                                           <select
