@@ -64,6 +64,26 @@ class BundleTests(BundleFixture):
         self.assertEqual(ordered_members(self.group), [first_object, second_object])
         self.assertEqual(material_order(self.topic), [self.first.id, self.second.id])
 
+    def test_a_prefetched_concept_is_read_without_another_query(self):
+        """Finding 5: `bundles_for_group` asked for `select_related("material")`
+        unconditionally, which issued a fresh query per concept and undid the
+        caller's prefetch; `ordered_members` then spent two more deriving the
+        topic's upload order for every concept."""
+        self._object(self.second, "Solids", 1, "Solids")
+        self._object(self.first, "Solid", 5)
+        ranked = {material_id: rank for rank, material_id in enumerate(material_order(self.topic))}
+        group = (
+            LearningObjectGroup.objects
+            .prefetch_related("learning_objects__material")
+            .get(pk=self.group.pk)
+        )
+
+        with self.assertNumQueries(0):
+            members = ordered_members(group, ranked=ranked)
+            [item.material.title for item in members]
+
+        self.assertEqual([item.title for item in members], ["Solid", "Solids"])
+
     def test_bundle_text_joins_content_and_skips_empties(self):
         first = self._object(self.second, "Solids", 1, "Solids", content="Packed tightly.")
         empty = self._object(self.second, "Figure", 2, "Solids", content="   ")

@@ -19,20 +19,38 @@ def material_order(node):
 
 
 def bundles_for_group(group):
-    """``{material_id: [objects in document order]}`` for one concept."""
+    """``{material_id: [objects in document order]}`` for one concept.
+
+    A caller that already prefetched ``learning_objects`` (with or without
+    their materials) gets its cache used rather than re-queried: asking for
+    ``select_related("material")`` unconditionally issued a fresh query per
+    concept and quietly undid the prefetch.
+    """
+    prefetched = "learning_objects" in getattr(group, "_prefetched_objects_cache", {})
+    manager = group.learning_objects
+    items = manager.all() if prefetched else manager.select_related("material").all()
     bundles = defaultdict(list)
-    for item in group.learning_objects.select_related("material").all():
+    for item in items:
         bundles[item.material_id].append(item)
     for objects in bundles.values():
         objects.sort(key=lambda item: (item.order, item.id))
     return dict(bundles)
 
 
-def ordered_members(group):
-    """Every member: materials in upload order, objects in document order."""
+def ordered_members(group, ranked=None):
+    """Every member: materials in upload order, objects in document order.
+
+    ``ranked`` is ``{material_id: upload rank}`` for the topic. A caller
+    looping over a topic's concepts already knows it and should pass it:
+    deriving it here costs one query for ``group.outline_node`` and another
+    for the material list, per concept.
+    """
     bundles = bundles_for_group(group)
-    node = group.outline_node
-    ranked = {material_id: rank for rank, material_id in enumerate(material_order(node))}
+    if ranked is None:
+        ranked = {
+            material_id: rank
+            for rank, material_id in enumerate(material_order(group.outline_node))
+        }
     members = []
     for material_id in sorted(bundles, key=lambda mid: (ranked.get(mid, len(ranked)), mid)):
         members.extend(bundles[material_id])
