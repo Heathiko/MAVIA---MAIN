@@ -283,3 +283,67 @@ class ConceptUnitTests(TestCase):
         concepts = concepts_for_topic(self.topic)
 
         self.assertEqual([concept.id for concept in concepts], [kept.id])
+
+
+class BundleConceptTests(TestCase):
+    """The concept's title and text come from its members' bundle order, not
+    from a single member's scan position -- see `lessons.services.concept_bundles`.
+    """
+
+    def setUp(self):
+        self.course = CourseGroup.objects.create(title="Grade 1 Science")
+        self.module = OutlineNode.objects.create(
+            course=self.course, title="Properties of Matter", order=0, depth=0
+        )
+        self.topic = OutlineNode.objects.create(
+            course=self.course, parent=self.module,
+            title="Solid, Liquid and Gas", order=0, depth=1,
+        )
+        now = timezone.now()
+        self.first = self._material("Lesson one", now)
+        self.second = self._material("Lesson two", now + timedelta(hours=1))
+
+    def _material(self, title, created_at):
+        material = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic,
+            title=title, status="completed",
+        )
+        LearningMaterial.objects.filter(pk=material.pk).update(created_at=created_at)
+        material.refresh_from_db()
+        return material
+
+    def _group(self, label=""):
+        return LearningObjectGroup.objects.create(outline_node=self.topic, label=label)
+
+    def _object(self, group, material, title, order, content="Some text.", section=""):
+        return LearningObject.objects.create(
+            material=material, group=group, title=title, content=content,
+            order=order, section_title=section,
+        )
+
+    def _concept_for(self, group):
+        return {concept.id: concept for concept in concepts_for_topic(self.topic)}[group.id]
+
+    def test_a_concept_is_named_by_its_headings_not_its_first_object(self):
+        """Regression: a bundle opening with a figure was named after the
+        figure, and the concept then had no usable name for the criteria."""
+        group = self._group("Matter")
+        self._object(group, self.first, "Okay, let us describe this figure", 0, section="")
+        self._object(group, self.first, "Matter", 1, section="Matter")
+
+        concept = self._concept_for(group)
+
+        self.assertEqual(concept.title, "Matter")
+
+    def test_member_text_follows_bundle_order(self):
+        group = self._group("Solid")
+        self._object(group, self.first, "Solid", 0, content="A solid keeps its shape.")
+        self._object(group, self.second, "Solids", 0, content="Packed tightly.")
+        self._object(group, self.second, "Everyday examples", 1, content="Ice cubes.")
+
+        concept = self._concept_for(group)
+
+        self.assertEqual(
+            concept.member_text,
+            "A solid keeps its shape.\nPacked tightly.\nIce cubes.",
+        )

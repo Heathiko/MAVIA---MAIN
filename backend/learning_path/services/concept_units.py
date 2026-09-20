@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from course.version_assignment import assign_group_versions
+from lessons.services.concept_bundles import bundle_heading, bundles_for_group, ordered_members
 
 from .text_signals import part_marker
 
@@ -295,7 +296,7 @@ def concepts_for_topic(node):
         # are the other PDFs' versions of it. Filtering them out made every
         # concept report a single source and hid the cross-PDF grouping
         # entirely -- 11 multi-PDF concepts came back as none.
-        members = list(group.learning_objects.all())
+        members = ordered_members(group)
         if not members:
             continue
         records.append({
@@ -311,15 +312,26 @@ def concepts_for_topic(node):
     for position, record in enumerate(records):
         group, members = record["group"], record["members"]
         representative = _representative_for(group, members)
-        scan = sorted(members, key=lambda item: _member_scan_key(item, material_rank))
-        member_text = "\n".join(item.content or "" for item in scan)
+        # Members are already in bundle order (materials by upload order,
+        # objects within a material in document order) -- from
+        # `ordered_members` per group, and preserved by `_merge_split_passages`
+        # when groups are combined -- so the concept speaks in that order too.
+        member_text = "\n".join(item.content or "" for item in members)
+        representative_bundle = bundles_for_group(group).get(representative.material_id, [])
         concepts.append(
             Concept(
                 id=group.id,
-                # The Normal version's current title. A group's label is set
-                # once, when the group forms, and never follows a rename -- so
-                # preferring it showed teachers names they had already changed.
-                title=(representative.title or group.label or "").strip(),
+                # The representative's bundle's own heading -- a bundle often
+                # opens with a figure that has no heading of its own, and
+                # naming the concept after that figure left it with no usable
+                # name for the criteria. Falls back to the representative's
+                # title, then the group's label, for a bundle with neither.
+                title=(
+                    bundle_heading(representative_bundle)
+                    or representative.title
+                    or group.label
+                    or ""
+                ).strip(),
                 # "Normal" is the representative's own text -- unlike Simplified
                 # and Elaborated it is not a stored slot.
                 content=representative.content or "",

@@ -67,7 +67,10 @@ class TopicPreviewTests(TopicFixture):
 
         steps = {step["title"]: step for step in self._path()["steps"]}
 
-        self.assertEqual(steps["Solid"]["branch"], "Solids")
+        # The concept's title now follows its bundle's heading too (task 7),
+        # so setting the object's section renames its step from "Solid" to
+        # "Solids" -- the same heading `branch` reports.
+        self.assertEqual(steps["Solids"]["branch"], "Solids")
         self.assertEqual(steps["Matter"]["branch"], "")
 
     def test_a_topic_with_no_grouped_content_has_no_path(self):
