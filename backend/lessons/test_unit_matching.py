@@ -309,22 +309,6 @@ class OccupiedPairTests(UnitFixture):
         self.assertEqual(accepted.status, LearningObjectMatchSuggestion.Status.ACCEPTED)
 
 
-class MergedRowTests(UnitFixture):
-    """A row that is already merged cannot be merged again, so it never joins a unit."""
-
-    def test_a_merged_row_neither_joins_nor_extends_a_unit(self):
-        LearningObject.objects.filter(pk=self.table_b.id).update(merged_from=[{"id": self.table_b.id}])
-        rows = list(self.b.learning_objects.all())
-
-        labels = {unit.label: unit.ids for unit in find_units(rows)}
-
-        self.assertNotIn(heading_key("Comparing the Three States"), labels)
-        for candidate in heading_unit_candidates(self.topic):
-            for side in (candidate["left"], candidate["right"]):
-                if len(side) > 1:
-                    self.assertNotIn(self.table_b.id, [item.id for item in side])
-
-
 class UnitDecisionTests(UnitFixture):
     """Teacher decisions on unit suggestions are recorded and never overwritten."""
 

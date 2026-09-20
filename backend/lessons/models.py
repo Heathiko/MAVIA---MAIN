@@ -215,10 +215,6 @@ class LearningObject(models.Model):
     # to a grouped object could never be noticed. A mismatch is what enables
     # the teacher's "Review grouping changes" action.
     grouping_content_hash = models.CharField(max_length=64, blank=True, default="")
-    # Set when several objects from this PDF were merged into this row: one
-    # snapshot per original member, in document order, so "Split back" can
-    # rebuild them with their original metadata ids and question links.
-    merged_from = models.JSONField(default=list, blank=True)
 
     class Meta:
         ordering = ["order", "id"]

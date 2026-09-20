@@ -87,11 +87,6 @@ from .services.learning_resource_linker import (
     refresh_material_learning_relationships,
     refresh_question_learning_object_links,
 )
-from .services.object_merge import (
-    MergeError,
-    merge_learning_objects,
-    split_learning_object,
-)
 from .services.unit_matching import place_unit, unpublish_topic
 from .services.regrouping import (
     RegroupingUnavailable,
@@ -197,6 +192,10 @@ def _run_all_versions_in_background(run_id, node_id):
     finally:
         run.finished_at = timezone.now()
         run.save(update_fields=["status", "finished_at"])
+
+
+class SuggestionAcceptError(ValueError):
+    """A match suggestion accept that cannot be carried out as asked."""
 
 
 class CourseGroupViewSet(viewsets.ModelViewSet):
@@ -858,74 +857,6 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
 
     @action(
         detail=True,
-        methods=["post"],
-        url_path=r"outline-nodes/(?P<node_id>[^/.]+)/merge-learning-objects",
-    )
-    def merge_learning_objects_action(self, request, pk=None, node_id=None):
-        """Merge objects from one PDF into one, for content another PDF teaches as one."""
-        course = self.get_object()
-        try:
-            node = course.nodes.get(pk=node_id)
-        except OutlineNode.DoesNotExist:
-            return Response({"detail": "Outline node not found."}, status=status.HTTP_404_NOT_FOUND)
-        raw_ids = request.data.get("learning_object_ids")
-        if not isinstance(raw_ids, list):
-            return Response(
-                {"detail": "Provide learning_object_ids as a list of integers."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        try:
-            object_ids = {int(value) for value in raw_ids}
-        except (TypeError, ValueError):
-            return Response(
-                {"detail": "Provide learning_object_ids as a list of integers."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        members = list(
-            LearningObject.objects.filter(
-                id__in=object_ids, material__outline_node=node,
-            ).select_related("material")
-        )
-        if len(members) != len(object_ids):
-            return Response(
-                {"detail": "One or more learning objects were not found in this topic."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        try:
-            _, unpublished = merge_learning_objects(members)
-        except MergeError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        self._refresh_relationship_snapshots({members[0].material}, recompute=False)
-        payload = self._learning_resources_payload(node, request)
-        payload["unpublished"] = unpublished
-        return Response(payload)
-
-    @action(
-        detail=True,
-        methods=["post"],
-        url_path=r"outline-nodes/(?P<node_id>[^/.]+)/learning-objects/(?P<object_id>[^/.]+)/split",
-    )
-    def split_learning_object_action(self, request, pk=None, node_id=None, object_id=None):
-        """Undo a merge: rebuild the original objects with their question links."""
-        course = self.get_object()
-        try:
-            node = course.nodes.get(pk=node_id)
-            learning_object = LearningObject.objects.select_related("material").get(
-                pk=object_id, material__outline_node=node,
-            )
-        except (OutlineNode.DoesNotExist, LearningObject.DoesNotExist):
-            return Response({"detail": "Learning object not found."}, status=status.HTTP_404_NOT_FOUND)
-        try:
-            _, unpublished = split_learning_object(learning_object)
-        except MergeError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        self._refresh_relationship_snapshots({learning_object.material}, recompute=False)
-        payload = self._learning_resources_payload(node, request)
-        payload["unpublished"] = unpublished
-        return Response(payload)
-
-    @action(
-        detail=True,
         methods=["get"],
         url_path=r"outline-nodes/(?P<node_id>[^/.]+)/regrouping",
     )
@@ -1058,7 +989,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             )
         try:
             unpublished = self._accept_suggestion(node, suggestion, source, candidate)
-        except MergeError as exc:
+        except SuggestionAcceptError as exc:
             # Raised inside the transaction, so nothing was moved or saved.
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         # Placement unpublishes with an UPDATE, so the cached node is stale and
@@ -1094,7 +1025,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     )
                 )
                 if len(members) != len(ids):
-                    raise MergeError(
+                    raise SuggestionAcceptError(
                         "This suggestion is out of date. Refresh the page and review it again."
                     )
                 sides.append(members)
@@ -1103,7 +1034,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             # Checked before anything moves: a teacher may have declined a pair
             # this unit would put into one concept.
             if rejected_across_sides(source_objects, candidate_objects, exclude_pk=suggestion.pk):
-                raise MergeError("A teacher declined connecting these objects; review it first.")
+                raise SuggestionAcceptError("A teacher declined connecting these objects; review it first.")
             place_unit(objects, source.group or candidate.group or LearningObjectGroup.objects.create(
                 outline_node=node, label=(source.title or "")[:255],
             ))

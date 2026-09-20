@@ -54,19 +54,14 @@ def find_units(objects):
     A run continues while the next object sits under the same section heading,
     or carries that heading as its own title -- extraction sometimes drops the
     section of a figure ("5. Comparing the Three States") but keeps its title.
-    An already merged row never joins a unit (merging it again is refused);
-    it ends the run instead, so the rows around it are not treated as adjacent.
     """
     ordered = sorted(objects, key=lambda item: (item.order, item.id))
     units, index = [], 0
     while index < len(ordered):
         first = ordered[index]
-        if first.merged_from:
-            index += 1
-            continue
         label = heading_key(first.section_title) or heading_key(first.title)
         end = index + 1
-        while label and end < len(ordered) and not ordered[end].merged_from and label in (
+        while label and end < len(ordered) and label in (
             heading_key(ordered[end].section_title),
             heading_key(ordered[end].title),
         ):

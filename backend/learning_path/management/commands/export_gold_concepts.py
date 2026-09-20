@@ -1,10 +1,9 @@
 """Build a gold learning-path fixture from a teacher's concept map.
 
 The map lists which live learning objects make up each gold concept. Several
-objects from one PDF are merged exactly as the merge service would merge them,
-so the fixture holds the text the criteria will see after merging -- without
-changing the live database. Run it before merging anything live: merges delete
-the ids the map refers to.
+objects from one PDF are combined exactly as a bundle's text is combined for
+publishing, so the fixture holds the text the criteria will see -- without
+changing the live database.
 """
 
 import json
@@ -14,7 +13,13 @@ from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 
 from lessons.models import LearningObject
-from lessons.services.object_merge import merge_text
+
+
+def _merge_text(members):
+    """The combined content: each member's title as a lead-in, in order."""
+    return "\n".join(
+        f"{item.title}: {item.content}".strip() for item in members
+    )
 
 
 class Command(BaseCommand):
@@ -46,7 +51,7 @@ class Command(BaseCommand):
                 members.append({
                     "title": first.title if len(rows) == 1 else concept["title"],
                     "section_title": first.section_title,
-                    "content": first.content if len(rows) == 1 else merge_text(rows),
+                    "content": first.content if len(rows) == 1 else _merge_text(rows),
                     "material_id": material_id,
                     "order": first.order,
                 })
