@@ -25,6 +25,9 @@ ENCODER = "sentence-transformers/all-MiniLM-L6-v2"
 ENCODER_REVISION = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
 RERANKER = "cross-encoder/stsb-roberta-base"
 RERANKER_REVISION = "d576534b67143e2c70ee9966d7fdbf5835728d13"
+# A figure's kind, spelled out here so this module does not import the
+# lessons models at import time (it is loaded during model startup).
+IMAGE_KIND = "image"
 FINGERPRINT = f"content-sts-v1:{ENCODER}@{ENCODER_REVISION}:{RERANKER}@{RERANKER_REVISION}"
 
 _GENERIC_INSTRUCTIONAL_LABELS = {
@@ -656,7 +659,7 @@ def semantic_decision(
             **best,
             "confidence": "high" if high else "medium" if review else None,
         }
-        if high:
+        if high and kind != IMAGE_KIND:
             logger.info(
                 "Semantic grouping: material=%s source=%s candidate=%s score=%.4f auto=%s elapsed_ms=%s",
                 material.id, source_object_id, best["candidate"].id,
@@ -674,6 +677,24 @@ def semantic_decision(
         config=config,
         started_at=start,
     )
+    if (
+        kind == IMAGE_KIND
+        and corroborated is None
+        and normal_decision
+        and normal_decision["confidence"] == "high"
+    ):
+        # Two AI-written figure descriptions share stock phrasing -- "This
+        # figure shows...", "...helps the student understand..." -- so they
+        # score high against each other whatever they depict. Measured live:
+        # one particle diagram was auto-grouped with two unrelated figures at
+        # 0.649 and 0.627. A figure is therefore placed automatically only
+        # when a label corroborates it; otherwise the teacher gets a card and
+        # may still accept it. Text objects are unaffected.
+        normal_decision["evidence"].update(
+            auto_eligible=False, image_needs_label_corroboration=True,
+        )
+        normal_decision = {**normal_decision, "confidence": "medium"}
+
     decision = corroborated or normal_decision
     if decision:
         evidence = decision["evidence"]
