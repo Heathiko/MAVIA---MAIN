@@ -403,6 +403,22 @@ class BundleChunkTests(TestCase):
         )
         self.assertEqual(elaborated["origin"], LessonVariant.Origin.GENERATED)
 
+    def test_a_generated_version_short_of_the_bundle_is_not_served(self):
+        # One object's generation failed, so this Elaborated covers only half
+        # the concept. Served, it would read as the whole lesson to a student
+        # who cannot see the page; omitted, it is simply a version still
+        # missing, which the publish gate and the review screen already show.
+        LessonVariant.objects.create(
+            learning_object=self.normal, variant="ELABORATED",
+            narration="Solids hold their shape at length.",
+            origin=LessonVariant.Origin.GENERATED,
+        )
+
+        chunk = _build_chunk(self.normal)
+
+        self.assertNotIn("elaborated", chunk["variants"])
+        self.assertFalse(chunk["versions_complete"])
+
     def test_the_package_serves_one_chunk_per_concept(self):
         module = CourseModule.objects.create(source=self.topic)
         node = LessonNode.objects.create(module=module, source=self.first)
