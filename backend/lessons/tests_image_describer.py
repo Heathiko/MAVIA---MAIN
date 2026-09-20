@@ -107,7 +107,6 @@ class BuildPromptTests(TestCase):
             image_describer._MAX_NARRATION_SENTENCES,
         )
         self.assertEqual(image_describer._MAX_NARRATION_SENTENCES, 6)
-        self.assertEqual(image_describer._MIN_NARRATION_SENTENCES, 2)
         self.assertIn("Sentence 6.", capped)
         self.assertNotIn("Sentence 7.", capped)
 
@@ -150,6 +149,62 @@ class StripModelChatterTests(TestCase):
         # and the caller treats "" as a failure to retry.
         text = "Okay, let's describe this figure."
         self.assertEqual(image_describer._strip_model_chatter(text), text)
+
+    def test_a_colon_inside_the_lesson_text_is_never_cut_at(self):
+        """The strip removes a preamble, never a clause of the description.
+
+        Both of these begin with a chatter word and then teach. Cutting at
+        the first colon in the whole text deleted everything before it --
+        anywhere in the description -- and that mangled text is what a blind
+        student hears.
+        """
+        for text in (
+            "Okay, the particle diagram shows three states: solid, liquid "
+            "and gas. They differ in spacing.",
+            "The three states are compared by shape: a solid keeps its shape "
+            "while a liquid flows. Gases fill the container.",
+            "Matter takes three forms: solid, liquid and gas.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(image_describer._strip_model_chatter(text), text)
+
+    def test_a_bare_interjection_sentence_goes_and_the_rest_survives_whole(self):
+        lesson = (
+            "The three states are compared by shape: a solid keeps its shape "
+            "while a liquid flows. Gases fill the container."
+        )
+
+        self.assertEqual(
+            image_describer._strip_model_chatter(f"Okay. {lesson}"), lesson,
+        )
+
+    def test_an_ambiguous_opener_word_is_not_treated_as_chatter(self):
+        """"Right" and "Great" open lesson sentences as readily as chatter."""
+        for text in (
+            "Right after heating, the particles move faster. The solid melts.",
+            "Great differences in spacing separate the three states. "
+            "Solids are tightest.",
+            "Sure footing depends on friction. The surface matters.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(image_describer._strip_model_chatter(text), text)
+
+    def test_a_punctuated_interjection_is_still_chatter(self):
+        body = "Particles in a solid are packed tightly."
+        for opener in ("Sure, I will describe it.", "Certainly, I can do that."):
+            with self.subTest(opener=opener):
+                self.assertEqual(
+                    image_describer._strip_model_chatter(f"{opener} {body}"), body,
+                )
+
+    def test_a_prefixed_refusal_is_still_a_skip(self):
+        for refusal in ("SKIP", "Okay, SKIP.", "Sure. SKIP"):
+            with self.subTest(refusal=refusal):
+                stripped = image_describer._strip_model_chatter(refusal)
+                self.assertTrue(image_describer._looks_like_skip(stripped))
+        self.assertFalse(
+            image_describer._looks_like_skip("Particles are packed tightly.")
+        )
 
 
 class DescribeImageTests(TestCase):
@@ -219,6 +274,17 @@ class DescribeImageTests(TestCase):
     def test_skip_sentinel_becomes_empty(self, mock_get, mock_post):
         mock_get.return_value = _ok_response({})
         mock_post.return_value = _ok_response({"response": "SKIP"})
+        self.assertEqual(image_describer.describe_image_for_lesson(PNG), "")
+
+    @patch("lessons.services.image_describer.requests.post")
+    @patch("lessons.services.image_describer.requests.get")
+    def test_a_prefixed_skip_sentinel_is_a_skip_not_a_description(self, mock_get, mock_post):
+        # The chatter strip runs before the SKIP test, so a refusal the model
+        # could not resist introducing is still a refusal -- not a narration
+        # reading "Okay, SKIP." aloud to the student.
+        mock_get.return_value = _ok_response({})
+        mock_post.return_value = _ok_response({"response": "Okay, SKIP."})
+
         self.assertEqual(image_describer.describe_image_for_lesson(PNG), "")
 
     @patch("lessons.services.image_describer.requests.post")

@@ -31,7 +31,6 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 _SKIP = "SKIP"
-_MIN_NARRATION_SENTENCES = 2
 _MAX_NARRATION_SENTENCES = 6
 _MAX_VISIBLE_TEXT = 400
 _MAX_NEARBY_TEXT = 600
@@ -215,49 +214,92 @@ def build_prompt(
 # A disobedient model still opens with chatter addressed to the teacher or the
 # student instead of the lesson: measured live, every stored description began
 # with one such sentence, which was then spoken aloud and made unrelated
-# figures score alike. The prompt above is the primary mechanism; these
-# patterns are the deterministic safety net applied after generation. Each
-# matches a whole opening sentence, so lesson content is never touched.
-_CHATTER_OPENERS = (
-    re.compile(r"^(?:okay|ok|alright|right|sure|certainly|of course|great)\b", re.I),
+# figures score alike. The prompt above is the primary mechanism; everything
+# below is the deterministic safety net applied after generation.
+#
+# The net is built to under-reach rather than over-reach, because what it
+# removes a blind student never hears. Two kinds of opener are told apart:
+#
+#   * an *interjection* -- "Okay,", "Sure," -- which is evidence of chatter
+#     but is not chatter by itself. "Right after heating, the particles move
+#     faster." and "Great differences in spacing separate the three states."
+#     are lesson content, so the five ambiguous words below count only when
+#     punctuation closes them off; "okay" and "alright" never open a sentence
+#     about science and need no such guard.
+#   * a *meta phrase* -- "Here's a description...", "Let's describe...",
+#     "I will explain..." -- which says what the model is about to do and
+#     carries no lesson content at all.
+#
+# Only a meta phrase is ever deleted. An interjection alone leaves the text
+# untouched unless it *is* the whole sentence ("Okay.").
+_LEADING_INTERJECTION = re.compile(
+    r"^(?:(?:okay|ok|alright)\b"
+    r"|(?:right|great|sure|certainly|of\s+course)\b(?=\s*[,.!;:]))"
+    r"[\s,.!;:—–-]*",
+    re.I,
+)
+
+_META_OPENERS = (
     # "Here's" and "Here is" both: the apostrophe form carries no space.
     re.compile(r"^(?:here|this)\s*(?:is|'s|’s)\s+(?:a|an|the|my)?\s*"
                r"(?:spoken\s+|audio\s+|short\s+|brief\s+|natural\s+)*"
                r"(?:description|narration|explanation|summary|paragraph)\b", re.I),
     re.compile(r"^let(?:'s|’s| us)\s+(?:describe|explain|take|look|go|break)\b", re.I),
     re.compile(r"^(?:i|i'll|i will|i can|we|we'll|we will)\s+(?:am\s+)?"
-               r"(?:going to\s+)?(?:now\s+)?(?:describe|explain|write|give|provide)\b", re.I),
-    re.compile(r"^(?:the\s+)?(?:following|below)\s+is\s+", re.I),
+               r"(?:going to\s+)?(?:now\s+)?"
+               r"(?:describe|explain|write|give|provide|do|help)\b", re.I),
+    re.compile(r"^(?:the\s+)?(?:following|below)\s+is\b", re.I),
     re.compile(r"^as (?:requested|asked)\b", re.I),
 )
 
 
-def _is_model_chatter(sentence: str) -> bool:
-    """A sentence addressing the teacher or student rather than the lesson."""
-    opening = sentence.strip().lstrip("*_#“\"' ").strip()
-    return any(pattern.search(opening) for pattern in _CHATTER_OPENERS)
+def _leading_interjection_end(sentence: str) -> int:
+    """How much of this sentence is a leading interjection; 0 when none is."""
+    match = _LEADING_INTERJECTION.match(sentence)
+    return match.end() if match else 0
+
+
+def _is_meta(clause: str) -> bool:
+    """Does this clause say what the model is about to do, rather than teach?"""
+    return any(pattern.search(clause) for pattern in _META_OPENERS)
 
 
 def _strip_model_chatter(text: str) -> str:
-    """Drop a leading preamble sentence; a clean description is untouched."""
+    """Drop a leading preamble; a clean description is returned unchanged."""
     cleaned = " ".join((text or "").split()).strip()
     if not cleaned:
         return ""
-    if _is_model_chatter(cleaned):
-        # A preamble often ends in a colon rather than a full stop -- "Here's
-        # a description of the figure for your blind student:" -- so sentence
-        # splitting alone would keep it glued to the real first sentence.
-        head, separator, tail = cleaned.partition(":")
-        if separator and tail.strip() and len(head) <= 120:
-            return _strip_model_chatter(tail.strip())
     sentences = _spoken_sentences(cleaned)
-    if len(sentences) > 1 and _is_model_chatter(sentences[0]):
-        return " ".join(sentences[1:]).strip()
-    return " ".join(sentences).strip()
+    first = sentences[0].lstrip("*_#“\"' ").strip()
+    rest = sentences[1:]
+    body = first[_leading_interjection_end(first):].strip()
+
+    if not body:
+        # The interjection was the whole sentence -- a bare "Okay.".
+        return _strip_model_chatter(" ".join(rest)) if rest else cleaned
+
+    # A preamble often ends in a colon rather than a full stop, so the clause
+    # before the colon is tested on its own. The search is confined to the
+    # FIRST sentence and to that clause: a colon later in the description, or
+    # one introducing a list ("three states: solid, liquid and gas"), belongs
+    # to the lesson, and cutting at it mangles what the student hears.
+    head, separator, tail = body.partition(":")
+    if separator and tail.strip() and _is_meta(head):
+        return _strip_model_chatter(" ".join([tail.strip(), *rest]))
+
+    if rest and _is_meta(body):
+        return _strip_model_chatter(" ".join(rest))
+
+    # Either this sentence carries lesson content or there is nothing else to
+    # fall back on. Leave the text exactly as the model wrote it.
+    return cleaned
 
 
 def _looks_like_skip(text: str) -> bool:
-    return text.strip().upper().strip(".!\"' ") == _SKIP
+    """SKIP, even behind a leading interjection the model could not resist."""
+    cleaned = " ".join((text or "").split()).strip().lstrip("*_#“\"' ").strip()
+    cleaned = cleaned[_leading_interjection_end(cleaned):].strip()
+    return cleaned.upper().strip(".!\"' ") == _SKIP
 
 
 def _spoken_sentences(text: str) -> list[str]:
@@ -337,10 +379,15 @@ def describe_image_for_lesson(
 
     if not text:
         return ""
+    # Stripped before the SKIP test: a model that prefixes its refusal --
+    # "Okay, SKIP." -- was otherwise stored and spoken as a description.
+    text = _strip_model_chatter(text)
+    if not text:
+        return ""
     if _looks_like_skip(text):
         _store_cached_description(cache_key, _CACHE_SKIP)
         return ""
-    text = _cap_narration_length(_strip_model_chatter(text))
+    text = _cap_narration_length(text)
     if not text:
         return ""
     _store_cached_description(cache_key, text)

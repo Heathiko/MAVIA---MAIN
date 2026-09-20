@@ -22,8 +22,9 @@ from course.version_assignment import (
     _normal_id,
     clean_group_label,
 )
-from lessons.models import LearningObjectGroup, OutlineNode
+from lessons.models import OutlineNode
 from lessons.services.concept_bundles import bundle_label, ordered_members
+from lessons.services.unit_matching import unpublish_topic
 
 
 class Command(BaseCommand):
@@ -50,7 +51,8 @@ class Command(BaseCommand):
             topics = topics.filter(pk__in=options["topics"])
         topics = topics.order_by("id")
 
-        changed = kept = locked = empty = 0
+        changed = kept = locked = empty = undecided = 0
+        unpublished = []
         for topic in topics:
             groups = list(
                 topic.learning_object_groups.prefetch_related(
@@ -60,6 +62,7 @@ class Command(BaseCommand):
             if not groups:
                 continue
             self.stdout.write(f"\nTopic {topic.id}: {topic.title}")
+            topic_changed = 0
             for group in groups:
                 members = ordered_members(group)
                 if not members:
@@ -83,13 +86,23 @@ class Command(BaseCommand):
 
                 bundles = _eligible_bundles(group)
                 normal_id = _normal_id(group, bundles)
-                bundle = bundles.get(normal_id) or next(iter(bundles.values()), members)
+                bundle = bundles.get(normal_id)
+                if not bundle:
+                    # No bundle is eligible -- an unconfirmed file, say. There
+                    # is no Normal to name the concept after, and falling back
+                    # to every PDF's objects at once would hand a multi-object
+                    # list to the heading rule, which is exactly what this
+                    # command exists to undo. Leave it to the pipeline.
+                    undecided += 1
+                    self.stdout.write(f"  [no bundle] #{group.id} {current!r}")
+                    continue
                 label = clean_group_label(bundle_label(bundle))[:255]
                 if not label or label == current:
                     kept += 1
                     continue
 
                 changed += 1
+                topic_changed += 1
                 size = len(bundle)
                 self.stdout.write(
                     self.style.WARNING(
@@ -104,11 +117,25 @@ class Command(BaseCommand):
                     group.version_selection = {**selection, "auto_label": label}
                     group.save(update_fields=["label", "version_selection"])
 
+            # A concept's name feeds the criteria's same-name veto, so a
+            # published topic would go on serving a path derived from the old
+            # colliding names. Renaming changes what is taught.
+            if topic_changed and not dry_run and unpublish_topic(topic):
+                unpublished.append(topic.id)
+                self.stdout.write(
+                    f"  topic {topic.id} unpublished; republish to rebuild its path"
+                )
+
         summary = (
             f"\n{changed} label(s) {'would be ' if dry_run else ''}corrected, "
             f"{kept} already correct, {locked} left to the teacher, "
-            f"{empty} empty concept(s) skipped."
+            f"{empty} empty and {undecided} undecidable concept(s) skipped."
         )
         self.stdout.write(self.style.SUCCESS(summary))
+        if unpublished:
+            self.stdout.write(
+                "Topics unpublished: "
+                + ", ".join(str(topic_id) for topic_id in unpublished)
+            )
         if dry_run:
             self.stdout.write("Dry run: nothing was written.")
