@@ -537,7 +537,21 @@ def generate_questions_for_material(
     )
     if node_ids is not None:
         nodes_qs = nodes_qs.filter(id__in=node_ids)
-    nodes = [node for node in nodes_qs if _is_concept_source(node)]
+    candidates = list(nodes_qs)
+    nodes = [node for node in candidates if _is_concept_source(node)]
+    if len(nodes) != len(candidates):
+        # Asking for one of these by id generates nothing at all, which used to
+        # happen in silence. Its questions exist -- they are written from the
+        # whole Normal bundle and saved against that bundle's lead.
+        logger.info(
+            "Skipping %s learning object(s) taught through another object's "
+            "concept bundle; their questions belong to that bundle's lead: %s",
+            len(candidates) - len(nodes),
+            ", ".join(
+                f'"{node.title}" (#{node.id})'
+                for node in candidates if node not in nodes
+            ),
+        )
     fingerprints = {
         node.id: question_bank_fingerprint(concept_source_text(node), QUESTION_DISTRIBUTION)
         for node in nodes
