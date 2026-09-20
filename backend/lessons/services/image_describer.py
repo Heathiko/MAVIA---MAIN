@@ -31,11 +31,11 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 _SKIP = "SKIP"
-_MIN_NARRATION_SENTENCES = 3
-_MAX_NARRATION_SENTENCES = 10
+_MIN_NARRATION_SENTENCES = 2
+_MAX_NARRATION_SENTENCES = 6
 _MAX_VISIBLE_TEXT = 400
 _MAX_NEARBY_TEXT = 600
-_CACHE_VERSION = "2"
+_CACHE_VERSION = "3"
 _CACHE_SKIP = "__SKIP__"
 _cache_lock = threading.Lock()
 _reachability_lock = threading.Lock()
@@ -146,39 +146,114 @@ def build_prompt(
     caption: str = "",
     visible_text: str = "",
 ) -> str:
-    parts = [
+    """Role, Task, Context, Format -- four labelled sections, not one paragraph.
+
+    The lesson text around a figure has to be passed in: without it a small
+    vision model cannot tell which of several possible ideas the figure is
+    there to teach. Run together with the instructions, though, it read as
+    material to reproduce, and the model paraphrased the lesson back instead
+    of describing the figure. Separating the sections marks that text plainly
+    as background and leaves the instructions unambiguous. Empty values are
+    omitted, so no label is ever printed without a value behind it.
+    """
+    sections = [
+        "ROLE:\n"
         "You are writing spoken audio description of a figure for a blind "
         "student who is following a science lesson by listening.",
+
+        "TASK:\n"
+        "Explain what this figure TEACHES — the concept, process, structure, "
+        "relationship, cause and effect, or fact it exists to show. Give the "
+        "student the understanding a sighted classmate would take from "
+        "looking at it. Do NOT describe the visual layout: no colours, "
+        "arrows, shapes, positions, or labels like \"diagram\", \"chart\", "
+        "\"graph\", or \"photo\".",
     ]
+
+    context_lines = []
     if lesson_title:
-        parts.append(f'The lesson is titled "{lesson_title}".')
+        context_lines.append(f'Lesson title: "{lesson_title}"')
     if caption:
-        parts.append(f'The figure caption reads: "{caption.strip()}".')
+        context_lines.append(f'Figure caption: "{caption.strip()}"')
     if visible_text:
-        parts.append(
-            f'Text printed inside the figure: "{visible_text.strip()[:_MAX_VISIBLE_TEXT]}".'
+        context_lines.append(
+            f'Text printed inside the figure: "{visible_text.strip()[:_MAX_VISIBLE_TEXT]}"'
         )
     if nearby_text:
-        parts.append(
-            f'Lesson text near the figure: "{nearby_text.strip()[:_MAX_NEARBY_TEXT]}".'
+        context_lines.append(
+            f'Lesson text near the figure: "{nearby_text.strip()[:_MAX_NEARBY_TEXT]}"'
         )
-    parts.append(
-        "Explain what this figure TEACHES — the concept, process, structure, "
-        "relationship, cause and effect, or fact it exists to show. Do NOT "
-        "describe the visual layout: no colours, arrows, shapes, positions, "
-        "or labels like \"diagram\", \"chart\", \"graph\", or \"photo\". Give "
-        "the student the understanding a sighted classmate would take from "
-        "looking at it. Write one natural spoken paragraph of 3 to 10 plain "
-        "sentences. Choose the length from the amount of instructional meaning "
-        "in the figure: use 3 sentences for one simple idea; use 4 to 6 for a "
-        "moderate comparison, relationship, or short process; and use 7 to 10 "
-        "only for a complex table, multi-step process, or information-rich "
-        "figure. Do not add detail merely to make the narration longer. Always "
-        "write at least 3 complete sentences and never more than 10. "
+    if context_lines:
+        heading = (
+            "CONTEXT (background only — this is what the student has already "
+            "been told. Use it to work out what the figure is for. Do NOT "
+            "repeat, restate, summarise or paraphrase any of it back."
+        )
+        if nearby_text:
+            heading += " Describe only what the figure ADDS beyond it."
+        sections.append(heading + "):\n" + "\n".join(context_lines))
+
+    sections.append(
+        "FORMAT:\n"
+        "Start immediately with the content of the figure. Write NO preamble "
+        "and no meta-sentence: do not greet, do not say what you are about to "
+        "do, do not mention the student, the teacher, the lesson, yourself or "
+        "the word description. Never begin with phrases such as \"Okay\", "
+        "\"Sure\", \"Here is\", \"Here's a description\" or \"Let's describe\". "
+        "The very first word must be part of the explanation itself.\n"
+        "Write one natural spoken paragraph of 2 to 4 plain sentences. Use 2 "
+        "sentences for one simple idea and 3 to 4 for a moderate comparison, "
+        "relationship, or short process. Go beyond 4 sentences only for a "
+        "genuinely complex table or multi-step figure, and never write more "
+        "than 6. Do not add detail merely to make the narration longer.\n"
         f'If the figure is decorative, a logo, or too unclear to explain, '
         f'reply with exactly "{_SKIP}" and nothing else.'
     )
-    return " ".join(parts)
+    return "\n\n".join(sections)
+
+
+# A disobedient model still opens with chatter addressed to the teacher or the
+# student instead of the lesson: measured live, every stored description began
+# with one such sentence, which was then spoken aloud and made unrelated
+# figures score alike. The prompt above is the primary mechanism; these
+# patterns are the deterministic safety net applied after generation. Each
+# matches a whole opening sentence, so lesson content is never touched.
+_CHATTER_OPENERS = (
+    re.compile(r"^(?:okay|ok|alright|right|sure|certainly|of course|great)\b", re.I),
+    # "Here's" and "Here is" both: the apostrophe form carries no space.
+    re.compile(r"^(?:here|this)\s*(?:is|'s|’s)\s+(?:a|an|the|my)?\s*"
+               r"(?:spoken\s+|audio\s+|short\s+|brief\s+|natural\s+)*"
+               r"(?:description|narration|explanation|summary|paragraph)\b", re.I),
+    re.compile(r"^let(?:'s|’s| us)\s+(?:describe|explain|take|look|go|break)\b", re.I),
+    re.compile(r"^(?:i|i'll|i will|i can|we|we'll|we will)\s+(?:am\s+)?"
+               r"(?:going to\s+)?(?:now\s+)?(?:describe|explain|write|give|provide)\b", re.I),
+    re.compile(r"^(?:the\s+)?(?:following|below)\s+is\s+", re.I),
+    re.compile(r"^as (?:requested|asked)\b", re.I),
+)
+
+
+def _is_model_chatter(sentence: str) -> bool:
+    """A sentence addressing the teacher or student rather than the lesson."""
+    opening = sentence.strip().lstrip("*_#“\"' ").strip()
+    return any(pattern.search(opening) for pattern in _CHATTER_OPENERS)
+
+
+def _strip_model_chatter(text: str) -> str:
+    """Drop a leading preamble sentence; a clean description is untouched."""
+    cleaned = " ".join((text or "").split()).strip()
+    if not cleaned:
+        return ""
+    if _is_model_chatter(cleaned):
+        # A preamble often ends in a colon rather than a full stop -- "Here's
+        # a description of the figure for your blind student:" -- so sentence
+        # splitting alone would keep it glued to the real first sentence.
+        head, separator, tail = cleaned.partition(":")
+        if separator and tail.strip() and len(head) <= 120:
+            return _strip_model_chatter(tail.strip())
+    sentences = _spoken_sentences(cleaned)
+    if len(sentences) > 1 and _is_model_chatter(sentences[0]):
+        return " ".join(sentences[1:]).strip()
+    return " ".join(sentences).strip()
 
 
 def _looks_like_skip(text: str) -> bool:
@@ -239,9 +314,9 @@ def describe_image_for_lesson(
         "stream": False,
         "options": {
             "temperature": 0.2,
-            # Enough room for ten concise spoken sentences without allowing an
+            # Enough room for six concise spoken sentences without allowing an
             # unexpectedly verbose response to run indefinitely.
-            "num_predict": 768,
+            "num_predict": 512,
         },
     }
     try:
@@ -265,7 +340,9 @@ def describe_image_for_lesson(
     if _looks_like_skip(text):
         _store_cached_description(cache_key, _CACHE_SKIP)
         return ""
-    text = _cap_narration_length(text)
+    text = _cap_narration_length(_strip_model_chatter(text))
+    if not text:
+        return ""
     _store_cached_description(cache_key, text)
     return text
 
