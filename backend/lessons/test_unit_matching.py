@@ -135,15 +135,82 @@ SEMANTIC_ENV = {
 }
 
 
-class SuggestionTests(UnitFixture):
-    def _refresh(self, score=0.5):
+class PlacementTests(UnitFixture):
+    def _refresh(self, score):
         runtime = FakeRuntime()
         runtime.pair_scores = lambda pairs: [score for _ in pairs]
         with patch.dict(os.environ, SEMANTIC_ENV):
             return refresh_heading_unit_suggestions(self.topic, runtime_instance=runtime)
 
-    def test_suggestions_are_pending_and_carry_every_member(self):
-        self._refresh()
+    def test_a_confident_match_is_placed_without_a_card(self):
+        counts = self._refresh(0.8)
+
+        self.solids_b.refresh_from_db()
+        self.diagram_b.refresh_from_db()
+        self.solid_a.refresh_from_db()
+        self.assertEqual(self.solids_b.group_id, self.solid_a.group_id)
+        self.assertEqual(self.diagram_b.group_id, self.solid_a.group_id)
+        self.assertGreaterEqual(counts["placed"], 1)
+        self.assertFalse(
+            LearningObjectMatchSuggestion.objects.filter(
+                status=LearningObjectMatchSuggestion.Status.PENDING,
+                evidence__label=heading_key("Solids"),
+            ).exists()
+        )
+
+    def test_an_uncertain_match_raises_a_card_and_places_nothing(self):
+        self._refresh(0.45)
+
+        self.solids_b.refresh_from_db()
+        self.assertNotEqual(self.solids_b.group_id, self.solid_a.group_id)
+        self.assertTrue(
+            LearningObjectMatchSuggestion.objects.filter(
+                status=LearningObjectMatchSuggestion.Status.PENDING,
+            ).exists()
+        )
+
+    def test_a_score_below_the_review_threshold_does_nothing(self):
+        self._refresh(0.1)
+
+        self.solids_b.refresh_from_db()
+        self.assertNotEqual(self.solids_b.group_id, self.solid_a.group_id)
+        self.assertFalse(LearningObjectMatchSuggestion.objects.exists())
+
+    def test_a_section_of_separate_concepts_is_never_placed(self):
+        """Regression: the Matter heading covers Matter, Solid and Liquid in
+        material A; no PDF names that run, so it must not fuse."""
+        self._refresh(0.8)
+
+        self.matter.refresh_from_db()
+        self.solid_a.refresh_from_db()
+        self.assertNotEqual(self.matter.group_id, self.solid_a.group_id)
+
+    def test_accepting_a_card_places_the_objects_without_merging(self):
+        self._refresh(0.45)
+        suggestion = LearningObjectMatchSuggestion.objects.filter(
+            status=LearningObjectMatchSuggestion.Status.PENDING).first()
+        client = authenticated_api_client()
+
+        response = client.post(
+            f"/api/courses/{self.course.id}/outline-nodes/{self.topic.id}"
+            f"/match-suggestions/{suggestion.id}/accept/",
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        members = {
+            item.id for item in LearningObject.objects.filter(
+                group_id=LearningObject.objects.get(pk=suggestion.source_learning_object_id).group_id)
+        }
+        expected = {
+            suggestion.source_learning_object_id, suggestion.candidate_learning_object_id,
+            *suggestion.source_extra_ids, *suggestion.candidate_extra_ids,
+        }
+        self.assertEqual(members & expected, expected)
+        self.assertEqual(LearningObject.objects.filter(pk__in=expected).count(), len(expected))
+
+    def test_a_card_is_pending_and_carries_every_member(self):
+        self._refresh(0.45)
 
         suggestion = LearningObjectMatchSuggestion.objects.get(
             evidence__label=heading_key("Comparing the Three States"),
@@ -154,61 +221,19 @@ class SuggestionTests(UnitFixture):
                    *suggestion.source_extra_ids, *suggestion.candidate_extra_ids}
         self.assertEqual(members, {self.shape.id, self.volume.id, self.compare_b.id, self.table_b.id})
 
-    def test_a_score_below_the_review_threshold_proposes_nothing(self):
-        self._refresh(score=0.1)
-
-        self.assertFalse(LearningObjectMatchSuggestion.objects.exists())
-
-    def test_even_a_high_score_never_merges_automatically(self):
-        self._refresh(score=0.99)
-
-        self.assertEqual(self.a.learning_objects.count(), 6)
-        self.assertFalse(
-            LearningObjectMatchSuggestion.objects.exclude(
-                status=LearningObjectMatchSuggestion.Status.PENDING,
-            ).exists()
-        )
-
     def test_a_rejected_unit_suggestion_is_not_reopened(self):
-        self._refresh()
+        self._refresh(0.45)
         LearningObjectMatchSuggestion.objects.update(status=LearningObjectMatchSuggestion.Status.REJECTED)
 
-        self._refresh()
+        self._refresh(0.45)
 
         self.assertFalse(
             LearningObjectMatchSuggestion.objects.filter(status=LearningObjectMatchSuggestion.Status.PENDING).exists()
         )
 
-    def test_accepting_merges_both_sides_and_connects_them(self):
-        self._refresh()
-        suggestion = LearningObjectMatchSuggestion.objects.get(
-            evidence__label=heading_key("Comparing the Three States"),
-        )
-        client = authenticated_api_client()
-
-        response = client.post(
-            f"/api/courses/{self.course.id}/outline-nodes/{self.topic.id}/match-suggestions/{suggestion.id}/accept/",
-            format="json",
-        )
-
-        self.assertEqual(response.status_code, 200, response.data)
-        merged_a = LearningObject.objects.get(pk=self.shape.id)
-        merged_b = LearningObject.objects.get(pk=self.compare_b.id)
-        self.assertEqual(merged_a.title, "Comparing the Three States")
-        self.assertEqual(len(merged_a.merged_from), 2)
-        self.assertEqual(len(merged_b.merged_from), 2)
-        self.assertEqual(merged_a.group_id, merged_b.group_id)
-        self.assertFalse(LearningObject.objects.filter(pk__in=[self.volume.id, self.table_b.id]).exists())
-        accepted = LearningObjectMatchSuggestion.objects.get(
-            source_learning_object=merged_a, candidate_learning_object=merged_b,
-        )
-        self.assertEqual(accepted.status, LearningObjectMatchSuggestion.Status.ACCEPTED)
-        self.assertEqual(accepted.source_extra_ids, [])
-        self.assertEqual(accepted.candidate_extra_ids, [])
-
 
 class OccupiedPairTests(UnitFixture):
-    """A one-to-one accept can leave a unit suggestion's natural kept-row pair
+    """A one-to-one accept can leave a unit suggestion's natural lead pair
     already occupied by a real decision; that decision must never be touched."""
 
     def _refresh(self, score=0.5):
@@ -251,7 +276,7 @@ class OccupiedPairTests(UnitFixture):
         }
         self.assertEqual(members, {self.solid_a.id, self.solids_b.id, self.diagram_b.id})
 
-    def test_accepting_the_rekeyed_unit_suggestion_merges_and_keeps_the_prior_accept(self):
+    def test_accepting_the_rekeyed_unit_suggestion_places_and_keeps_the_prior_accept(self):
         source, candidate = sorted([self.solid_a, self.solids_b], key=lambda item: item.id)
         accepted = self._accept_one_to_one(source, candidate)
         self._refresh()
@@ -265,9 +290,11 @@ class OccupiedPairTests(UnitFixture):
         )
 
         self.assertEqual(response.status_code, 200, response.data)
-        merged = LearningObject.objects.get(pk=self.solids_b.id)
-        self.assertFalse(LearningObject.objects.filter(pk=self.diagram_b.id).exists())
-        self.assertEqual(merged.group_id, self.solid_a.group_id)
+        self.solid_a.refresh_from_db()
+        self.solids_b.refresh_from_db()
+        self.diagram_b.refresh_from_db()
+        self.assertEqual(self.solids_b.group_id, self.solid_a.group_id)
+        self.assertEqual(self.diagram_b.group_id, self.solid_a.group_id)
         accepted.refresh_from_db()
         self.assertEqual(accepted.status, LearningObjectMatchSuggestion.Status.ACCEPTED)
 
@@ -316,7 +343,7 @@ class UnitDecisionTests(UnitFixture):
             **fields,
         )
 
-    def test_declining_a_unit_suggestion_whose_kept_rows_differ_in_kind_is_recorded(self):
+    def test_declining_a_unit_suggestion_whose_lead_rows_differ_in_kind_is_recorded(self):
         LearningObject.objects.filter(pk=self.examples_a.id).update(kind="image")
         self._refresh()
         suggestion = LearningObjectMatchSuggestion.objects.get(evidence__label=heading_key("Everyday Examples"))
@@ -349,11 +376,17 @@ class UnitDecisionTests(UnitFixture):
         self.assertEqual(suggestion.status, LearningObjectMatchSuggestion.Status.REJECTED)
         self.assertEqual((suggestion.source_extra_ids, suggestion.candidate_extra_ids), extras)
 
-    def test_a_failure_after_merging_rolls_the_whole_accept_back(self):
+    def test_a_failure_after_placing_rolls_the_whole_accept_back(self):
         self._refresh()
         suggestion = LearningObjectMatchSuggestion.objects.get(
             evidence__label=heading_key("Comparing the Three States"),
         )
+        groups = {
+            item.id: item.group_id
+            for item in LearningObject.objects.filter(
+                pk__in=[self.shape.id, self.volume.id, self.compare_b.id, self.table_b.id],
+            )
+        }
 
         with patch(
             "lessons.views.CourseGroupViewSet._refresh_relationship_snapshots",
@@ -363,14 +396,17 @@ class UnitDecisionTests(UnitFixture):
                 authenticated_api_client().post(self._url(suggestion, "accept"), format="json")
 
         self.assertEqual(
-            LearningObject.objects.filter(pk__in=[self.volume.id, self.table_b.id]).count(), 2,
+            {
+                item.id: item.group_id
+                for item in LearningObject.objects.filter(pk__in=list(groups))
+            },
+            groups,
         )
-        self.assertEqual(LearningObject.objects.get(pk=self.shape.id).merged_from, [])
         suggestion.refresh_from_db()
         self.assertEqual(suggestion.status, LearningObjectMatchSuggestion.Status.PENDING)
         self.assertTrue(suggestion.source_extra_ids or suggestion.candidate_extra_ids)
 
-    def test_a_declined_kept_pair_refuses_the_accept_before_merging(self):
+    def test_a_declined_pair_refuses_the_accept_before_placing(self):
         declined = LearningObjectMatchSuggestion.objects.create(
             outline_node=self.topic,
             source_learning_object=self.solid_a,
@@ -386,14 +422,17 @@ class UnitDecisionTests(UnitFixture):
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("declined", response.data["detail"])
-        self.assertTrue(LearningObject.objects.filter(pk=self.diagram_b.id).exists())
-        self.assertEqual(LearningObject.objects.get(pk=self.solids_b.id).merged_from, [])
+        self.solid_a.refresh_from_db()
+        self.solids_b.refresh_from_db()
+        self.diagram_b.refresh_from_db()
+        self.assertNotEqual(self.solids_b.group_id, self.solid_a.group_id)
+        self.assertNotEqual(self.diagram_b.group_id, self.solid_a.group_id)
         declined.refresh_from_db()
         unit.refresh_from_db()
         self.assertEqual(declined.status, LearningObjectMatchSuggestion.Status.REJECTED)
         self.assertEqual(unit.status, LearningObjectMatchSuggestion.Status.PENDING)
 
-    def test_an_accepted_kept_pair_keeps_its_teacher_evidence(self):
+    def test_an_accepted_lead_pair_keeps_its_teacher_evidence(self):
         accepted = LearningObjectMatchSuggestion.objects.create(
             outline_node=self.topic,
             source_learning_object=self.solid_a,
@@ -409,7 +448,11 @@ class UnitDecisionTests(UnitFixture):
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertIn("unpublished", response.data)
-        self.assertFalse(LearningObject.objects.filter(pk=self.diagram_b.id).exists())
+        self.solid_a.refresh_from_db()
+        self.solids_b.refresh_from_db()
+        self.diagram_b.refresh_from_db()
+        self.assertEqual(self.solids_b.group_id, self.solid_a.group_id)
+        self.assertEqual(self.diagram_b.group_id, self.solid_a.group_id)
         accepted.refresh_from_db()
         self.assertEqual(accepted.status, LearningObjectMatchSuggestion.Status.ACCEPTED)
         self.assertEqual(accepted.confidence, LearningObjectMatchSuggestion.Confidence.TEACHER_CONFIRMED)

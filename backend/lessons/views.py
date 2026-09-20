@@ -87,7 +87,6 @@ from .services.learning_resource_linker import (
 )
 from .services.object_merge import (
     MergeError,
-    choose_kept_row,
     merge_learning_objects,
     split_learning_object,
 )
@@ -766,81 +765,6 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         except LearningObjectMatchSuggestion.DoesNotExist:
             return None
 
-    @transaction.atomic
-    def _merge_suggestion_units(self, suggestion, source, candidate):
-        """Merge each side of a unit suggestion; return ``(left, right, unpublished)``.
-
-        The suggestion row cascades away if one of its FK rows is merged away,
-        so the pair is recorded again against the kept rows. A decision already
-        on the kept pair is never overwritten: a declined pair refuses before
-        anything is merged; any other keeps its status and teacher evidence.
-        """
-        sides = []
-        for primary, extra_ids in (
-            (source, suggestion.source_extra_ids),
-            (candidate, suggestion.candidate_extra_ids),
-        ):
-            members = [primary, *LearningObject.objects.filter(
-                pk__in=extra_ids, material_id=primary.material_id,
-            )]
-            if len(members) != 1 + len(extra_ids):
-                raise MergeError("This suggestion is out of date. Refresh the page and review it again.")
-            sides.append(members)
-
-        # Checked before merging anything: the kept rows are known up front.
-        planned = sorted(
-            (members[0] if len(members) == 1 else choose_kept_row(members) for members in sides),
-            key=lambda item: item.id,
-        )
-        occupied = LearningObjectMatchSuggestion.objects.filter(
-            source_learning_object=planned[0], candidate_learning_object=planned[1],
-        ).exclude(pk=suggestion.pk).first()
-        if occupied and occupied.status == LearningObjectMatchSuggestion.Status.REJECTED:
-            raise MergeError("A teacher declined connecting these objects; review it first.")
-
-        unit_evidence = dict(suggestion.evidence or {})
-        kept, unpublished = [], False
-        for members in sides:
-            if len(members) == 1:
-                kept.append(members[0])
-            else:
-                row, was_unpublished = merge_learning_objects(members)
-                unpublished = unpublished or was_unpublished
-                kept.append(row)
-        left, right = sorted(kept, key=lambda item: item.id)
-
-        existing = LearningObjectMatchSuggestion.objects.filter(
-            source_learning_object=left, candidate_learning_object=right,
-        ).first()
-        if existing is None:
-            LearningObjectMatchSuggestion.objects.create(
-                source_learning_object=left,
-                candidate_learning_object=right,
-                outline_node=suggestion.outline_node,
-                similarity_score=suggestion.similarity_score,
-                confidence=suggestion.confidence,
-                evidence=unit_evidence,
-                status=suggestion.status,
-            )
-        else:
-            # Never replace a recorded decision: keep status and teacher keys.
-            previous = dict(existing.evidence or {})
-            teacher_keys = {
-                key: previous[key]
-                for key in ("teacher_reviewed", "teacher_decision")
-                if key in previous
-            }
-            existing.evidence = {**previous, **unit_evidence, **teacher_keys}
-            existing.source_extra_ids = []
-            existing.candidate_extra_ids = []
-            update_fields = ["evidence", "source_extra_ids", "candidate_extra_ids", "updated_at"]
-            if existing.status == LearningObjectMatchSuggestion.Status.PENDING and not teacher_keys:
-                existing.similarity_score = suggestion.similarity_score
-                existing.confidence = suggestion.confidence
-                update_fields += ["similarity_score", "confidence"]
-            existing.save(update_fields=update_fields)
-        return left, right, unpublished
-
     @staticmethod
     def _record_suggestion_decision(suggestion, source, candidate, *, accepted):
         """Record a teacher decision on a suggestion, including unit suggestions.
@@ -906,13 +830,41 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
 
     @transaction.atomic
     def _accept_suggestion(self, node, suggestion, source, candidate):
-        """Merge (for units), connect and record the decision in one transaction."""
+        """Place (for units), connect and record the decision in one transaction."""
         unpublished = False
         if suggestion.source_extra_ids or suggestion.candidate_extra_ids:
-            source, candidate, unpublished = self._merge_suggestion_units(suggestion, source, candidate)
-            suggestion = LearningObjectMatchSuggestion.objects.get(
-                source_learning_object=source, candidate_learning_object=candidate,
+            from .services.unit_matching import place_unit, unpublish_topic
+
+            objects = list(
+                LearningObject.objects.filter(
+                    pk__in=[
+                        suggestion.source_learning_object_id,
+                        suggestion.candidate_learning_object_id,
+                        *suggestion.source_extra_ids,
+                        *suggestion.candidate_extra_ids,
+                    ],
+                    material__outline_node=node,
+                )
             )
+            expected = 2 + len(suggestion.source_extra_ids) + len(suggestion.candidate_extra_ids)
+            if len(objects) != expected:
+                raise MergeError(
+                    "This suggestion is out of date. Refresh the page and review it again."
+                )
+            # Checked before anything moves: a teacher may have declined a pair
+            # this unit would put into one concept.
+            if LearningObjectMatchSuggestion.objects.filter(
+                status=LearningObjectMatchSuggestion.Status.REJECTED,
+                source_learning_object__in=objects,
+                candidate_learning_object__in=objects,
+            ).exclude(pk=suggestion.pk).exists():
+                raise MergeError("A teacher declined connecting these objects; review it first.")
+            place_unit(objects, source.group or candidate.group or LearningObjectGroup.objects.create(
+                outline_node=node, label=(source.title or "")[:255],
+            ))
+            unpublished = unpublish_topic(node)
+            source.refresh_from_db()
+            candidate.refresh_from_db()
         suggestion.status = LearningObjectMatchSuggestion.Status.ACCEPTED
         suggestion.save(update_fields=["status", "updated_at"])
         target_group = source.group or LearningObjectGroup.objects.create(

@@ -1,20 +1,27 @@
-"""Propose merging several objects of one PDF that another PDF teaches as one.
+"""Place several objects of one PDF that another PDF teaches as one concept.
 
 Measured on topic 62 before this was written: the cross-encoder scored nearly
 every item of one PDF between 0.5 and 0.65 against every section of the other,
 so scores cannot find these units. Document structure finds candidates -- runs
 of consecutive objects under one heading -- but on its own it over-merges: a
 "Matter" section may hold Matter, Solid, Liquid and Gas. A unit is therefore
-proposed only when the *other* PDF names it with a matching heading or title,
-the cross-encoder confirms at the review threshold, and the teacher accepts.
+acted on only when the *other* PDF names it with a matching heading or title
+and the cross-encoder confirms: at or above the auto threshold its objects are
+placed into one concept, and between the review threshold and that the teacher
+sees a card first. Nothing is merged -- each object keeps its own text.
 """
 
 from collections import defaultdict
 from dataclasses import dataclass
 
-from ..models import LearningObject, LearningObjectMatchSuggestion
+from ..models import (
+    LearningObject,
+    LearningObjectGroup,
+    LearningObjectMatchSuggestion,
+    OutlineNode,
+)
 from .learning_resource_linker import normalize_learning_object_title
-from .object_merge import choose_kept_row, merge_text
+from .concept_bundles import bundle_lead, bundle_text
 from . import semantic_grouping
 
 METHOD = "heading_unit_v1"
@@ -186,22 +193,73 @@ def _resolve_unit_pairing(source, source_side, candidate_row, candidate_side):
     return new_source, new_source_side, new_candidate, new_candidate_side
 
 
+def place_unit(objects, target_group):
+    """Move every object of a unit into one concept.
+
+    Placement replaces the old merge: the objects keep their own text and
+    order, and the concept simply holds them all.
+    """
+    emptied = {item.group_id for item in objects if item.group_id and item.group_id != target_group.id}
+    for item in objects:
+        if item.group_id == target_group.id:
+            continue
+        item.group = target_group
+        item.represented_by = None
+        item.mark_grouping_current()
+        item.save(update_fields=["group", "represented_by", "grouping_content_hash"])
+    LearningObjectGroup.objects.filter(
+        pk__in=emptied, learning_objects__isnull=True,
+    ).delete()
+
+
+def unpublish_topic(node):
+    """A placement changes what the lesson teaches, so the topic leaves print.
+
+    The flag is read from the database because callers hold cached topic
+    instances; mirrors ``regrouping.apply_regrouping``.
+    """
+    node_id = getattr(node, "pk", node)
+    if node_id is None:
+        return False
+    return bool(
+        OutlineNode.objects.filter(pk=node_id, published=True)
+        .update(published=False, published_at=None)
+    )
+
+
 def refresh_heading_unit_suggestions(node, runtime_instance=None):
-    """Create or refresh pending unit suggestions for this topic. Never merges."""
+    """Place confident units, raise a card for the rest.
+
+    Returns ``{"placed": n, "pending": n}``. A unit at or above the auto
+    threshold is placed into one concept straight away; between the review
+    threshold and that, a teacher reviews a card first.
+    """
     engine = runtime_instance or semantic_grouping.runtime()
-    threshold = semantic_grouping.policy()["review_threshold"]
-    created = 0
+    config = semantic_grouping.policy()
+    threshold = config["review_threshold"]
+    auto = config["auto_threshold"]
+    automatic = semantic_grouping.mode() == "auto" and auto is not None
+    placed, pending = 0, 0
     for candidate in heading_unit_candidates(node):
         left, right = candidate["left"], candidate["right"]
         try:
-            kept_left, kept_right = choose_kept_row(left), choose_kept_row(right)
-            score = engine.pair_scores([(merge_text(left), merge_text(right))])[0]
-        except Exception:  # noqa: BLE001 -- MergeError or model limits: no suggestion
+            score = engine.pair_scores([(bundle_text(left), bundle_text(right))])[0]
+        except Exception:  # noqa: BLE001 -- model limits: no suggestion
             continue
         if score < threshold:
             continue
-        source, candidate_row = (kept_left, kept_right) if kept_left.id < kept_right.id else (kept_right, kept_left)
-        source_side, candidate_side = (left, right) if source is kept_left else (right, left)
+        if automatic and score >= auto:
+            target = next(
+                (item.group for item in [*left, *right] if item.group_id), None,
+            ) or LearningObjectGroup.objects.create(
+                outline_node=node, label=(left[0].title or "")[:255],
+            )
+            place_unit([*left, *right], target)
+            placed += 1
+            continue
+        lead_left, lead_right = bundle_lead(left), bundle_lead(right)
+        source, candidate_row = (lead_left, lead_right) if lead_left.id < lead_right.id else (lead_right, lead_left)
+        source_side, candidate_side = (left, right) if source is lead_left else (right, left)
 
         pairing = _resolve_unit_pairing(source, source_side, candidate_row, candidate_side)
         if pairing is None:
@@ -237,5 +295,7 @@ def refresh_heading_unit_suggestions(node, runtime_instance=None):
                 },
             },
         )
-        created += 1
-    return created
+        pending += 1
+    if placed:
+        unpublish_topic(node)
+    return {"placed": placed, "pending": pending}
