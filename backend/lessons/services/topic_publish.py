@@ -56,9 +56,15 @@ def concepts_missing_a_version(node, materials):
       either repeats it or belongs to a bundle that is already a version --
       including a bundle still awaiting the teacher's confirmation, which is
       simply not a version yet and must not hold publishing back.
+
+    ``materials`` is the publish's confirmed set, and a role only counts as
+    supplied when the PDF supplying it is in that set: the audio phase runs
+    over confirmed materials only, so un-confirming one PDF after grouping
+    would otherwise publish a version with nothing to play.
     """
     from course.version_assignment import PRIMARY_SLOTS, version_bundles
 
+    confirmed_ids = {material.id for material in materials}
     filled = {
         (learning_object_id, variant)
         for learning_object_id, variant, narration in LessonVariant.objects.filter(
@@ -84,7 +90,12 @@ def concepts_missing_a_version(node, materials):
                 bundles_by_group[candidate.group_id] = version_bundles(candidate.group)
             bundles = bundles_by_group[candidate.group_id]
             normal = bundles.get("NORMAL") or []
-            supplied = {role for role in bundles if role in PRIMARY_SLOTS}
+            supplied = {
+                role for role, objects in bundles.items()
+                if role in PRIMARY_SLOTS
+                and objects
+                and all(item.material_id in confirmed_ids for item in objects)
+            }
             if normal:
                 if normal[0].id != candidate.id:
                     continue
@@ -104,6 +115,34 @@ def concepts_missing_a_version(node, materials):
         ):
             missing.append(candidate.id)
     return missing
+
+
+def refresh_material_playlist(material):
+    """Rewrite one material's narration script and lesson playlist.
+
+    One entry per object this PDF still teaches in its own voice. An object
+    ``represented_by`` another is that concept's version, not a track of this
+    lesson, and is left out -- ``generate_version_audio`` speaks it instead.
+
+    A concept taught as a bundle of three objects therefore keeps three
+    tracks, in document order: this list is what the mobile package serves,
+    so collapsing a concept here would collapse the lesson a learner hears.
+
+    Returns the objects it wrote tracks for.
+    """
+    active_objects = list(
+        material.learning_objects.filter(represented_by__isnull=True).order_by("order", "id")
+    )
+    narration = build_narration_script_from_learning_objects([
+        {"learning_object_id": item.id, "title": item.title, "content": item.content,
+         "type": "image_description" if item.kind == "image" else "teacher_text",
+         "section_title": item.section_title, "source_page": item.source_page}
+        for item in active_objects
+    ])
+    material.generated_json = {**(material.generated_json or {}),
+        "narration_script": narration, "lesson_playlist": build_lesson_playlist(narration)}
+    material.save(update_fields=["generated_json"])
+    return active_objects
 
 
 def run_topic_publish(course, node, set_confirmed, on_event=None):
@@ -199,16 +238,7 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
             index=index, total=len(materials), material_id=material.id,
         )
         try:
-            active_objects = list(material.learning_objects.filter(represented_by__isnull=True).order_by("order", "id"))
-            narration = build_narration_script_from_learning_objects([
-                {"learning_object_id": item.id, "title": item.title, "content": item.content,
-                 "type": "image_description" if item.kind == "image" else "teacher_text",
-                 "section_title": item.section_title, "source_page": item.source_page}
-                for item in active_objects
-            ])
-            material.generated_json = {**(material.generated_json or {}),
-                "narration_script": narration, "lesson_playlist": build_lesson_playlist(narration)}
-            material.save(update_fields=["generated_json"])
+            active_objects = refresh_material_playlist(material)
             result = generate_material_audio_playlist(material, scope="lessons") if active_objects else {"generated_count": 0}
             version_audio = generate_version_audio(material)
             result["generated_count"] += version_audio["generated_count"]

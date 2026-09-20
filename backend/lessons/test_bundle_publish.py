@@ -252,3 +252,25 @@ class PendingBundleGateTests(TestCase):
         missing = concepts_missing_a_version(self.node, [self.first, self.second])
 
         self.assertEqual(missing, [self.normal.id])
+
+    def test_a_role_supplied_by_an_unconfirmed_pdf_is_not_supplied(self):
+        """Finding 11: the gate counted a role supplied by any material of the
+        concept, but the audio phase only covers the publish's confirmed
+        materials. Un-confirming the second PDF after grouping would publish a
+        Simplified track with nothing to play."""
+        LessonVariant.objects.filter(
+            learning_object=self.normal, variant="SIMPLIFIED",
+        ).delete()
+
+        missing = concepts_missing_a_version(self.node, [self.first])
+
+        self.assertEqual(missing, [self.normal.id])
+
+    def test_a_role_supplied_by_a_confirmed_pdf_still_counts(self):
+        LessonVariant.objects.filter(
+            learning_object=self.normal, variant="SIMPLIFIED",
+        ).delete()
+
+        missing = concepts_missing_a_version(self.node, [self.first, self.second])
+
+        self.assertEqual(missing, [])
