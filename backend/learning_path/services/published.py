@@ -11,11 +11,14 @@ See ``learning_path/HANDOFF.md`` for the shape and how to use it.
 
 from collections import defaultdict
 
-from course.models import LessonVariant
-from course.version_assignment import assign_group_versions
+from course.models import bundle_segments, normal_bundle_for
+from course.services import _generated_versions, _version_from_segments
+from course.version_assignment import assign_group_versions, version_bundles
 from question_generation.models import GeneratedQuestion
 
 from ..models import ConceptPrerequisite, LearningPathStep
+from lessons.services.concept_bundles import bundles_for_group
+
 from .concept_units import concepts_for_topic
 from .text_signals import part_marker, strip_part_suffix
 
@@ -30,22 +33,6 @@ def _representative(group, members):
     if representative_id in by_id:
         return by_id[representative_id]
     return next((m for m in members if m.represented_by_id is None), members[0] if members else None)
-
-
-def _normal_audio_lookup(material):
-    """{narration_item_order: audio_url} for one material's already-generated
-    playlist (see ``lessons/services/audio_generator.py``) -- the same TTS
-    pipeline legacy-mode lesson tracks use. There is no explicit FK from a
-    LearningObject to its playlist entry, but both are built 1:1, in order,
-    from the same narration script at ingestion, so a LearningObject's
-    0-indexed ``order`` lines up with the (1-indexed) ``narration_item_order``
-    on its playlist entry -- see ``_versions`` below."""
-    generated_json = material.generated_json or {}
-    return {
-        item.get("narration_item_order"): item.get("audio_url") or ""
-        for item in generated_json.get("lesson_playlist", [])
-        if item.get("narration_item_order") is not None and item.get("audio_url")
-    }
 
 
 def _passage_parts(anchor, members):
@@ -94,6 +81,20 @@ def _passage_parts(anchor, members):
     return [anchor]
 
 
+def _telling(anchor, members, bundle):
+    """Every object one telling of a concept is taught as, in reading order.
+
+    ``bundle`` is the telling's PDF bundle -- the objects of this concept from
+    that PDF. A split passage whose later parts were grouped on their own is
+    still one telling, so those parts are added; for a passage the bundle
+    already holds whole, that adds nothing.
+    """
+    by_id = {item.id: item for item in bundle}
+    for part in _passage_parts(anchor, members):
+        by_id.setdefault(part.id, part)
+    return sorted(by_id.values(), key=lambda item: (item.order, item.id))
+
+
 def _chunk_title(parts):
     """A split passage is one idea to the student, so it is named without the
     "(Part 1 of 2)" the chunker added."""
@@ -101,45 +102,57 @@ def _chunk_title(parts):
     return strip_part_suffix(title) if len(parts) > 1 else title
 
 
-def _versions(parts, audio_for):
+def _slot(segments):
+    """One version, as the documented keys plus the segments behind them.
+
+    ``parts`` and ``segments`` are the same list of ``{text, audio_url}``, one
+    per object, which is what a player should play: ``parts`` is the key the
+    student app reads, ``segments`` the one the lesson package serves.
+    ``audio_url`` is kept for readers that predate both and is only filled
+    when a single clip really covers all of ``text`` -- a reader that played
+    the first of several clips alone would give a learner part of the version
+    and no way to tell.
+    """
+    version = _version_from_segments(segments, origin=None)
+    return {
+        "text": version["text"],
+        "audio_url": segments[0]["audio_url"] if len(segments) == 1 else "",
+        "parts": version["segments"],
+        "segments": version["segments"],
+    }
+
+
+def _versions(parts, group=None):
     """Normal / simplified / elaborated for one telling of a concept.
 
-    Every version carries ``parts``: one ``{text, audio_url}`` per chunk of the
-    passage, in reading order, which is what a player should play. ``text`` is
-    the whole passage; ``audio_url`` is kept for readers that predate ``parts``
-    and is only filled when a single file really covers all of ``text``.
+    Normal is every object of the telling, joined. Simplified and Elaborated
+    are generated per object; a rung short of any object is left out rather
+    than half-served, so the player falls back to Normal instead. The helpers
+    are the lesson package's own, imported rather than copied, so that rule
+    exists in one place.
 
-    A simplified or elaborated rung exists only when *every* part has one --
-    a rung covering half a passage would silently skip the rest of it, so
-    the player falls back to Normal instead.
+    ``group`` is passed only for the concept's Normal telling: a version
+    another PDF supplies is that PDF's own objects, and it outranks anything
+    generated for the same role -- including wording generated before a
+    teacher connected the two bundles, which outlives the regroup.
     """
-    rows = defaultdict(dict)
-    for row in LessonVariant.objects.filter(
-        learning_object__in=parts, variant__in=("SIMPLIFIED", "ELABORATED"),
-    ):
-        rows[row.learning_object_id][row.variant] = row
-
-    def assemble(pieces):
-        return {
-            "text": "\n\n".join(piece["text"] for piece in pieces if piece["text"]),
-            "audio_url": pieces[0]["audio_url"] if len(pieces) == 1 else "",
-            "parts": pieces,
-        }
-
-    def slot(key):
-        pieces = []
-        for part in parts:
-            row = rows[part.id].get(key)
-            if row is None:
-                return None
-            pieces.append({"text": row.narration, "audio_url": row.audio_url or ""})
-        return assemble(pieces)
-
-    return {
-        "normal": assemble([{"text": part.content or "", "audio_url": audio_for(part)} for part in parts]),
-        "simplified": slot("SIMPLIFIED"),
-        "elaborated": slot("ELABORATED"),
+    versions = {
+        "normal": _slot(bundle_segments(parts)),
+        "simplified": None,
+        "elaborated": None,
     }
+
+    for role, generated in _generated_versions(parts).items():
+        if role.lower() in versions:
+            versions[role.lower()] = _slot(generated["segments"])
+
+    if group is not None:
+        for role, objects in version_bundles(group).items():
+            if role in ("NORMAL", "EXTRA"):
+                continue
+            versions[role.lower()] = _slot(bundle_segments(objects))
+
+    return versions
 
 
 def _questions(parts, include_answers):
@@ -147,7 +160,7 @@ def _questions(parts, include_answers):
     # earliest-generated HOT question, LOT first -- never more than 2, even
     # if question generation left extra final rows on this node (it isn't
     # guaranteed to cap itself at one per thinking_order). Drawn from every
-    # part of the passage: generation attaches questions to whichever chunk
+    # part of the telling: generation attaches questions to whichever object
     # it was reading, which is often not the first.
     by_order = {}
     for question in GeneratedQuestion.objects.filter(node__in=parts, status="final").order_by("id"):
@@ -207,15 +220,6 @@ def get_published_path(node, *, include_answers=True):
     # its concept really has -- including later parts of a split passage,
     # which live in groups of their own that no step points at.
     concepts = {concept.id: concept for concept in concepts_for_topic(node)}
-    audio_by_material = {}
-
-    def audio_for(learning_object):
-        lookup = audio_by_material.get(learning_object.material_id)
-        if lookup is None:
-            lookup = audio_by_material[learning_object.material_id] = _normal_audio_lookup(
-                learning_object.material
-            )
-        return lookup.get(learning_object.order + 1, "")
 
     payload_steps = []
     for step in steps:
@@ -237,19 +241,22 @@ def get_published_path(node, *, include_answers=True):
         for member in members:
             sources.setdefault(member.material_id, member.material.title)
 
-        parts = _passage_parts(representative, members)
+        parts = _telling(representative, members, normal_bundle_for(representative))
+        bundles = bundles_for_group(group)
         # Independent alternates: other PDFs' own take on this concept, not
         # folded into another member's telling (`represented_by` marks that).
         # The adaptive engine's remediation ladder reaches for one of these
         # when re-explaining the representative's own text hasn't worked --
-        # see adaptive/PATH_MODE.md "chunk switching". Each is a whole passage
-        # too, and a later part of any passage is never an alternate of its own.
+        # see adaptive/PATH_MODE.md "chunk switching". Each is a whole telling
+        # too -- its own PDF bundle -- and a later part of any passage is never
+        # an alternate of its own. A PDF that supplies one of this concept's
+        # versions is marked represented, so it is a rung, not an alternate.
         seen = {part.id for part in parts}
         alternates = []
         for member in members:
             if member.id in seen or member.represented_by_id is not None:
                 continue
-            alternate_parts = _passage_parts(member, members)
+            alternate_parts = _telling(member, members, bundles.get(member.material_id) or [member])
             if any(part.id in seen for part in alternate_parts):
                 continue
             seen.update(part.id for part in alternate_parts)
@@ -263,7 +270,7 @@ def get_published_path(node, *, include_answers=True):
             "section_title": representative.section_title,
             "learning_object_id": representative.id,
             "sources": [{"material_id": mid, "title": title} for mid, title in sources.items()],
-            "versions": _versions(parts, audio_for),
+            "versions": _versions(parts, representative.group if representative.group_id is not None else None),
             "questions": _questions(parts, include_answers),
             "alternates": [
                 {
@@ -271,7 +278,7 @@ def get_published_path(node, *, include_answers=True):
                     "material_id": alternate_parts[0].material_id,
                     "material_title": alternate_parts[0].material.title,
                     "title": _chunk_title(alternate_parts),
-                    "versions": _versions(alternate_parts, audio_for),
+                    "versions": _versions(alternate_parts),
                     "questions": _questions(alternate_parts, include_answers),
                 }
                 for alternate_parts in alternates

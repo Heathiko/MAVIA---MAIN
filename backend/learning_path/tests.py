@@ -70,6 +70,10 @@ class TopicPreviewTests(TopicFixture):
 
         steps = {step["title"]: step for step in self._path()["steps"]}
 
+        # A single-object bundle keeps its own title even under a heading
+        # (spec 3.5, task 7 fix round 2): the fixture's "Solid" object is
+        # alone in its bundle, so the step stays "Solid" while `branch`
+        # still reports the section it sits under, "Solids".
         self.assertEqual(steps["Solid"]["branch"], "Solids")
         self.assertEqual(steps["Matter"]["branch"], "")
 
@@ -182,19 +186,17 @@ class PublishedPathTests(TopicFixture):
         """The "normal" variant's audio isn't synthesized separately (unlike
         simplified/elaborated, via LessonVariant) -- it's whatever the
         material's own lesson-playlist TTS pass already produced for this
-        LearningObject's narration. LearningObjects and playlist entries are
-        both built 1:1, in order, from the same narration script, so a
-        LearningObject's 0-indexed order lines up with the playlist entry's
-        1-indexed narration_item_order (see published.py::_normal_audio_lookup).
+        LearningObject's narration. Each playlist entry names the
+        LearningObject it speaks for (see course.models.audio_clip_for).
         Regression test for the mobile "quick check comes before the lesson
         chunk" bug -- normal audio was always "" before this, so path mode
         skipped straight to questions for every concept's first attempt."""
         self.material.generated_json = {
             **self.material.generated_json,
+            "lesson_audio_generated": True,
             "lesson_playlist": [
-                {"narration_item_order": 1, "audio_url": "/media/audio_lessons/matter.mp3"},
-                {"narration_item_order": 2, "audio_url": "/media/audio_lessons/solid.mp3"},
-                {"narration_item_order": 3, "audio_url": "/media/audio_lessons/liquid.mp3"},
+                {"learning_object_id": self.objects[title].id, "audio_url": f"/media/audio_lessons/{title.lower()}.mp3"}
+                for title in ("Matter", "Solid", "Liquid")
             ],
         }
         self.material.save()
@@ -366,11 +368,6 @@ class SplitPassageTests(TestCase):
             course=course, outline_node=self.topic, title="Flowers",
             generated_json={
                 "learning_objects_confirmed": True,
-                "lesson_playlist": [
-                    {"narration_item_order": 1, "audio_url": "/media/part-1.mp3"},
-                    {"narration_item_order": 2, "audio_url": "/media/part-2.mp3"},
-                    {"narration_item_order": 3, "audio_url": "/media/stamen.mp3"},
-                ],
             },
         )
         self.parts = []
@@ -385,6 +382,15 @@ class SplitPassageTests(TestCase):
             )
             LessonVariant.objects.create(learning_object=obj, variant="SIMPLIFIED", narration=f"Simply: {content}")
             self.parts.append(obj)
+        self.material.generated_json = {
+            **self.material.generated_json,
+            "lesson_audio_generated": True,
+            "lesson_playlist": [
+                {"learning_object_id": obj.id, "audio_url": url}
+                for obj, url in zip(self.parts, ("/media/part-1.mp3", "/media/part-2.mp3", "/media/stamen.mp3"))
+            ],
+        }
+        self.material.save()
         # Generation put this concept's only question on the *second* part.
         self.question = GeneratedQuestion.objects.create(
             node=self.parts[1], question_text="Can one flower hold male and female parts?",

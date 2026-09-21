@@ -265,6 +265,36 @@ export function separateLearningObject(courseId, nodeId, learningObjectId) {
   );
 }
 
+// Corrections to an automatic bundle: the object leaves, moves, or changes place.
+export function moveObjectOut(courseId, nodeId, learningObjectId) {
+  return request(
+    `/courses/${courseId}/outline-nodes/${nodeId}/learning-objects/${learningObjectId}/move-out/`,
+    { method: "POST" },
+  );
+}
+
+export function moveObjectToConcept(courseId, nodeId, learningObjectId, groupId) {
+  return request(
+    `/courses/${courseId}/outline-nodes/${nodeId}/learning-objects/${learningObjectId}/move-to/`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_id: groupId }),
+    },
+  );
+}
+
+export function reorderObject(courseId, nodeId, learningObjectId, direction) {
+  return request(
+    `/courses/${courseId}/outline-nodes/${nodeId}/learning-objects/${learningObjectId}/reorder/`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction }),
+    },
+  );
+}
+
 export function acceptLearningObjectMatchSuggestion(courseId, nodeId, suggestionId) {
   return request(
     `/courses/${courseId}/outline-nodes/${nodeId}/match-suggestions/${suggestionId}/accept/`,
