@@ -58,20 +58,46 @@ SOURCE CONTENT:
 """
 
 
+# Gemma sometimes closes a JSON string with a typographic right quote instead
+# of `"`. The string then never terminates, so the constrained decoding never
+# sees the object close and the reply runs on to the token limit with whatever
+# the model pads it with. Recorded on a real publish: see test_variant_parsing.
+_TYPOGRAPHIC_DOUBLE_QUOTES = str.maketrans({"“": '"', "”": '"'})
+
+
+def _loads_json_object(text):
+    """The JSON object in ``text``, or the one inside it, or ``None``."""
+    for candidate in (text, _innermost_object(text)):
+        if candidate is None:
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _innermost_object(text):
+    start, end = text.find("{"), text.rfind("}")
+    return text[start:end + 1] if 0 <= start < end else None
+
+
 def _parse_response(raw_text, source_word_count=None):
     text = (raw_text or "").strip()
     if text.startswith("```"):
         text = text.strip("`").removeprefix("json").strip()
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end <= start:
-            raise VariantGenerationError("Gemma did not return valid JSON.") from exc
-        try:
-            payload = json.loads(text[start:end + 1])
-        except json.JSONDecodeError as nested_exc:
-            raise VariantGenerationError("Gemma did not return valid JSON.") from nested_exc
+    payload = _loads_json_object(text)
+    if payload is None:
+        # Repair the delimiters, but only keep the result when it actually
+        # parses. A reply whose wording genuinely contains curly quotes parses
+        # on the first attempt and never reaches here; one that would need its
+        # own quotes rewritten does not parse after the substitution either,
+        # and is refused rather than silently truncated.
+        payload = _loads_json_object(text.translate(_TYPOGRAPHIC_DOUBLE_QUOTES))
+    if payload is None:
+        raise VariantGenerationError("Gemma did not return valid JSON.")
 
     simplified = " ".join(str(payload.get("simplified") or "").split())
     elaborated = " ".join(str(payload.get("elaborated") or "").split())
