@@ -102,6 +102,36 @@ def _chunk_title(parts):
     return strip_part_suffix(title) if len(parts) > 1 else title
 
 
+def _legacy_audio(parts, segments):
+    """Fill Normal clips a playlist written before objects were named in it.
+
+    A playlist entry now names the object it speaks for, and that is how
+    ``bundle_segments`` finds a clip. Materials processed before that have
+    entries keyed only by position -- built 1:1 and in order from the same
+    narration script as the objects, so an object's 0-indexed ``order`` is
+    the entry's 1-indexed ``narration_item_order``. Only such a playlist is
+    read this way: one that names any object is never matched by position.
+    """
+    lookups = {}
+    filled = []
+    for part, segment in zip(parts, segments):
+        if segment["audio_url"]:
+            filled.append(segment)
+            continue
+        lookup = lookups.get(part.material_id)
+        if lookup is None:
+            playlist = (part.material.generated_json or {}).get("lesson_playlist", [])
+            lookup = lookups[part.material_id] = {} if any(
+                entry.get("learning_object_id") for entry in playlist
+            ) else {
+                entry.get("narration_item_order"): entry.get("audio_url") or ""
+                for entry in playlist
+                if entry.get("narration_item_order") is not None
+            }
+        filled.append({**segment, "audio_url": lookup.get(part.order + 1, "")})
+    return filled
+
+
 def _slot(segments):
     """One version, as the documented keys plus the segments behind them.
 
@@ -115,7 +145,8 @@ def _slot(segments):
     """
     version = _version_from_segments(segments, origin=None)
     return {
-        "text": version["text"],
+        # Parts are separated by a blank line, as this contract always has.
+        "text": "\n\n".join(segment["text"] for segment in segments if segment["text"]),
         "audio_url": segments[0]["audio_url"] if len(segments) == 1 else "",
         "parts": version["segments"],
         "segments": version["segments"],
@@ -137,7 +168,7 @@ def _versions(parts, group=None):
     teacher connected the two bundles, which outlives the regroup.
     """
     versions = {
-        "normal": _slot(bundle_segments(parts)),
+        "normal": _slot(_legacy_audio(parts, bundle_segments(parts))),
         "simplified": None,
         "elaborated": None,
     }

@@ -208,6 +208,26 @@ class PublishedPathTests(TopicFixture):
         self.assertEqual(by_title["Solid"]["versions"]["normal"]["audio_url"], "/media/audio_lessons/solid.mp3")
         self.assertEqual(by_title["Liquid"]["versions"]["normal"]["audio_url"], "/media/audio_lessons/liquid.mp3")
 
+    def test_normal_audio_from_a_playlist_written_before_objects_were_named(self):
+        """Materials processed before playlist entries named their object keep
+        their recordings: those entries are matched by position instead."""
+        self.material.generated_json = {
+            **self.material.generated_json,
+            "lesson_audio_generated": True,
+            "lesson_playlist": [
+                {"narration_item_order": 1, "audio_url": "/media/audio_lessons/matter.mp3"},
+                {"narration_item_order": 2, "audio_url": "/media/audio_lessons/solid.mp3"},
+                {"narration_item_order": 3, "audio_url": "/media/audio_lessons/liquid.mp3"},
+            ],
+        }
+        self.material.save()
+
+        body = self._get("TEACHER").json()
+
+        by_title = {step["title"]: step for step in body["steps"]}
+        self.assertEqual(by_title["Solid"]["versions"]["normal"]["audio_url"], "/media/audio_lessons/solid.mp3")
+        self.assertEqual(by_title["Solid"]["versions"]["normal"]["parts"][0]["audio_url"], "/media/audio_lessons/solid.mp3")
+
     def test_normal_variant_audio_is_blank_when_the_playlist_has_no_match(self):
         body = self._get("TEACHER").json()
 
