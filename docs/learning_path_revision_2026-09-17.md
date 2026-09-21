@@ -98,3 +98,128 @@ above (`object_merge.py`, plus two UI bugs):
 
 Rows merged before the fix were repaired in place from their stored snapshots,
 and both paths were re-derived.
+
+
+## Live re-run (2026-09-21) — first comparison on a real publish
+
+Everything above was measured against the fixtures. This is the first time
+both topics were **actually published from freshly uploaded PDFs** and the
+saved `LearningPathStep` / `ConceptPrerequisite` rows were scored against the
+gold maps. Topic ids differ from the fixtures (152 and 169, not 62 and 79)
+because the lessons were re-uploaded; concepts were matched to gold keys by
+name.
+
+### Topic 169 — Reproduction Among Flowering Plants
+
+| | fixture | live publish |
+|---|---|---|
+| Required edges accepted | 4/8 | **4/8** |
+| Gaps | the four `known_missing` | **the same four, no new ones** |
+| Forbidden edges | 0 | **0** |
+| Order | matches | **matches** |
+
+Reproduced exactly, on a different upload of the lesson, with a different PDF
+pair. The two pending gaps (stamen→pollination, pistil→pollination) and the two
+unproposed ones (pollination→fertilization, fertilization→seed) are the same
+four recorded in `gold_topic_79`'s `known_missing`. This is the first evidence
+that the criteria hold on data they were not fitted to chunk-for-chunk.
+
+### Topic 152 — Solid, Liquid and Gas
+
+Measured twice, because the first publish happened before the teacher had
+answered the grouping review queue.
+
+| | fixture | publish #1 (queue unanswered) | publish #2 (queue answered) |
+|---|---|---|---|
+| Concepts | 7 | 20 | 12 |
+| Required edges accepted | 10/10 | 6/10 | **9/10** |
+| Forbidden edges | 0 | 0 | **1** |
+| Order | matches | matches | **matches** |
+
+**Publish #1.** The four missing edges (solid/liquid/gas → comparing, and
+comparing → changing) were all *pending*, never absent. The stored evidence
+shows why:
+
+```
+Solid → Comparing the Three States
+  temporal_order 1 · semantic_reference 1 · inbound_outbound 0
+  ref_forward 0.52
+```
+
+Two criteria of three fired strongly; only foundationality failed. The
+"Comparing the Three States" concept had fragmented into six concepts — a
+24-word caption, the table figure, and Shape / Volume / Particle arrangement /
+Flow standing alone — so the inbound weight that makes one concept
+foundational was spread six ways and no fragment cleared `MIN_IOL_MARGIN`.
+
+This was not a criteria failure. The grouping step had raised a review card
+(score 0.384, between the 0.3 review and 0.6 auto thresholds) pairing exactly
+`[Shape, Volume, Particle arrangement, Flow]` with `[caption, table figure]` —
+which is precisely gold's `comparing` member set. It asked instead of guessing,
+and the question had not been answered yet.
+
+**Publish #2.** After the teacher accepted that card (and three others, and
+rejected one), 20 concepts became 12, and required edges went 6/10 → **9/10**
+with the order still exact. The grouping card was worth four edges.
+
+### The one forbidden edge, and what causes it
+
+Publish #2 accepted `Solid → Gas`. Gold declares solid, liquid and gas
+**parallel**: no edge between them is correct, and a learner would be told to
+master Solid before Gas.
+
+```
+Solid → Gas   [accepted]
+  temporal_order 1 · semantic_reference 1 · inbound_outbound 1
+  ref_forward 0.0346
+  terms_forward: ["compress", "dot", "drawn", "spaced"]
+```
+
+Those four "distinctive" terms are not science. They come from the two
+`Diagram description` objects now bundled into the concepts:
+
+- Solid: *"particles in a solid are **drawn** as evenly **spaced dots** ..."*
+- Gas: *"particles in a gas are **drawn** as widely **spaced dots** ..."*
+
+Both figure descriptions were written by the same vision model in the same
+house style, so they share rendering vocabulary. The RefD key-term criterion
+assigns those terms to the earliest concept that uses them (Solid), then sees
+Gas "using" them and votes reference = 1 — at `ref_forward` 0.0346, which is
+noise. `REF_MARGIN = 0.0` lets any positive margin through.
+
+This is the **same stock-figure-phrasing problem already documented for
+grouping** (two AI figure descriptions scoring 0.6+ against each other
+regardless of subject), reappearing inside the learning-path criteria.
+
+Three things follow, and none of them is "tune the constants":
+
+1. A blunt minimum on `ref_forward` would not work. Legitimate accepted edges
+   in this same run sit just as low — `Matter → Comparing` at 0.0257,
+   `Gas → Changing` at 0.0207. A floor that killed 0.0346 would kill those.
+2. The principled fix is to stop **rendering** vocabulary ("drawn", "dots",
+   "spaced", "shown", "illustrates", "diagram") from counting as distinctive
+   key terms. It describes the medium, not the science. This is the same
+   reasoning as `REF_MAX_DF_RATIO`, which did not catch it here because only
+   2 of 12 concepts carry a diagram — too few to look common.
+3. **The gold test does not catch this.** `gold_topic_62.json` holds the older
+   upload's text, which has no such figure descriptions, so
+   `test_gold_paths.py` stays green while live output carries a forbidden
+   edge. The fixtures are not a safety net for text the extraction produces
+   today.
+
+### Remaining gap on topic 152
+
+`comparing → changing` is the last required edge, and it is now *absent*
+rather than pending. "Changing From One State to Another" is still two
+concepts — a caption object and its figure, both from the same PDF, with no
+partner in the other PDF to corroborate them, so no grouping card was raised.
+Joining them is a manual **Move to…** in the review screen.
+
+### Status
+
+- Audio: 31/31 playlist clips and every generated version present on disk,
+  non-zero, no empty narration, across both topics.
+- Topic 169: matches the gold standard exactly.
+- Topic 152: order exact, 9/10 required edges, **1 forbidden edge outstanding**.
+- Figure descriptions have still not been regenerated. That open item is no
+  longer cosmetic: it is the direct cause of the forbidden edge above.

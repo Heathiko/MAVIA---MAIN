@@ -4,7 +4,10 @@ Written for another coding agent joining this repository cold. Read this before
 changing anything, then read `docs/AGENT_LOG.md` for what has happened most
 recently and to record your own work.
 
-Last updated: 2026-09-21 · Branch `jean-latest` · HEAD `c769e3e`
+Last updated: 2026-09-21 (evening) · Branch `jean-latest`
+
+New to the project? Read `docs/ONBOARDING.md` first — it says what to read,
+in what order, and how to get the app running.
 
 ---
 
@@ -50,7 +53,7 @@ prompt, 2026-09-21). That is their call; say whose file you are touching.
 ### Running things
 
 ```bash
-cd backend && python manage.py test -v 1      # 796 tests, all passing at HEAD
+cd backend && python manage.py test -v 1      # 827 tests, all passing at HEAD
 cd frontend && npm run build                  # must stay clean; do not commit frontend/dist
 ```
 
@@ -139,12 +142,26 @@ anywhere else.
 
 ### Teacher controls
 
-In the topic review screen ("Review Connections"): **Move out**, **Move to…**,
-**↑**, **↓** per object, plus the older **Connect** and **Separate**. Plain
-buttons, `aria-label`s naming the object and its file, `aria-disabled` rather
-than `disabled` (so the control stays in the tab order), and a focus-restore
-ref so a screen-reader user is not dropped at the top of the page after every
-press. Keep those properties if you touch that UI.
+In the topic review screen ("Review Connections"), each object's row carries
+two labelled groups, because they answer two different questions:
+
+- **Wrong concept?** — *Give it its own concept* (leaves for a **new** concept)
+  and *Move into another concept…* (joins an **existing** one).
+- **Order in this file** — ↑ / ↓, which reorder the object inside its own PDF's
+  block and never move it between concepts.
+
+Plus the older **Connect selected objects** (the reverse of "give it its own
+concept": take 2+ objects from different concepts and make them one).
+
+They were renamed on 2026-09-21: the old labels were "Move out" and "Move to…",
+which both read as "move" while doing different things, and the arrows beside
+them looked as though they changed concepts too.
+
+Plain buttons, `aria-label`s naming the object and its file, `aria-disabled`
+rather than `disabled` (so the control stays in the tab order and still
+announces itself at a bundle's edge), and a focus-restore ref so a screen-reader
+user is not dropped at the top of the page after every press. **Keep those
+properties if you touch that UI.**
 
 ---
 
@@ -223,6 +240,25 @@ Chronologically, all on `jean-latest`:
    (single-object bundles keep their own title), overlapping row controls,
    images needing label corroboration, and the figure-description prompt
    rewritten as ROLE / TASK / CONTEXT / FORMAT.
+4. **2026-09-21 (evening) — first successful publishes, and what they exposed.**
+   Six pieces of work, each with its own commit; see `docs/AGENT_LOG.md` for the
+   full entry and `docs/learning_path_revision_2026-09-17.md` for the scoring.
+   - A **page load no longer decides version roles**. Opening the review screen
+     used to write a readability-derived role to the database, so a concept
+     arrived at the classification step already labelled.
+   - **Gemma replies that are not quite JSON are recovered.** It closes a string
+     with a typographic quote, so generation runs to the token limit and the
+     reply is rejected. The delimiters are repaired only when that makes it
+     parse.
+   - **Edge TTS retries.** The host is not blocked, the link is lossy — measured
+     2 handshakes in 10 — and one dropped clip used to abort the whole publish.
+   - **Whole bundles now reach the published path and the review screens.**
+     Three readers were serving only a concept's *lead* object, and a version a
+     PDF supplies (which stores no rows by design) never reached the path at
+     all. 15 of 22 concepts were affected.
+   - **The review screens were rebuilt around roles.** Step 4 shows one block
+     per version naming its source and objects; step 1's controls were renamed
+     and grouped.
 
 ### Things that were found the hard way (don't reintroduce them)
 
@@ -240,57 +276,122 @@ Chronologically, all on `jean-latest`:
 
 ---
 
-## 6. Current state of the live database (2026-09-21)
+## 6. Current state of the live database (2026-09-21, evening)
 
-- Course 6, topics **152** (Solid, Liquid and Gas) and **169** (Reproduction
-  Among Flowering Plants), two PDFs each, objects confirmed.
-- **Neither topic is published.** Publishing failed with
-  `Edge TTS failed: Cannot connect to host speech.platform.bing.com` — an
-  environment/network problem, not a code defect. The gate now refuses rather
-  than shipping a silent lesson.
-- Automatic bundling worked on the real upload: Solid, Liquid and Gas each
-  absorbed the other PDF's section, diagram and examples with no teacher
-  action; Flowering Plants matched all nine concepts with no cards.
-- Concept labels were repaired in place (12 corrected). One concept is still
-  named "Okay, let's describe this figure for the student" because that is its
-  figure's stored description — it clears when descriptions are regenerated.
-- **31 empty `LearningObjectGroup` rows remain** from deleted materials (see
-  Open items).
+**Three topics are published**, all on course 6. The third is new and is the
+most informative, because it is a different *shape* from the other two.
+
+| Topic | Files | Objects → concepts | Path steps | Shape |
+|---|---|---|---|---|
+| 152 Solid, Liquid and Gas | 2 | 29 → 12 | 12 | one lesson, two files |
+| 163 Human Major Body Organs | 3 | 25 → 25 | 18 | **three different lessons** |
+| 169 Reproduction Among Flowering Plants | 2 | 21 → 11 | 10 | one lesson, two files |
+
+Pipeline health is clean on all three: every playlist clip and every generated
+version has real audio on disk, no empty narrations, no concept missing a
+version, and no concept served short of its bundle.
+
+### Learning path, scored against the gold standard
+
+| | 152 | 163 | 169 |
+|---|---|---|---|
+| Required edges accepted | 9/10 | *no gold map* | 4/8 |
+| New gaps (not already recorded) | 1 | — | **0** |
+| Forbidden edges | **1** | **24 of 45 accepted cross lessons** | **0** |
+| Order matches the teacher's | yes | no — interleaves the three systems | yes |
+
+- **169 reproduces the gold standard exactly** on a fresh upload: the same four
+  `known_missing` gaps, nothing new, no forbidden edges, identical order. This
+  is the first evidence the criteria hold on data they were not fitted to.
+- **152 is at 9/10.** The teacher answering one grouping review card took it
+  from 6/10 → 9/10. Two known problems remain, both in §7.
+- **163 is the cautionary case.** Its three files are the Skeletal, Digestive
+  and Circulatory systems — *different lessons*, not versions of one.
+  Grouping handled it correctly (zero cross-file concepts, one suggestion
+  raised and rejected), but the learning path linked the three systems to each
+  other. See §7.
+
+### Other facts worth knowing
+
+- **No empty `LearningObjectGroup` rows remain.** The re-upload refilled the 31
+  that were there; the delete-endpoint bug behind them still exists, and group
+  326 did inherit a stale `auto_label`, which is exactly the risk.
+- Figure descriptions have **not** been regenerated with the RTCF prompt. One
+  concept is still named "The image illustrates how the arrangement of tiny
+  particles relates to the different states of matte" — cut mid-word at 100
+  characters. This is no longer cosmetic; see §7.
+- The teacher's API token belongs to user `juranne` (role TEACHER). The
+  published path is at `GET /api/learning-path/topics/<id>/published/` and is
+  **not** rendered anywhere in the web app — the frontend only reads the
+  preview endpoint.
 - Backups: `backend/db.sqlite3.pre-repair.20260921` and older snapshots beside it.
 
 ---
 
 ## 7. Open items
 
+**The two that matter most**
+
+Both are the *same root cause*: an edge is accepted partly on "does B use A's
+distinctive terms", and a term only stops being distinctive once more than
+`REF_MAX_DF_RATIO` (0.34) of the concepts use it. With few concepts, an
+ordinary English word survives that filter, and `REF_MARGIN = 0.0` lets a
+reference score of 0.02 cast a full vote.
+
+- **Topic 152 accepts `Solid → Gas`**, which the gold standard forbids — solid
+  and gas are parallel states. The terms that carried it are `drawn`, `spaced`,
+  `dots`, `compress`: vocabulary from the two *diagram descriptions*, not
+  science. Regenerating the figure descriptions may or may not remove it, since
+  "drawn as spaced dots" is a reasonable way to describe a diagram.
+- **Topic 163 links three unrelated lessons.** 24 of its 45 accepted edges
+  cross between organ systems (`Stomach → Spine`, `Skull → Large intestine`,
+  `The Digestive System → Support`). The terms behind them are `person`,
+  `still`, `way`, `strong`. Two independent fixes: split the topic so each
+  organ system is its own topic (the criteria assume a topic *is* a lesson),
+  and raise the evidence bar so one common word cannot carry a criterion.
+
+**A blunt threshold will not fix either.** Legitimate accepted edges sit just
+as low — `Matter → Comparing` at 0.0257, `Gas → Changing` at 0.0207. The
+candidate fix is to stop non-technical and *rendering* vocabulary counting as
+distinctive at all.
+
 **Decided, not yet done**
 
-- **Regenerate figure descriptions** with the new RTCF prompt (needs Ollama's
-  vision model). This is what removes the model's chatter from lesson text and
-  from that concept's name. A before/after measurement (length, preamble,
-  overlap with the lesson) was offered for the manuscript and not yet run.
-- **Publish both topics** once TTS is reachable, then compare the derived paths
-  against the gold standard and append the result to
-  `docs/learning_path_revision_2026-09-17.md`.
-- **Empty concept groups are not cleaned up when a material is deleted**
-  (31 currently). `remove_empty_learning_object_groups` exists but the delete
-  endpoint does not call it. This is not just clutter: a stale group carries
-  `version_selection`, so a re-upload can inherit a role or a locked name set
-  for text that no longer exists. Awaiting the user's go-ahead.
+- **Regenerate figure descriptions** with the RTCF prompt (needs Ollama's
+  vision model). Clears the model's chatter from one concept's name, and is the
+  first thing to try against `Solid → Gas`.
+- **Merge the two "Changing From One State to Another" concepts** on topic 152
+  (objects 318 and 319, both from the same PDF). No suggestion card was raised
+  because the other PDF has no matching section, so it needs **Move into
+  another concept…** by hand. They currently share a name, and the same-name
+  veto blocks `comparing → changing` in either direction — this is the one
+  required edge missing from 152.
+- **Empty concept groups are not cleaned up when a material is deleted.**
+  `remove_empty_learning_object_groups` exists but the delete endpoint does not
+  call it. None are empty right now, so this is latent rather than active.
 
 **Known, deliberately deferred**
 
+- **The gold fixtures cannot catch the figure-description failure.** They hold
+  an older upload's text, with no such descriptions, so `test_gold_paths.py`
+  stays green while live output carries a forbidden edge. A fixture built from
+  text the current extraction produces would close that gap.
 - Extraction (groupmate's): titles cut mid-sentence ("Matter usually exists in
   one of three everyday states" whose text begins "solid, liquid, and gas…"),
-  section headings lost on some figures.
+  section headings lost on some figures. A description phrased around what is
+  *drawn* rather than what is *true* creates false prerequisites — see above.
 - The four missing topic-79 edges (see §4).
-- Criteria tuned on two lessons only; a third lesson is the real test.
+- **A published step is titled after its bundle's lead**, not the concept: the
+  step for "Comparing the Three States" is titled "Shape". The review screens
+  no longer have this problem; only the published payload does.
 - `question_generation/services/pipeline.py`'s `_is_concept_source` silently
   drops an explicitly requested non-lead node id (unreachable from the only
   production caller; logs when it happens).
-- No frontend test runner, so the four bundle controls are verified by reading
-  the code and by the user clicking them.
+- No frontend test runner, so the review screens' rendering has no automated
+  coverage — their *payloads* are tested, the JSX is not.
 - `_GENERIC_INSTRUCTIONAL_LABELS` / `SEMANTIC_ENV` duplication; `index.css`
-  mirrored but unused; a few N+1 query paths at current (small) data sizes.
+  mirrored but not imported (and already only a partial mirror); a few N+1
+  query paths at current (small) data sizes.
 
 ---
 
