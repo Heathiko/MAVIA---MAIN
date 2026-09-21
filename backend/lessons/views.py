@@ -326,6 +326,48 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             # the variant table only fills what was generated. Reading the table
             # alone left such a slot empty and the concept forever "incomplete".
             role_provenance = bundle_role_provenance(group)
+            normal_material = version_state.get("normal_material_id")
+            normal_objects = [
+                item
+                for item in group_bundles.get(normal_material, [])
+                if (item.content or "").strip()
+            ]
+
+            def object_rows(objects):
+                """Which objects a version is made of, in the order it reads.
+
+                The review screen shows every object exactly once, under the
+                role it actually plays. Without this it had no way to tell a
+                member of the Normal bundle from a bundle supplying another
+                version, and labelled both "Other variation".
+                """
+                return [
+                    {
+                        "id": item.id,
+                        "title": item.title,
+                        "material": item.material_id,
+                        "kind": item.kind,
+                        "text": item.content or "",
+                    }
+                    for item in objects
+                ]
+
+            # Normal is a role like the others: the bundle the concept is
+            # taught as. It used to be absent from the payload entirely, so the
+            # screen fell back to the bundle's lead object and dropped the rest.
+            if normal_objects:
+                slot_rows["normal"] = {
+                    "id": None,
+                    "material": normal_material,
+                    "text": bundle_text(normal_objects),
+                    "origin": LessonVariant.Origin.SOURCE_PDF,
+                    "source": "pdf",
+                    "assigned_by": role_provenance.get(normal_material, ""),
+                    "source_learning_object_id": normal_objects[0].id,
+                    "objects": object_rows(normal_objects),
+                    "stale": False,
+                }
+
             for material_id, role in (version_state.get("bundle_roles") or {}).items():
                 supplied = [
                     item
@@ -339,8 +381,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     "material": material_id,
                     "text": bundle_text(supplied),
                     "origin": LessonVariant.Origin.SOURCE_PDF,
+                    "source": "pdf",
                     "assigned_by": role_provenance.get(material_id, ""),
                     "source_learning_object_id": supplied[0].id,
+                    "objects": object_rows(supplied),
                     # Teacher text, never written from the Normal wording, so
                     # it cannot go stale the way a generated version does.
                     "stale": False,
@@ -349,40 +393,74 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     extra_rows.append(entry)
                 else:
                     slot_rows[role.lower()] = entry
-            if version_state["representative_id"] is not None:
-                representative = next(
-                    (item for item in learning_objects if item.id == version_state["representative_id"]),
-                    None,
-                ) or LearningObject.objects.filter(pk=version_state["representative_id"]).first()
-                current_fingerprint = version_fingerprint(representative) if representative else ""
-                for row in LessonVariant.objects.filter(
-                    learning_object_id=version_state["representative_id"],
-                ):
+
+            if normal_objects:
+                # A generated version is written one object of the Normal
+                # bundle at a time, so it is read back the same way. Reading
+                # only the lead's row showed one segment of four.
+                by_id = {item.id: item for item in normal_objects}
+                position = {item.id: index for index, item in enumerate(normal_objects)}
+                generated = defaultdict(list)
+                for row in LessonVariant.objects.filter(learning_object__in=normal_objects):
+                    generated[row.variant].append(row)
+                for variant, rows in generated.items():
+                    rows.sort(key=lambda row: position.get(row.learning_object_id, len(position)))
+                    if variant == "EXTRA":
+                        # Extras are kept for the learning-path component to
+                        # rule on; they are not one of the three slots a
+                        # student is offered, so they travel as their own list.
+                        extra_rows.extend({
+                            "id": row.id,
+                            "text": row.narration,
+                            "origin": row.origin,
+                            "source": "generated",
+                            "assigned_by": row.assigned_by,
+                            "source_learning_object_id": row.source_learning_object_id,
+                            "objects": object_rows([by_id[row.learning_object_id]]),
+                            "stale": False,
+                        } for row in rows)
+                        continue
+                    # A version short of its bundle is reported missing rather
+                    # than served: three quarters of a version reads as a whole
+                    # one to a learner who cannot see the page.
+                    if len(rows) < len(normal_objects):
+                        continue
                     entry = {
-                        "id": row.id,
-                        "text": row.narration,
-                        "origin": row.origin,
-                        "assigned_by": row.assigned_by,
-                        "source_learning_object_id": row.source_learning_object_id,
-                        # Written from different Normal text than the concept has
-                        # now. Publishing refuses these until a teacher checks them.
-                        "stale": bool(
+                        # The first segment's row, so the existing edit and
+                        # regenerate controls keep working unchanged.
+                        "id": rows[0].id,
+                        "material": None,
+                        "text": "\n".join(
+                            row.narration.strip() for row in rows if row.narration.strip()
+                        ),
+                        "origin": rows[0].origin,
+                        "source": "generated",
+                        "assigned_by": rows[0].assigned_by,
+                        "source_learning_object_id": rows[0].source_learning_object_id,
+                        # Each segment carries the wording that was *written*,
+                        # not the object it was written from -- showing the
+                        # source text under an Elaborated heading would be
+                        # printing the Normal version a second time.
+                        "objects": [
+                            {
+                                **object_rows([by_id[row.learning_object_id]])[0],
+                                "text": row.narration,
+                            }
+                            for row in rows
+                        ],
+                        # Written from different text than the object has now.
+                        # Publishing refuses these until a teacher checks them.
+                        "stale": any(
                             row.origin == LessonVariant.Origin.GENERATED
-                            and row.variant in ("SIMPLIFIED", "ELABORATED")
                             and row.source_fingerprint
-                            and current_fingerprint
-                            and row.source_fingerprint != current_fingerprint
+                            and row.source_fingerprint
+                            != version_fingerprint(by_id[row.learning_object_id])
+                            for row in rows
                         ),
                     }
-                    # Extras are kept for the learning-path component to rule on;
-                    # they are not one of the three slots a student is offered, so
-                    # they travel as their own list rather than as a slot.
-                    if row.variant == "EXTRA":
-                        extra_rows.append(entry)
-                    else:
-                        # A bundle that already supplies this role keeps it: the
-                        # PDF's own wording outranks a leftover generated row.
-                        slot_rows.setdefault(row.variant.lower(), entry)
+                    # A bundle that already supplies this role keeps it: the
+                    # PDF's own wording outranks a leftover generated row.
+                    slot_rows.setdefault(variant.lower(), entry)
             groups.append(
                 {
                     "id": group.id,
