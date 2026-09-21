@@ -1,12 +1,17 @@
 import asyncio
 import hashlib
+import logging
 import os
 import subprocess
+import time
 from pathlib import Path
 
 from django.conf import settings
 
 from lessons.models import LearningMaterial
+
+
+logger = logging.getLogger(__name__)
 
 
 class AudioGenerationError(RuntimeError):
@@ -26,6 +31,15 @@ def _playlist_text_by_order(material: LearningMaterial) -> dict[int, str]:
     }
 
 
+# Edge TTS is reached over the network, and a lossy connection drops the
+# handshake far more often than it completes -- measured at 2 successes in 10
+# on the user's link. A dropped connection comes back immediately rather than
+# hanging, so an attempt costs about a second, while giving up costs the whole
+# publish: one clip ends the run for every remaining clip in the lesson.
+EDGE_TTS_ATTEMPTS = int(os.getenv("EDGE_TTS_ATTEMPTS", "20"))
+EDGE_TTS_RETRY_DELAY = float(os.getenv("EDGE_TTS_RETRY_DELAY", "1.5"))
+
+
 def _synthesize_text_to_mp3_with_edge(text: str, output_path: Path, timeout: int = 180) -> None:
     text = (text or "").strip()
     if not text:
@@ -43,10 +57,21 @@ def _synthesize_text_to_mp3_with_edge(text: str, output_path: Path, timeout: int
         communicate = edge_tts.Communicate(text, voice)
         await communicate.save(str(output_path))
 
-    try:
-        asyncio.run(asyncio.wait_for(_save(), timeout=timeout))
-    except Exception as exc:
-        raise AudioGenerationError(f"Edge TTS failed: {exc}") from exc
+    attempts = max(1, EDGE_TTS_ATTEMPTS)
+    for attempt in range(1, attempts + 1):
+        try:
+            asyncio.run(asyncio.wait_for(_save(), timeout=timeout))
+            break
+        except Exception as exc:
+            if attempt == attempts:
+                raise AudioGenerationError(f"Edge TTS failed: {exc}") from exc
+            logger.warning(
+                "Edge TTS attempt %s of %s failed, retrying: %s", attempt, attempts, exc,
+            )
+            # A partial file from a dropped stream would otherwise be taken
+            # for a finished clip and ship as truncated narration.
+            output_path.unlink(missing_ok=True)
+            time.sleep(EDGE_TTS_RETRY_DELAY)
 
     if not output_path.exists() or output_path.stat().st_size == 0:
         raise AudioGenerationError("Edge TTS did not create an audio file.")
