@@ -423,6 +423,29 @@ function ObjectPairsPanel({
 }
 
 
+// The three versions a learner is offered, in the order they are shown.
+export const VERSION_ROLES = [
+  { key: "normal", label: "Normal" },
+  { key: "simplified", label: "Simplified" },
+  { key: "elaborated", label: "Elaborated" },
+];
+
+// "3 versions from 2 files" rather than "6 variations": the old count was the
+// concept's object count, which is not the number of versions a learner is
+// offered and read as though the lesson said six different things.
+function versionSummary(group) {
+  const slots = group.versions?.slots || {};
+  const present = VERSION_ROLES.filter(({ key }) => slots[key]);
+  const files = new Set(
+    present
+      .filter((role) => slots[role.key].source !== "generated")
+      .map((role) => slots[role.key].material),
+  );
+  const versions = `${present.length} version${present.length === 1 ? "" : "s"}`;
+  if (!files.size) return versions;
+  return `${versions} from ${files.size} file${files.size === 1 ? "" : "s"}`;
+}
+
 // A question leaves the review queue as soon as the teacher has ruled on it.
 // Declining sets `teacher_unpaired`, which is a decision -- not an unreviewed
 // state -- so it must not keep the question in the queue. `auto_confirmed`
@@ -572,19 +595,6 @@ export function versionOriginLabel(entry, materialTitle) {
   // this slot. Said plainly, because the teacher never chose this role.
   if (entry.assigned_by === "displaced_by_teacher") return `${source} · Moved out of its slot`;
   return source;
-}
-
-const BUNDLE_ROLE_LABELS = {
-  NORMAL: "Normal",
-  SIMPLIFIED: "Simplified",
-  ELABORATED: "Elaborated",
-  EXTRA: "Extra",
-};
-
-// What one PDF's bundle is used for in this concept. A bundle with no role yet
-// says so rather than showing a blank badge.
-function bundleRoleLabel(role) {
-  return BUNDLE_ROLE_LABELS[role] || "Role not decided yet";
 }
 
 function VersionSlotCard({
@@ -1700,6 +1710,7 @@ function PublishPanel({
   topicId,
   topic,
   groups,
+  materialById,
   confirmedSourceCount,
   busyAction,
   onReviewStepChange,
@@ -1747,7 +1758,7 @@ ${question.prompt}`,
   }
 
   return (
-    <section className="connection-review-panel" aria-labelledby="publish-panel-title">
+    <section className="connection-review-panel publish-review-panel" aria-labelledby="publish-panel-title">
       <div className="connection-review-heading">
         <div>
           <span className="connection-eyebrow">Final review</span>
@@ -1789,55 +1800,77 @@ ${question.prompt}`,
                     <h4>{group.label || group.learning_objects[0]?.title || "Untitled concept"}</h4>
                   </div>
                   <span className={`connection-status ${isConnected ? "is-connected" : "is-single"}`}>
-                    {isConnected
-                      ? `${group.learning_objects.length} variations`
-                      : "Single variation"}
+                    {versionSummary(group)}
                   </span>
                 </header>
-                <div className="publish-object-list">
-                  {group.learning_objects.map((item) => {
-                    const isRepresentative =
-                      Number(item.id) === Number(group.versions?.representative_id);
-                    const slots = group.versions?.slots || {};
-                    // "Normal" is the representative's own text -- unlike the
-                    // other two it is not a stored slot, so it is read from the
-                    // object rather than from `slots`.
-                    const versions = isRepresentative
-                      ? [
-                        { key: "normal", label: "Normal", text: item.content },
-                        { key: "simplified", label: "Simplified", text: slots.simplified?.text },
-                        { key: "elaborated", label: "Elaborated", text: slots.elaborated?.text },
-                      ]
-                      : [{ key: "normal", label: "Other variation", text: item.content }];
+                {/* One block per version, each naming where it came from and
+                    which objects it is made of. Every object appears exactly
+                    once, under the role it actually plays -- the screen used
+                    to show the concept's lead with its own text as "Normal"
+                    and every other object as "Other variation", which said
+                    nothing about what those objects were for and printed a
+                    supplied version's wording twice. */}
+                <div className="publish-version-list">
+                  {VERSION_ROLES.map(({ key, label }) => {
+                    const slot = group.versions?.slots?.[key];
+                    if (!slot) {
+                      return (
+                        <section className={`publish-version-block is-${key} is-missing`} key={key}>
+                          <header className="publish-version-head">
+                            <span className={`version-slot-label is-${key}`}>{label}</span>
+                            <small>Not generated yet</small>
+                          </header>
+                        </section>
+                      );
+                    }
+                    const objects = slot.objects || [];
+                    const material = materialById.get(Number(slot.material));
+                    const from = slot.source === "generated"
+                      ? `Generated from the Normal version · ${objects.length} segment${objects.length === 1 ? "" : "s"}`
+                      : `${material?.filename || material?.title || `PDF ${slot.material}`} · ${objects.length} object${objects.length === 1 ? "" : "s"}`;
                     return (
-                      <div className="publish-object-item" key={item.id}>
-                        <div className="publish-item-heading">
-                          <strong>{item.title}</strong>
-                          <button
-                            type="button"
-                            className="btn btn-danger btn-small"
-                            disabled={Boolean(busyAction) || Boolean(deletingKey)}
-                            onClick={() => handleDeleteObject(item)}
-                          >
-                            {deletingKey === `object-${item.id}` ? "Deleting..." : "Delete"}
-                          </button>
-                        </div>
-                        <div className="publish-version-set">
-                          {versions.map((version) => (
-                            <section className={`publish-version is-${version.key}`} key={version.key}>
-                              <h6>{version.label}</h6>
-                              {version.text ? (
-                                <FormattedLearningObjectContent
-                                  content={version.text}
-                                  className="learning-object-content-text"
-                                />
-                              ) : (
-                                <p className="publish-version-missing">Not generated yet.</p>
-                              )}
-                            </section>
+                      <section className={`publish-version-block is-${key}`} key={key}>
+                        <header className="publish-version-head">
+                          <span className={`version-slot-label is-${key}`}>{label}</span>
+                          <small>{from}</small>
+                          {slot.stale && (
+                            <span className="publish-version-stale" role="status">
+                              Written before the Normal text changed
+                            </span>
+                          )}
+                        </header>
+                        <ol className="publish-version-objects">
+                          {objects.map((object) => (
+                            <li key={`${key}-${object.id}`}>
+                              <div className="publish-item-heading">
+                                <strong>{object.title}</strong>
+                                {object.kind === "image" && (
+                                  <span className="publish-object-kind">figure</span>
+                                )}
+                                {/* Deleting removes the object from the lesson,
+                                    so it is offered where the object is shown,
+                                    and only where the object really lives --
+                                    a generated segment is not an object. */}
+                                {slot.source !== "generated" && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-danger btn-small"
+                                    disabled={Boolean(busyAction) || Boolean(deletingKey)}
+                                    aria-label={`Delete "${object.title}"`}
+                                    onClick={() => handleDeleteObject(object)}
+                                  >
+                                    {deletingKey === `object-${object.id}` ? "Deleting..." : "Delete"}
+                                  </button>
+                                )}
+                              </div>
+                              <FormattedLearningObjectContent
+                                content={object.text || ""}
+                                className="learning-object-content-text"
+                              />
+                            </li>
                           ))}
-                        </div>
-                      </div>
+                        </ol>
+                      </section>
                     );
                   })}
                 </div>
@@ -2816,8 +2849,9 @@ function LearningObjectConnections({
           )}
           <p>
             Each concept shows one block per PDF: everything that file teaches about it, in the
-            file’s own order. Correct a block with the buttons on a row — move an object out into
-            its own concept, move it to another concept, or change where it sits in its block.
+            file’s own order. If an object is in the wrong concept, give it a concept of its own
+            or move it into another one. The arrows only change the order inside that file’s
+            block — they never move an object between concepts.
           </p>
         </div>
         <span className="connection-source-count">
@@ -2930,7 +2964,9 @@ function LearningObjectConnections({
                           >
                             <header className="concept-bundle-head">
                               <h5>{fileName}</h5>
-                              <span className="concept-bundle-role">{bundleRoleLabel(bundle.role)}</span>
+                              {/* No role badge here. This step settles which
+                                  objects teach the same thing; what each PDF's
+                                  bundle is used for is decided in step 2. */}
                               <small>
                                 {bundle.learning_objects.length} object{bundle.learning_objects.length === 1 ? "" : "s"},
                                 {" "}in the order this file teaches them
@@ -3002,67 +3038,86 @@ function LearningObjectConnections({
                                       // effect above puts focus back on the control that was
                                       // pressed once the corrected payload has rendered.
                                       <div className="concept-bundle-actions">
-                                        {group.learning_objects.length > 1 && (
+                                        {/* Two questions, so two labelled groups. These used to be one row
+                                            of four controls where "Move out" and "Move to..." both read as
+                                            "move" -- one makes a new concept, the other joins an existing
+                                            one -- and the arrows sat beside them looking as though they
+                                            changed concepts too, when they only reorder within one file. */}
+                                        <div
+                                          className="concept-bundle-action-group"
+                                          role="group"
+                                          aria-label={`Which concept "${item.title}" belongs to`}
+                                        >
+                                          <span className="concept-bundle-action-label" aria-hidden="true">Wrong concept?</span>
+                                          {group.learning_objects.length > 1 && (
+                                            <button
+                                              type="button"
+                                              className="btn btn-secondary btn-small"
+                                              ref={registerBundleControl(bundleControlKey(item, "move-out"))}
+                                              aria-disabled={Boolean(busyAction)}
+                                              aria-label={`Give "${item.title}" a concept of its own, separate from the rest of this one`}
+                                              onClick={() => moveObjectOutOfBundle(item)}
+                                            >
+                                              {moving ? "Moving..." : "Give it its own concept"}
+                                            </button>
+                                          )}
+                                          <label className="concept-bundle-move-to">
+                                            <span className="sr-only">Move "{item.title}" into another concept that already exists</span>
+                                            <select
+                                              value=""
+                                              ref={registerBundleControl(bundleControlKey(item, "move-to"))}
+                                              aria-disabled={Boolean(busyAction) || otherConcepts(group.id).length === 0}
+                                              onChange={(event) => {
+                                                const target = otherConcepts(group.id).find(
+                                                  (candidate) => String(candidate.id) === event.target.value,
+                                                );
+                                                event.target.value = "";
+                                                if (busyAction || !target) return;
+                                                moveObjectToGroup(item, target.id, conceptName(target));
+                                              }}
+                                            >
+                                              <option value="">Move into another concept...</option>
+                                              {otherConcepts(group.id).map((candidate) => (
+                                                <option key={candidate.id} value={candidate.id}>
+                                                  {conceptName(candidate)}
+                                                </option>
+                                              ))}
+                                            </select>
+                                          </label>
+                                        </div>
+                                        <div
+                                          className="concept-bundle-action-group is-order"
+                                          role="group"
+                                          aria-label={`Where "${item.title}" sits in ${fileName}`}
+                                        >
+                                          <span className="concept-bundle-action-label" aria-hidden="true">Order in this file</span>
                                           <button
                                             type="button"
-                                            className="btn btn-secondary btn-small"
-                                            ref={registerBundleControl(bundleControlKey(item, "move-out"))}
-                                            aria-disabled={Boolean(busyAction)}
-                                            aria-label={`Move ${item.title} out of this concept`}
-                                            onClick={() => moveObjectOutOfBundle(item)}
-                                          >
-                                            {moving ? "Moving…" : "Move out"}
-                                          </button>
-                                        )}
-                                        <label className="concept-bundle-move-to">
-                                          <span className="sr-only">Move {item.title} to another concept</span>
-                                          <select
-                                            value=""
-                                            ref={registerBundleControl(bundleControlKey(item, "move-to"))}
-                                            aria-disabled={Boolean(busyAction) || otherConcepts(group.id).length === 0}
-                                            onChange={(event) => {
-                                              const target = otherConcepts(group.id).find(
-                                                (candidate) => String(candidate.id) === event.target.value,
-                                              );
-                                              event.target.value = "";
-                                              if (busyAction || !target) return;
-                                              moveObjectToGroup(item, target.id, conceptName(target));
+                                            className="btn btn-secondary btn-small concept-bundle-nudge"
+                                            ref={registerBundleControl(bundleControlKey(item, "up"))}
+                                            aria-disabled={Boolean(busyAction) || itemIndex === 0}
+                                            aria-label={`Move "${item.title}" earlier in ${fileName}`}
+                                            onClick={() => {
+                                              if (busyAction || itemIndex === 0) return;
+                                              moveObjectWithinBundle(item, "up");
                                             }}
                                           >
-                                            <option value="">Move to…</option>
-                                            {otherConcepts(group.id).map((candidate) => (
-                                              <option key={candidate.id} value={candidate.id}>
-                                                {conceptName(candidate)}
-                                              </option>
-                                            ))}
-                                          </select>
-                                        </label>
-                                        <button
-                                          type="button"
-                                          className="btn btn-secondary btn-small concept-bundle-nudge"
-                                          ref={registerBundleControl(bundleControlKey(item, "up"))}
-                                          aria-disabled={Boolean(busyAction) || itemIndex === 0}
-                                          aria-label={`Move ${item.title} earlier in ${fileName}`}
-                                          onClick={() => {
-                                            if (busyAction || itemIndex === 0) return;
-                                            moveObjectWithinBundle(item, "up");
-                                          }}
-                                        >
-                                          <span aria-hidden="true">↑</span>
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="btn btn-secondary btn-small concept-bundle-nudge"
-                                          ref={registerBundleControl(bundleControlKey(item, "down"))}
-                                          aria-disabled={Boolean(busyAction) || itemIndex === lastIndex}
-                                          aria-label={`Move ${item.title} later in ${fileName}`}
-                                          onClick={() => {
-                                            if (busyAction || itemIndex === lastIndex) return;
-                                            moveObjectWithinBundle(item, "down");
-                                          }}
-                                        >
-                                          <span aria-hidden="true">↓</span>
-                                        </button>
+                                            <span aria-hidden="true">↑</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="btn btn-secondary btn-small concept-bundle-nudge"
+                                            ref={registerBundleControl(bundleControlKey(item, "down"))}
+                                            aria-disabled={Boolean(busyAction) || itemIndex === lastIndex}
+                                            aria-label={`Move "${item.title}" later in ${fileName}`}
+                                            onClick={() => {
+                                              if (busyAction || itemIndex === lastIndex) return;
+                                              moveObjectWithinBundle(item, "down");
+                                            }}
+                                          >
+                                            <span aria-hidden="true">↓</span>
+                                          </button>
+                                        </div>
                                       </div>
                                     )}
                                   </div>
@@ -3248,6 +3303,7 @@ function LearningObjectConnections({
           topicId={topicId}
           topic={topic}
           groups={groups}
+          materialById={materialById}
           confirmedSourceCount={confirmedSourceCount}
           busyAction={busyAction}
           onReviewStepChange={onReviewStepChange}
