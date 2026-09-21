@@ -548,7 +548,15 @@ def assign_group_versions(group, *, use_llm=False):
 
     stored_role_json = {str(key): value for key, value in roles.items()}
     stored_provenance_json = {str(key): value for key, value in provenance.items()}
-    changed = (
+    # Only a run that was actually asked to classify writes a role down. A
+    # plain read -- the grouping step loads the whole topic through here --
+    # still returns what readability proposes, so a caller can show it as a
+    # suggestion, but storing it made every page load look like a decision:
+    # the concept came back labelled Simplified or Elaborated before the
+    # teacher reached the classification step and before Gemma saw it.
+    # Teacher roles reach the database through `set_bundle_role`, so nothing
+    # a teacher decided depends on this write.
+    changed = use_llm and (
         selection.get("bundle_roles") != stored_role_json
         or selection.get("bundle_roles_assigned_by") != stored_provenance_json
     )
@@ -635,6 +643,7 @@ def assign_source_to_slot(representative, source, slot):
     if source.material_id == _normal_id(group, bundles):
         raise ValueError("Choose another PDF source as Normal before moving this one")
     displaced_id = None
+    displaced_provenance = None
     if slot in PRIMARY_SLOTS:
         displaced_id = next(
             (
@@ -649,16 +658,24 @@ def assign_source_to_slot(representative, source, slot):
             # it displaces is another PDF's and is kept as an extra -- under
             # its own provenance, because the teacher did not choose this role
             # for it.
-            set_bundle_role(
-                group,
-                displaced_id,
-                "EXTRA",
-                assigned_by=_displaced_provenance(
-                    _stored_provenance(group.version_selection or {}).get(displaced_id)
-                ),
+            displaced_provenance = _displaced_provenance(
+                _stored_provenance(group.version_selection or {}).get(displaced_id)
             )
+            set_bundle_role(group, displaced_id, "EXTRA", assigned_by=displaced_provenance)
 
     set_bundle_role(group, source.material_id, slot)
+
+    if displaced_id is not None:
+        # Losing a slot is not the same as being demoted to an extra: the
+        # displaced wording takes whichever primary slot it actually fits, and
+        # only stays an extra when none is free. That role is settled here,
+        # with the decision that caused it. It used to be re-derived by the
+        # next page load instead, which is no longer true now that a read
+        # records nothing -- the displaced bundle would have stayed an extra
+        # and its wording would have been regenerated rather than used.
+        rederived = assign_group_versions(group)["bundle_roles"].get(displaced_id)
+        if rederived and rederived != "EXTRA":
+            set_bundle_role(group, displaced_id, rederived, assigned_by=displaced_provenance)
     for item in bundles.get(source.material_id, [source]):
         if item.represented_by_id != representative.id:
             item.represented_by = representative

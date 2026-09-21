@@ -46,7 +46,16 @@ class BundleGenerationTests(TestCase):
             material=self.second, group=self.group, title="Solids", order=0, section_title="Solids",
             content="In a solid, bits are packed tight. They stay in place.",
         )
-        assign_group_versions(self.group)  # SIMPLIFIED comes from the second PDF
+        # SIMPLIFIED comes from the second PDF. Changed 2026-09-21: a plain
+        # read proposes a role but records none, so the role is put on the
+        # record by a classification run -- which is what `settle_group`, the
+        # only caller of `fill_missing_bundle_slots`, does before calling it.
+        with patch("course.version_assignment.classify_group_versions") as classify:
+            classify.return_value = {
+                self.normal.id: {"slot": "ORIGINAL", "confidence": 0.95, "reason": "Baseline."},
+                self.simple.id: {"slot": "SIMPLIFIED", "confidence": 0.9, "reason": "Plainer."},
+            }
+            assign_group_versions(self.group, use_llm=True)
 
     def test_each_normal_object_gets_its_own_generated_row(self):
         with patch("course.variant_generator._request_variants") as request:

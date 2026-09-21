@@ -259,11 +259,20 @@ class VersionAssignmentTests(TestCase):
         first = self._object(self._material("PDF one", 0), LONG)
         second = self._object(self._material("PDF two", 5), SHORT)
         third = self._object(self._material("PDF three", 10), MIDDLING)
-        assign_group_versions(self.group)
+        # Changed 2026-09-21: a read no longer records a role, so the
+        # automatic role this test displaces is put on the record the way
+        # production puts it there -- by a classification run. Gemma skipped
+        # the third bundle, so readability still owns that one.
+        classify.return_value = {
+            first.id: {"slot": "ORIGINAL", "confidence": 0.9, "reason": "Baseline."},
+            second.id: {"slot": "SIMPLIFIED", "confidence": 0.9, "reason": "Plainer."},
+            third.id: {"slot": "EXTRA", "confidence": 0.9, "reason": "Alternative."},
+        }
+        assign_group_versions(self.group, use_llm=True)
         self.group.refresh_from_db()
         self.assertEqual(
             self.group.version_selection["bundle_roles_assigned_by"][str(second.material_id)],
-            "heuristic",
+            "llm_validated",
         )
 
         assign_source_to_slot(first, third, "SIMPLIFIED")
@@ -271,9 +280,19 @@ class VersionAssignmentTests(TestCase):
         self.group.refresh_from_db()
         provenance = self.group.version_selection["bundle_roles_assigned_by"]
         self.assertEqual(provenance[str(third.material_id)], "teacher")
-        self.assertEqual(provenance[str(second.material_id)], "heuristic")
+        # The displaced bundle keeps the provenance it already had, which is
+        # the point: it is not restamped as something the teacher ruled on.
+        self.assertEqual(provenance[str(second.material_id)], "llm_validated")
 
         # Still reclassifiable: a teacher-stamped role would stay an extra.
+        # The concept has to actually change for it to be asked again -- a
+        # settled run is not repeated on every load -- so the displaced
+        # bundle's text is edited, which is what moves the roles signature.
+        second.content = (
+            "A solid keeps one shape and one volume. Its particles are locked into a "
+            "repeating lattice, so they vibrate in place instead of moving past one another."
+        )
+        second.save(update_fields=["content"])
         classify.return_value = {
             first.id: {"slot": "ORIGINAL", "confidence": 0.9, "reason": "Baseline."},
             second.id: {"slot": "ELABORATED", "confidence": 0.9, "reason": "Fuller."},
@@ -319,10 +338,18 @@ class VersionAssignmentTests(TestCase):
 
         self.assertEqual(outcome["bundle_roles"][third.material_id], "SIMPLIFIED")
         self.assertEqual(outcome["bundle_roles"][second.material_id], "EXTRA")
+        # Changed 2026-09-21: the resolution is re-derived on every call and
+        # reported, but a read writes nothing, so the record still holds what
+        # the two writes put there. Production cannot reach this state anyway:
+        # `assign_source_to_slot` is the only path a teacher role takes, and
+        # it displaces the losing claim as it stores the winning one.
+        self.assertEqual(
+            outcome["bundle_roles"][second.material_id], "EXTRA",
+        )
         self.group.refresh_from_db()
         self.assertEqual(
             self.group.version_selection["bundle_roles_assigned_by"][str(second.material_id)],
-            "displaced_by_teacher",
+            "teacher",
         )
         self.assertEqual(first.id, outcome["representative_id"])
 
@@ -511,8 +538,16 @@ class BundleRoleTests(TestCase):
         self.assertEqual(outcome["representative_id"], self.normal.id)
         self.assertEqual(outcome["bundle_roles"], {self.second.id: "SIMPLIFIED"})
 
-    def test_a_pdf_supplied_version_stores_no_copied_text(self):
-        assign_group_versions(self.group)
+    @patch("course.version_assignment.classify_group_versions")
+    def test_a_pdf_supplied_version_stores_no_copied_text(self, classify):
+        # Changed 2026-09-21: a plain read proposes a role but no longer
+        # records one, so the supplied version exists only once the concept
+        # has actually been classified -- which is how the teacher gets here.
+        classify.return_value = {
+            self.normal.id: {"slot": "ORIGINAL", "confidence": 0.95, "reason": "Baseline."},
+            self.simple_lead.id: {"slot": "SIMPLIFIED", "confidence": 0.9, "reason": "Plainer."},
+        }
+        assign_group_versions(self.group, use_llm=True)
 
         self.assertFalse(
             LessonVariant.objects.filter(origin=LessonVariant.Origin.SOURCE_PDF).exists()
@@ -536,3 +571,92 @@ class BundleRoleTests(TestCase):
         )
 
         self.assertEqual(version_bundles(self.group)["NORMAL"], [self.normal, extra])
+
+
+class ReadDoesNotDecideRolesTests(TestCase):
+    """Reading a concept must not record a role for it.
+
+    Step 1 of the review is about grouping: which objects teach the same thing.
+    It loads the topic, and every load used to run the readability comparison
+    and *save* what it proposed, so a concept came back already carrying
+    Simplified/Elaborated before the teacher reached the classification step
+    and before Gemma had seen it. The proposal is still returned -- callers
+    that want to show it can -- but only a real classification run, or a
+    teacher, writes a role down.
+    """
+
+    def setUp(self):
+        self.course = CourseGroup.objects.create(title="Grade 1 Science")
+        self.node = OutlineNode.objects.create(
+            course=self.course, title="Matter", order=0, depth=0
+        )
+        self.group = LearningObjectGroup.objects.create(outline_node=self.node)
+        self.now = timezone.now()
+
+    def _material(self, title, minutes_offset):
+        material = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.node, title=title
+        )
+        LearningMaterial.objects.filter(pk=material.pk).update(
+            created_at=self.now + timedelta(minutes=minutes_offset)
+        )
+        material.refresh_from_db()
+        return material
+
+    def _object(self, material, content):
+        return LearningObject.objects.create(
+            material=material, group=self.group, title="Solid", content=content, order=0
+        )
+
+    def test_a_read_proposes_a_role_without_storing_it(self):
+        self._object(self._material("PDF one", 0), SHORT)
+        second = self._object(self._material("PDF two", 5), LONG)
+
+        outcome = assign_group_versions(self.group)
+
+        # The proposal is still available to whoever asked for it.
+        self.assertEqual(outcome["bundle_roles"], {second.material_id: "ELABORATED"})
+        # Nothing was decided, so nothing is written down.
+        self.group.refresh_from_db()
+        self.assertNotIn("bundle_roles", self.group.version_selection or {})
+        self.assertNotIn("bundle_roles_assigned_by", self.group.version_selection or {})
+
+    def test_a_read_never_stores_a_role_however_many_times_it_runs(self):
+        self._object(self._material("PDF one", 0), SHORT)
+        self._object(self._material("PDF two", 5), LONG)
+
+        for _ in range(3):
+            assign_group_versions(self.group)
+
+        self.group.refresh_from_db()
+        self.assertFalse((self.group.version_selection or {}).get("bundle_roles"))
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_a_classification_run_still_writes_the_role_down(self, classify):
+        first = self._object(self._material("PDF one", 0), SHORT)
+        second = self._object(self._material("PDF two", 5), LONG)
+        classify.return_value = {
+            first.id: {"slot": "ORIGINAL", "confidence": 0.93, "reason": "Balanced."},
+            second.id: {"slot": "ELABORATED", "confidence": 0.95, "reason": "Fuller."},
+        }
+
+        assign_group_versions(self.group, use_llm=True)
+
+        self.group.refresh_from_db()
+        self.assertEqual(
+            self.group.version_selection["bundle_roles"],
+            {str(second.material_id): "ELABORATED"},
+        )
+
+    def test_a_teacher_role_is_untouched_by_a_read(self):
+        self._object(self._material("PDF one", 0), SHORT)
+        second = self._object(self._material("PDF two", 5), LONG)
+        set_bundle_role(self.group, second.material_id, "SIMPLIFIED")
+
+        assign_group_versions(self.group)
+
+        self.group.refresh_from_db()
+        self.assertEqual(
+            self.group.version_selection["bundle_roles"],
+            {str(second.material_id): "SIMPLIFIED"},
+        )
