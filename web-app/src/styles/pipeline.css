@@ -3587,9 +3587,13 @@ button {
 .topic-detail-page {
   width: min(1420px, calc(100% - 3rem));
   gap: 1.25rem;
+  /* Pack rows at the top: a stretched grid spread a short page's spare height
+     across its rows, inflating the header card on a topic with no PDFs yet. */
+  align-content: start;
 }
 
 .topic-detail-overview-card {
+  align-content: start;
   padding: 1.5rem 1.75rem;
   border-color: #dbe4ea;
   border-radius: 14px;
