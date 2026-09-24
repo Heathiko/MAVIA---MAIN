@@ -138,12 +138,166 @@ def reset_reachability_cache() -> None:
         return
 
 
+def _nearby_blocks(blocks, *, page_number, bbox=None, limit=_MAX_NEARBY_TEXT, siblings=None):
+    """The lesson text blocks printed around this figure, in reading order.
+
+    What used to fill this slot was the document's opening, whatever page the
+    figure was on. On a one-page handout that is the text beside the figure by
+    accident; on anything longer the model was shown page one and told it was
+    looking at the text near a figure five pages away.
+
+    The budget is spent on the closest blocks, because a figure sits with the
+    passage it illustrates, but what is kept is then put back into reading
+    order: handing the model a page bottom-up would be a new way of confusing
+    it. A page holding no text at all keeps whatever the caller already had.
+    """
+    on_page = [item for item in blocks if item.get("page") == page_number and (item.get("text") or "").strip()]
+    if not on_page:
+        return []
+
+    def top(item):
+        box = item.get("bbox") or (0, 0, 0, 0)
+        return float(box[1])
+
+    def middle(box):
+        return (float(box[1]) + float(box[3])) / 2
+
+    # A page carrying two figures gave each of them the whole page, so a food
+    # web was handed the water cycle's paragraph and the water cycle the food
+    # web's. Each block belongs to whichever figure on the page it sits
+    # nearest, and a page with one figure is unaffected.
+    others = [
+        item for item in (siblings or [])
+        if item.get("page_number") == page_number and item.get("bbox") and item.get("bbox") != bbox
+    ]
+    if others and bbox:
+        mine = middle(bbox)
+        on_page = [
+            item for item in on_page
+            if all(
+                abs(top(item) - mine) <= abs(top(item) - middle(other["bbox"]))
+                for other in others
+            )
+        ]
+        if not on_page:
+            return []
+
+    if bbox:
+        centre = (float(bbox[1]) + float(bbox[3])) / 2
+        ordered = sorted(on_page, key=lambda item: (abs(top(item) - centre), top(item)))
+    else:
+        ordered = sorted(on_page, key=top)
+
+    kept, used = [], 0
+    for item in ordered:
+        text = " ".join((item.get("text") or "").split())
+        if not text:
+            continue
+        # The first block is taken whatever its length: a figure whose only
+        # neighbour is one long paragraph would otherwise get no context.
+        if kept and used + len(text) + 1 > limit:
+            continue
+        kept.append(item)
+        used += len(text) + 1
+    kept.sort(key=top)
+    return kept
+
+
+def _block_text(blocks, limit=_MAX_NEARBY_TEXT):
+    return "\n".join(" ".join((item.get("text") or "").split()) for item in blocks)[:limit]
+
+
+def nearby_lesson_text(
+    blocks, *, page_number, bbox=None, limit=_MAX_NEARBY_TEXT, fallback="", siblings=None,
+):
+    """The lesson text printed around this figure, in reading order."""
+    kept = _nearby_blocks(
+        blocks, page_number=page_number, bbox=bbox, limit=limit, siblings=siblings,
+    )
+    return _block_text(kept, limit) if kept else fallback
+
+
+def lesson_text_around(
+    blocks, *, page_number, bbox=None, limit=_MAX_NEARBY_TEXT, siblings=None,
+):
+    """Split that text into what the lesson has said and what it will say.
+
+    A figure is usually printed above the passage that explains it, so a
+    description that explains the concept in full says it first and the lesson
+    then says it again moments later. The student hears the same thing twice
+    and the figure's own contribution -- what it actually looks like -- is
+    crowded out.
+
+    Position is what tells the two apart, and the distinction only exists
+    because the figure's box is known. A figure with nothing below it is
+    explained in full, as it must be: nothing follows to do the explaining.
+    """
+    kept = _nearby_blocks(
+        blocks, page_number=page_number, bbox=bbox, limit=limit, siblings=siblings,
+    )
+
+    def top(item):
+        return float((item.get("bbox") or (0, 0, 0, 0))[1])
+
+    if kept and bbox:
+        figure_top, figure_bottom = float(bbox[1]), float(bbox[3])
+        # A block straddling the figure's own band is counted as already said:
+        # treating it as upcoming would suppress the description on the
+        # strength of a caption or a stray line beside the graphic.
+        before = [item for item in kept if top(item) < figure_bottom]
+        after = [item for item in kept if top(item) >= figure_bottom]
+        if figure_top == figure_bottom:  # a zero-height box tells us nothing
+            before, after = kept, []
+    else:
+        before, after = kept, []
+
+    # A figure at the foot of a page, or alone on one, is explained overleaf.
+    # Each side is filled from the neighbouring page only when the figure's own
+    # page has nothing there, so a figure already sitting with its passage is
+    # never given another page's as well.
+    if not before:
+        before = _page_blocks(blocks, page_number - 1, limit, tail=True)
+    if not after:
+        after = _page_blocks(blocks, page_number + 1, limit, tail=False)
+    return {"before": _block_text(before, limit), "after": _block_text(after, limit)}
+
+
+def _page_blocks(blocks, page_number, limit, *, tail):
+    """One neighbouring page's text, from the end of it or the start."""
+    def top(item):
+        return float((item.get("bbox") or (0, 0, 0, 0))[1])
+
+    rows = sorted(
+        (
+            item for item in blocks
+            if item.get("page") == page_number and (item.get("text") or "").strip()
+        ),
+        key=top,
+    )
+    if not rows:
+        return []
+    # The page before a figure ends where the figure begins, so its closing
+    # text is what leads into it; the page after opens with what follows.
+    ordered = list(reversed(rows)) if tail else rows
+    kept, used = [], 0
+    for item in ordered:
+        text = " ".join((item.get("text") or "").split())
+        if kept and used + len(text) + 1 > limit:
+            break
+        kept.append(item)
+        used += len(text) + 1
+    kept.sort(key=top)
+    return kept
+
+
 def build_prompt(
     *,
     lesson_title: str = "",
     nearby_text: str = "",
     caption: str = "",
     visible_text: str = "",
+    nearby_is_fallback: bool = False,
+    upcoming_text: str = "",
 ) -> str:
     """Role, Task, Context, Format -- four labelled sections, not one paragraph.
 
@@ -161,12 +315,20 @@ def build_prompt(
         "student who is following a science lesson by listening.",
 
         "TASK:\n"
-        "Explain what this figure TEACHES — the concept, process, structure, "
-        "relationship, cause and effect, or fact it exists to show. Give the "
-        "student the understanding a sighted classmate would take from "
-        "looking at it. Do NOT describe the visual layout: no colours, "
-        "arrows, shapes, positions, or labels like \"diagram\", \"chart\", "
-        "\"graph\", or \"photo\".",
+        "Say what this figure TEACHES by saying what it shows and how the "
+        "things in it differ from one another. Give the student the "
+        "understanding a sighted classmate would take from looking at it.\n"
+        "Report the visual facts that carry the meaning: how things are "
+        "arranged, how closely or widely they are spaced, how they are "
+        "grouped or ordered, how many there are, how large they are beside "
+        "each other, and the direction of any change.\n"
+        "Never mention colours. Do not say what colour anything is, not even "
+        "to tell two things apart: a student who is listening gains nothing "
+        "from it. Tell them apart by what they are, or by where they come in "
+        "the figure -- the first, the second, the third.\n"
+        "Do NOT name the artwork or its decoration either: no arrows, and "
+        "never the words \"diagram\", \"chart\", \"graph\", \"figure\" or "
+        "\"photo\".",
     ]
 
     context_lines = []
@@ -182,14 +344,36 @@ def build_prompt(
         context_lines.append(
             f'Lesson text near the figure: "{nearby_text.strip()[:_MAX_NEARBY_TEXT]}"'
         )
+    if upcoming_text:
+        context_lines.append(
+            "Lesson text printed immediately after the figure, which the student "
+            f'is about to hear: "{upcoming_text.strip()[:_MAX_NEARBY_TEXT]}"'
+        )
     if context_lines:
         heading = (
             "CONTEXT (background only — this is what the student has already "
             "been told. Use it to work out what the figure is for. Do NOT "
             "repeat, restate, summarise or paraphrase any of it back."
         )
-        if nearby_text:
-            heading += " Describe only what the figure ADDS beyond it."
+        if nearby_text and not nearby_is_fallback:
+            # A small model obeys an instruction about what to write far more
+            # reliably than one about what to leave out, so the ban is paired
+            # with the job it leaves behind: the lesson has the idea in words
+            # already, and the visual specifics are what it cannot carry.
+            heading += (
+                " Where it already explains an idea in words, do not explain "
+                "it again -- give the visual specifics those words leave out."
+            )
+        if upcoming_text:
+            # The lesson teaches this concept in words moments later. A
+            # narration that teaches it first makes the student hear it twice
+            # and crowds out what only the figure can give them, so the figure
+            # introduces what is shown and the lesson keeps the explaining.
+            heading += (
+                " The lesson explains that last passage immediately after this "
+                "figure, so do not explain it yourself: say what is shown and "
+                "leave the reason to the lesson."
+            )
         sections.append(heading + "):\n" + "\n".join(context_lines))
 
     sections.append(
@@ -327,6 +511,8 @@ def describe_image_for_lesson(
     nearby_text: str = "",
     caption: str = "",
     visible_text: str = "",
+    nearby_is_fallback: bool = False,
+    upcoming_text: str = "",
 ) -> str:
     """A spoken explanation of what the figure teaches, or "" if unavailable."""
     if not image_bytes:
@@ -340,6 +526,8 @@ def describe_image_for_lesson(
         nearby_text=nearby_text,
         caption=caption,
         visible_text=visible_text,
+        nearby_is_fallback=nearby_is_fallback,
+        upcoming_text=upcoming_text,
     )
     cache_key = _cache_key(image_bytes, prompt, model)
     cached = _cached_description(cache_key)
