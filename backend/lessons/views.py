@@ -18,6 +18,7 @@ from course.bulk_version_generation import classify_all_source_versions
 from course.services import sync_course_outline
 from course.variant_generator import (
     _fingerprint as version_fingerprint,
+    fill_missing_bundle_slots,
     fill_missing_slots,
     generate_standalone_variants,
 )
@@ -1647,12 +1648,29 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             learning_object = LearningObject.objects.get(
                 pk=version_state["representative_id"],
             )
-        result = fill_missing_slots(
-            learning_object,
-            target_slots=[requested_slot] if requested_slot else None,
-            # The teacher's "Regenerate" on an out-of-date version.
-            replace_stale=bool(request.data.get("replace_stale")),
-        )
+        replace_stale = bool(request.data.get("replace_stale"))
+        target_slots = [requested_slot] if requested_slot else None
+        if learning_object.group_id:
+            # A concept's Normal version can be several objects of one PDF -- a
+            # comparison section written as Shape, Volume, Particle arrangement
+            # and Flow. The screen shows a slot as written only once every one
+            # of them has a version, so generating for the representative alone
+            # wrote one row of four and left the slot unfillable: the next press
+            # found that object already done and wrote nothing. The bulk path
+            # has always used the bundle-aware generator; this button now does
+            # too, which also stops it writing over a role a PDF supplies.
+            result = fill_missing_bundle_slots(
+                learning_object.group,
+                target_slots=target_slots,
+                replace_stale=replace_stale,
+            )
+        else:
+            result = fill_missing_slots(
+                learning_object,
+                target_slots=target_slots,
+                # The teacher's "Regenerate" on an out-of-date version.
+                replace_stale=replace_stale,
+            )
         payload = self._learning_resources_payload(node, request)
         payload["version_generation"] = {
             "learning_object_id": learning_object.id,
