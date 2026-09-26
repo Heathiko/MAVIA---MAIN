@@ -245,3 +245,30 @@ class PromptGroundingTests(SimpleTestCase):
 
     def test_hot_still_demands_reasoning_beyond_recall(self):
         self.assertIn("BEYOND recall", self.one_line("HOT"))
+
+
+class ResponseSchemaTests(SimpleTestCase):
+    def answer_property(self, format_split):
+        schema = qg.build_response_schema(format_split)
+        return schema["properties"]["questions"]["items"]["properties"]["correct_answer"]
+
+    def test_correct_answer_is_an_enum_not_a_free_string(self):
+        """Ollama constrains the decode, so an illegal answer should be
+        impossible to emit rather than something to catch afterwards."""
+        self.assertIn("enum", self.answer_property({"MCQ": 2, "TF": 1}))
+
+    def test_the_enum_covers_both_formats_in_a_mixed_call(self):
+        """One call returns a mix, and Ollama applies one schema to every
+        item, so the enum must be the union."""
+        values = set(self.answer_property({"MCQ": 2, "TF": 1})["enum"])
+        self.assertEqual(values, {"A", "B", "C", "D", "True", "False"})
+
+    def test_a_true_false_only_call_still_allows_letters(self):
+        """The format split is a request, not a contract -- a usable MCQ
+        arriving in a TF-only call is accepted, so its letter must be legal."""
+        values = set(self.answer_property({"TF": 3})["enum"])
+        self.assertEqual(values, {"A", "B", "C", "D", "True", "False"})
+
+    def test_explanation_is_required_so_the_model_must_justify_itself(self):
+        schema = qg.build_response_schema({"MCQ": 1})
+        self.assertIn("explanation", schema["properties"]["questions"]["items"]["required"])

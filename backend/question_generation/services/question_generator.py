@@ -194,6 +194,11 @@ def build_response_schema(format_split):
     """
     formats = [fmt for fmt in SUPPORTED_FORMATS if format_split.get(fmt)]
     letter = {"type": "string"}
+    # Every legal answer for either format, not just the ones requested: the
+    # split is a request, not a contract (see generate_questions), so a usable
+    # true/false item arriving in an MCQ-only call is kept -- and its answer
+    # has to be legal for the schema to have let it through at all.
+    answers = ["A", "B", "C", "D", "True", "False"]
     return {
         "type": "object",
         "properties": {
@@ -208,10 +213,17 @@ def build_response_schema(format_split):
                             "type": "object",
                             "properties": {k: letter for k in ("A", "B", "C", "D")},
                         },
-                        "correct_answer": {"type": "string"},
+                        # Constrained at decode time so an out-of-range answer
+                        # cannot be emitted. It does not stop a wrong letter --
+                        # "D" is legal even when D says "plasma" -- which is
+                        # what _validate_question and the CRAG gate are for.
+                        "correct_answer": {"type": "string", "enum": answers},
                         "explanation": {"type": "string"},
                     },
-                    "required": ["question", "format", "correct_answer"],
+                    # The explanation is required so the model has to state why
+                    # its answer follows from the content. A model that cannot
+                    # write one usually could not ground the question either.
+                    "required": ["question", "format", "correct_answer", "explanation"],
                 },
             },
         },
