@@ -40,9 +40,26 @@ def _mark_question_model_warm():
 # that ordinary prompt drift stays inside the intended bucket, so the pipeline
 # no longer regenerates to correct it.
 
+# The grounding rule, shared by both thinking orders. Worded after
+# course/variant_generator.py, which has carried the same prohibition since
+# the version generator was written and does not drift off-source the way
+# this one did. Stated as a prohibition, not an invitation: "answerable from
+# the content" told the model what a good question looks like and left it
+# free to use anything it knew.
+_GROUNDING_RULE = (
+    "Use ONLY the facts stated in the content below. Do not add facts, "
+    "terms, examples, numbers, causes or categories the content does not "
+    "state, even if you know them to be true. If the content does not "
+    "settle something, do not ask about it.\n"
+    "Every choice must use words and ideas from the content. A wrong choice "
+    "must be wrong because the content says otherwise, not because it names "
+    "something the lesson never mentions.\n"
+)
+
 PROMPT_TEMPLATES = {
     "LOT": (
         "You are a quiz maker. Given the content below, generate {count} questions.\n"
+        + _GROUNDING_RULE +
         "Each question must be answerable DIRECTLY from the content. Ask the learner to "
         "recall a stated fact, show they understand what a concept means, or use a stated "
         "rule in a straightforward case.\n"
@@ -58,11 +75,13 @@ PROMPT_TEMPLATES = {
     ),
     "HOT": (
         "You are a quiz maker. Given the content below, generate {count} questions.\n"
-        "Each question must require reasoning BEYOND recall or direct application. Ask the "
-        "learner to break an idea into parts, compare or differentiate two concepts, work "
-        "out a cause-and-effect relationship, or judge and justify which option is more "
-        "appropriate and why.\n"
-        "Do NOT ask for a fact that is stated word-for-word in the content.\n"
+        + _GROUNDING_RULE +
+        "Each question must require reasoning BEYOND recall or direct application. Build "
+        "it by asking the learner to combine two or more facts the content states: "
+        "compare two things it describes, work out a cause and effect it implies, or "
+        "judge which of two stated options fits a situation.\n"
+        "The answer must follow from the stated facts. Do not ask about a cause, "
+        "comparison or consequence the content gives you no facts for.\n"
         "The question must still have ONE defensible correct answer.\n\n"
         "{examples}\n\n"
         "{format_request}\n\n"
@@ -210,9 +229,16 @@ def _format_request(format_split):
     return "Formats: " + ", ".join(parts) + " question(s), in that mix."
 
 
-def _build_prompt(content, thinking_order, format_split):
+def _build_prompt(content, thinking_order, format_split, correction=""):
+    """The generation prompt, optionally carrying a corrective retry's feedback.
+
+    ``correction`` is written by the grounding gate (services/grounding.py)
+    when a previous attempt produced questions the source does not support. It
+    goes *after* the content and before the output contract, so the model reads
+    the material first and the specific mistakes to avoid last.
+    """
     formats = [fmt for fmt in SUPPORTED_FORMATS if format_split.get(fmt)]
-    return PROMPT_TEMPLATES[thinking_order].format(
+    prompt = PROMPT_TEMPLATES[thinking_order].format(
         count=sum(format_split.values()),
         content=content,
         format_request=_format_request(format_split),
@@ -220,6 +246,11 @@ def _build_prompt(content, thinking_order, format_split):
         question_schema=", ".join(QUESTION_SCHEMA[fmt] for fmt in formats),
         examples=FEW_SHOT_EXAMPLES[thinking_order],
     )
+    if correction:
+        marker = "\n\nRespond ONLY with valid JSON"
+        head, sep, tail = prompt.partition(marker)
+        return f"{head}\n\n{correction}{sep}{tail}" if sep else f"{prompt}\n\n{correction}"
+    return prompt
 
 
 def _validate_question(q, format_type):
@@ -436,6 +467,7 @@ def generate_questions(
     format_split,
     max_retries=3,
     on_metrics=None,
+    correction="",
 ):
     """
     Generate one thinking order's questions in a single LLM call.
@@ -449,11 +481,13 @@ def generate_questions(
         thinking_order: "LOT" or "HOT" — which prompt to steer with
         format_split:   {"MCQ": 2, "TF": 1} — how many of each kind to ask for
         max_retries:    retry on JSON parse failures
+        correction:     grounding feedback from a rejected previous attempt,
+                        appended to the prompt (see services/grounding.py)
 
     Returns:
         list of question dicts, each labelled with the format it actually is
     """
-    prompt = _build_prompt(content, thinking_order, format_split)
+    prompt = _build_prompt(content, thinking_order, format_split, correction)
     schema = build_response_schema(format_split)
 
     for attempt in range(max_retries):

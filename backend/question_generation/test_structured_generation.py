@@ -205,3 +205,43 @@ class DistributionConfigTests(SimpleTestCase):
         counts = thinking_order_counts()
         self.assertEqual(counts["LOT"], 4)
         self.assertEqual(counts["HOT"], 2)
+
+
+class PromptGroundingTests(SimpleTestCase):
+    """The prompt must forbid outside knowledge, not merely invite grounding.
+
+    Measured on topic 276 before this: 61 of 76 questions used words absent
+    from every source PDF, and two marked "plasma" correct where the source
+    says gas and solid.
+    """
+
+    def one_line(self, thinking_order):
+        prompt = qg._build_prompt(
+            "Solids keep their shape.", thinking_order, {"MCQ": 1},
+        )
+        return " ".join(prompt.split())
+
+    def test_both_orders_forbid_facts_the_content_does_not_state(self):
+        for order in ("LOT", "HOT"):
+            with self.subTest(order=order):
+                prompt = self.one_line(order)
+                self.assertIn("ONLY the facts stated in the content", prompt)
+                self.assertIn("Do not add facts", prompt)
+
+    def test_both_orders_forbid_options_the_content_does_not_support(self):
+        for order in ("LOT", "HOT"):
+            with self.subTest(order=order):
+                self.assertIn(
+                    "Every choice must use words and ideas from the content",
+                    self.one_line(order),
+                )
+
+    def test_hot_no_longer_steers_the_model_away_from_the_content(self):
+        """The old line 'Do NOT ask for a fact that is stated word-for-word'
+        left the model nowhere to go but its own knowledge."""
+        prompt = self.one_line("HOT")
+        self.assertNotIn("stated word-for-word", prompt)
+        self.assertIn("combine two or more facts", prompt)
+
+    def test_hot_still_demands_reasoning_beyond_recall(self):
+        self.assertIn("BEYOND recall", self.one_line("HOT"))
