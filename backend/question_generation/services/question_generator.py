@@ -265,34 +265,73 @@ def _build_prompt(content, thinking_order, format_split, correction=""):
     return prompt
 
 
+# A true/false item is a statement the learner judges, so an open question is
+# not one: "True" answers nothing about "what is the shape of the particles?".
+#
+# Two markers, because neither alone is enough. A trailing question mark is the
+# reliable one -- measured on topic 276, Q108 read "In the arrangement that
+# shows particles close together but able to move, what is the shape of the
+# particles?", whose interrogative sits mid-sentence behind a subordinate
+# clause, so nothing about its first word gives it away. The opener list then
+# catches a stem the model wrote without punctuation.
+#
+# Containing a wh-word is deliberately not a marker: "Water takes the shape of
+# whatever container holds it" is a perfectly good statement.
+_OPEN_QUESTION_OPENERS = (
+    "what", "which", "how", "why", "who", "whom", "where", "when",
+)
+
+
 def _validate_question(q, format_type):
-    """Structural validation — reject hallucinated answers before they enter
-    the bank (e.g. an MCQ whose correct_answer is 'A, B, C and D').
-    Normalizes correct_answer in place when it can be recovered."""
-    if "question" not in q or "correct_answer" not in q:
+    """Reject a question that is structurally unusable, whatever it says.
+
+    Correctness is not decidable here -- that needs the source text, and is
+    what services/grounding.py does. This checks only what the question
+    itself settles, and normalises ``correct_answer`` in place when it can.
+    """
+    question_text = str(q.get("question") or "").strip()
+    if not question_text or "correct_answer" not in q:
         return False
 
     answer = str(q["correct_answer"]).strip()
+    if not answer:
+        return False
 
     if format_type == "MCQ":
         choices = q.get("choices")
         if not isinstance(choices, dict) or not choices:
             return False
+
+        texts = [str(text).strip() for text in choices.values()]
+        # A blank option is unreadable aloud, and a repeated one means the
+        # learner either cannot be wrong or cannot be right.
+        if any(not text for text in texts):
+            return False
+        if len({text.casefold() for text in texts}) != len(texts):
+            return False
+        if len(texts) < 2:
+            return False
+
         if answer in choices:
             q["correct_answer"] = answer
             return True
-        # LLM sometimes answers with the choice text instead of the letter
+        # The model often answers with the choice text instead of the letter.
         for letter, text in choices.items():
-            if str(text).strip().lower() == answer.lower():
+            if str(text).strip().casefold() == answer.casefold():
                 q["correct_answer"] = letter
                 return True
         return False
 
     # TF
-    if answer.lower() in ("true", "false"):
-        q["correct_answer"] = answer.capitalize()
-        return True
-    return False
+    if answer.lower() not in ("true", "false"):
+        return False
+    if question_text.rstrip().endswith("?"):
+        return False
+    first_word = question_text.split()[0].strip("\"'([{").casefold()
+    if first_word in _OPEN_QUESTION_OPENERS:
+        return False
+    q["correct_answer"] = answer.capitalize()
+    return True
 
 
 def _extract_question_objects(text):
