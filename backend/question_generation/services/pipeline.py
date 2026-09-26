@@ -193,7 +193,15 @@ def concept_source_text(node):
         return node.content or ""
 
     group = node.group
-    bundles = bundles_for_group(group)
+    # Blank-content objects are dropped, matching what version_bundles saw
+    # through _eligible_bundles. Without this a whitespace-only sibling passes
+    # the membership test below, reads the whole concept as its own source and
+    # generates a second, identical bank.
+    bundles = {
+        material_id: kept
+        for material_id, objects in bundles_for_group(group).items()
+        if (kept := [item for item in objects if (item.content or "").strip()])
+    }
     normal_id = normal_material_id(group)
     if not any(item.id == node.id for item in bundles.get(normal_id) or []):
         return node.content or ""
@@ -210,11 +218,26 @@ def concept_source_text(node):
         key=lambda material_id: (rank.get(material_id, len(rank)), material_id),
     )
 
-    objects = []
+    objects, unclassified = [], []
     for material_id in [normal_id, *others]:
         if roles.get(material_id) == UNSERVED_VERSION_ROLE:
             continue
+        if material_id != normal_id and material_id not in roles:
+            unclassified.append(material_id)
         objects.extend(bundles.get(material_id) or [])
+
+    if unclassified:
+        # The EXTRA check above can only fire once a role is stored, and roles
+        # are written by the versions step, which nothing orders before this
+        # one. A bundle classified EXTRA later is text no learner hears, but
+        # its questions are already final by then. Nothing downstream reports
+        # that, so the run trace has to.
+        logger.info(
+            'concept "%s": material(s) %s have no assigned version role and '
+            "are feeding question generation; if the versions step later "
+            "marks one EXTRA, regenerate this concept's bank",
+            group.label, ", ".join(str(item) for item in unclassified),
+        )
     return bundle_text(objects) or (node.content or "")
 
 

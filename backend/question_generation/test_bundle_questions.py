@@ -78,6 +78,37 @@ class BundleQuestionSourceTests(TestCase):
             "A solid keeps its shape.\nIce cubes and a rock.",
         )
 
+    def test_a_blank_sibling_does_not_become_a_second_concept_source(self):
+        """A whitespace-only object is not a telling of anything.
+
+        version_bundles() dropped blank-content objects (_eligible_bundles);
+        bundles_for_group() does not. Without the same filter, such an object
+        passes the membership test, reads the whole concept as its own source
+        and generates a second, identical bank -- double the LLM and gate
+        spend, invisible to the per-node dedup.
+        """
+        blank = LearningObject.objects.create(
+            material=self.material, group=self.group, title="Blank",
+            order=5, content="   ")
+        self.assertEqual(concept_source_text(blank), "   ")
+
+    def test_an_unclassified_bundle_is_reported_in_the_log(self):
+        """A bundle with no stored role still feeds the prompt, and may later
+        be classified EXTRA -- text no learner hears. The run trace has to
+        show it, because nothing downstream will."""
+        other = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="B",
+            generated_json={"learning_objects_confirmed": True})
+        LearningObject.objects.create(
+            material=other, group=self.group, title="Solids", order=0,
+            represented_by=self.lead, content="Solid particles vibrate.")
+        with self.assertLogs("question_generation.services.pipeline", "INFO") as logged:
+            concept_source_text(self.lead)
+        self.assertTrue(
+            any("no assigned version role" in line for line in logged.output),
+            logged.output,
+        )
+
     def test_an_extra_bundle_is_not_offered_to_the_generator(self):
         """EXTRA is excluded from what a learner is served (published.py
         _versions, course/services.py _build_chunk), so it is not something
