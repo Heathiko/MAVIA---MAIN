@@ -618,9 +618,118 @@ false, and each of which would have misled the next agent:
 - **`GeneratedQuestion.TIER_BUCKETS` is dead code** (confirmed by grep, not removed — out of scope for what was asked).
 - **The manuscript's RL/DQN section is now grounded in `adaptive/services.py` as of this session's read.** Given that I've now been burned once by trusting an earlier read of this exact file without re-verifying, whoever touches this section next should re-grep it fresh rather than trusting this entry or the manuscript text as ground truth.
 
+### 2026-09-26 — Claude Code — a corrective-RAG grounding gate on question generation; pipeline flowchart corrected
+
+**Branch / commits:** mavia-latest, uncommitted
+**Tests:** `python manage.py test question_generation` — 87 tests, OK (30 new in
+`test_grounding.py`). Also ran the gate live against the published topic 276.
+**Changed:**
+- **New** `question_generation/services/grounding.py` — three-stage validation of
+  every draft question against the topic's own PDF text: lexical grounding,
+  MiniLM vector retrieval over chunked raw `extracted_text`, then an
+  LLM-as-judge entailment check. Failures are deleted and their reasons fed
+  back into a bounded corrective regeneration pass.
+- `services/pipeline.py` — gate phase between drafting and finalization;
+  index built once per run; `ungrounded`/`unverified` added to run stats.
+- `services/question_generator.py` — `generate_questions(..., correction=...)`
+  threads rejection feedback into the prompt.
+- `config/settings.py` + `.env.example` — six `QUESTION_VALIDATION_*` /
+  `QUESTION_JUDGE_*` settings. No migration needed: `GenerationEvent.event_type`
+  is already `CharField(64)` from the pending `0008`.
+- `docs/MAVIA_PIPELINE_FLOWCHART.svg` — stage 8 rewritten for the gate, and
+  four stale claims corrected (see below).
+
+**Why this exists (measured, not assumed):** on the published topic 276, 61 of
+76 final questions used content words absent from all three PDFs, and Q107/Q109
+marked **"plasma"** correct where the source says "gas" and "solid". The source
+text was already in the prompt both times. This is why the gate checks whether
+the model *used* its context, not whether it *had* it — retrieval alone would
+not have caught any of it.
+
+**Live database:** backed up to `db.sqlite3.pre-grounding-gate.20260926`.
+Topic 276's question bank was regenerated through the gate (no learner
+responses existed, so nothing of a student's was lost).
+
+**Decisions I made:**
+- **Retrieval is scoped to the topic's materials, not a global PDF index.** The
+  user's plan said "a local raw PDF index"; a global one would let the judge
+  validate a question about particle arrangement against a passage on melting.
+  Flagged before building, built scoped.
+- **The lexical stage is kept as a non-bypassable first gate** rather than
+  relying on the judge alone. Measured reason below.
+- **Default `QUESTION_JUDGE_MODEL` is `llama3.2:3b`, not the larger model.**
+
+**Watch out — the bigger judge is the worse judge.** With the lexical stage
+bypassed, `llama3.2:3b` correctly rejected both "plasma" questions;
+`gemma3:4b` passed both as "supported". Re-measure before changing
+`QUESTION_JUDGE_MODEL`; a weak judge is worse than an obvious gap because it
+looks like verification. `gemma2:9b` (which the user's plan named) is not
+pulled on this machine.
+
+**Also watch out — killing a background run does not kill its Python child.**
+Stopping the first regeneration left PID 24460 alive and writing to
+`db.sqlite3` while a second run started, which silently corrupted a
+before/after comparison (76 rows became 72 mid-measurement). Kill by PID and
+verify with `Get-CimInstance Win32_Process` before trusting any DB numbers.
+
+**Flowchart corrections beyond stage 8** (all verified against code, all were
+stale): the question model is `llama3.2:3b` not `gemma3:4b`; `/api/generate` is
+called **streaming** with a JSON schema, not non-streaming; prompts are keyed by
+**thinking order**, not difficulty (the `difficulty` field was removed in
+migration 0007); there is no "strict re-prompt on pass 2" and no multi-round
+"quota rebalancing" — both were replaced by overgeneration inside a single call;
+and the adaptive step now notes that the published path serves **one LOT + one
+HOT per step**, which the diagram did not say.
+
+**Two defects the live run found in the gate itself** (both fixed, both were
+mine, and neither would have shown without running it on real material):
+1. *Exact word matching rejected grounded questions.* The lesson says
+   "depicts"; a question said "depicted"; the vocabulary had no way to see they
+   are one word. Fixed by matching inflection **variants** rather than one
+   canonical stem — no single stem works, since stripping "-ing" gives "mov",
+   which no rule turns "move" into, so both forms are emitted and allowed to
+   meet. Verified it does not blunt the gate: "plasma", "temperature",
+   "pressure" and "intermolecular" each still yield only themselves.
+2. *Scanning every MCQ option punished good distractors.* A wrong option is
+   wrong on purpose, and wrong often means vocabulary the lesson never uses.
+   The gate rejected "What is the arrangement of particles in a solid?" —
+   stem and key both straight from the source — because one distractor said
+   "none". The lexical stage now scans **the stem and the option marked
+   correct only**. This loses nothing: "plasma" was the *correct answer* on
+   Q107 and Q109 and sat in Q114's stem, so all four original defects are
+   still caught. Lexical rejection on the published bank fell 61/76 → 49/76.
+
+**Not done:**
+- The `EXTRA` bundle problem from this session's audit is untouched: lo557/558/559
+  are extracted, grouped and described but unreachable by any learner.
+- `LessonDetailView` still returns `correct_answer` to students (76 of 93 legacy
+  rows on topic 276 have one). Raised as an open thread below.
+- The judge is not calibrated. There is no labelled set of supported/unsupported
+  questions, so its accuracy is anecdotal — two questions, one model comparison.
+
+
 ---
 
 ## Open threads
+
+- **Students are served the answer key.** `adaptive.views.LessonDetailView`
+  (permission `IsStudent`) returns `lessons.Question.correct_answer` via
+  `lessons/services/lesson_package.py::_lesson_questions`. On topic 276 that is
+  76 of 93 rows with a populated answer, sent to any enrolled learner's device.
+  Path mode is careful about this (`adaptive.services.student_safe_step`); this
+  endpoint is not. — raised by Claude Code, 2026-09-26
+- **Three learning objects are unreachable by any learner.** lo557/558/559
+  (material 48's *Everyday Examples* telling) sit in group 574's `EXTRA` bundle.
+  `_versions` skips `EXTRA`, `represented_by` disqualifies them as alternates,
+  and they are the only 3 of topic 276's 45 objects with no audio in any
+  playlist. Decide what `EXTRA` is for, or stop generating it. — raised by
+  Claude Code, 2026-09-26
+- **The question judge is uncalibrated.** `QUESTION_JUDGE_MODEL` decides what
+  reaches a learner, and its accuracy rests on two questions and one model
+  comparison (`llama3.2:3b` caught the "plasma" answers, `gemma3:4b` did not).
+  A labelled set of supported/unsupported questions is wanted before the
+  lexical stage's tolerance (`QUESTION_VALIDATION_MAX_NOVEL_TERMS`) is relaxed
+  from 0. — raised by Claude Code, 2026-09-26
 
 - **Regenerate figure descriptions** with the new RTCF prompt (needs Ollama's
   vision model). Clears the model's chatter from lesson text and from one
