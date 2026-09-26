@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 QUESTION_GENERATOR_VERSION = 2
 QUESTION_TEMPERATURE = 0.7
 QUESTION_NUM_PREDICT = 2048
+# How many parseable-but-unusable replies to accept before giving up on a
+# call. See the comment in generate_questions: the third attempt almost never
+# rescues one, and each is a full LLM round trip.
+MAX_UNUSABLE_REPLIES = 2
 _warm_lock = threading.Lock()
 _warm_model = ""
 _warm_until = 0.0
@@ -541,6 +545,14 @@ def generate_questions(
     prompt = _build_prompt(content, thinking_order, format_split, correction)
     schema = build_response_schema(format_split)
 
+    # A reply that parses but yields nothing usable gets one more try, not the
+    # full budget. Measured on topic 276: 74 calls exhausted all three
+    # attempts with zero JSON parse failures -- the model had written
+    # something structurally unusable every time, and a third round of the
+    # same prompt at the same temperature almost never rescues that. Malformed
+    # JSON keeps the full budget below: that is a transport failure, not the
+    # model being unable to write the question.
+    unusable_replies = 0
     for attempt in range(max_retries):
         try:
             raw_text = _ollama_generate(prompt, schema=schema, on_metrics=on_metrics)
@@ -561,6 +573,10 @@ def generate_questions(
 
             if validated:
                 return validated
+
+            unusable_replies += 1
+            if unusable_replies >= MAX_UNUSABLE_REPLIES:
+                break
 
         except (json.JSONDecodeError, ValueError) as e:
             print(f"  Attempt {attempt + 1}/{max_retries} failed: {e}")

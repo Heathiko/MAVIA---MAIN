@@ -272,3 +272,39 @@ class ResponseSchemaTests(SimpleTestCase):
     def test_explanation_is_required_so_the_model_must_justify_itself(self):
         schema = qg.build_response_schema({"MCQ": 1})
         self.assertIn("explanation", schema["properties"]["questions"]["items"]["required"])
+
+
+class RetryBudgetTests(SimpleTestCase):
+    """A reply that parses but yields nothing usable is not worth 3 tries.
+
+    Measured on topic 276: 74 generation calls gave up after 3 attempts with
+    zero JSON parse failures -- every reply parsed and every question in it
+    was structurally unusable. The third attempt almost never rescues that,
+    and each one is a full LLM round trip.
+    """
+
+    UNUSABLE = _response([{
+        "question": "Which state?", "format": "MCQ",
+        "choices": None, "correct_answer": "A", "explanation": "x",
+    }])
+
+    @patch("question_generation.services.question_generator._ollama_generate")
+    def test_an_unusable_reply_is_retried_once_not_twice(self, generate):
+        generate.return_value = self.UNUSABLE
+        self.assertEqual(qg.generate_questions(CONTENT, "LOT", {"MCQ": 1}), [])
+        self.assertEqual(generate.call_count, 2)
+
+    @patch("question_generation.services.question_generator._ollama_generate")
+    def test_a_retry_that_succeeds_is_kept(self, generate):
+        generate.side_effect = [self.UNUSABLE, _response([MCQ_ITEM])]
+        questions = qg.generate_questions(CONTENT, "LOT", {"MCQ": 1})
+        self.assertEqual(len(questions), 1)
+        self.assertEqual(generate.call_count, 2)
+
+    @patch("question_generation.services.question_generator._ollama_generate")
+    def test_malformed_json_still_gets_the_full_budget(self, generate):
+        """A broken reply is a transport problem, not the model being unable
+        to write the question -- those are worth retrying properly."""
+        generate.side_effect = ValueError("bad json")
+        self.assertEqual(qg.generate_questions(CONTENT, "LOT", {"MCQ": 1}), [])
+        self.assertEqual(generate.call_count, 3)

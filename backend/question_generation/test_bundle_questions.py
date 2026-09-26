@@ -15,7 +15,10 @@ from lessons.models import (
     LearningObjectGroup,
     OutlineNode,
 )
-from question_generation.services.pipeline import concept_source_text
+from question_generation.services.pipeline import (
+    _is_concept_source,
+    concept_source_text,
+)
 
 
 class BundleQuestionSourceTests(TestCase):
@@ -179,3 +182,56 @@ class BundleGenerationScopeTests(TestCase):
             any("Everyday examples" in line for line in logs.output),
             logs.output,
         )
+
+
+class WastedGenerationTests(TestCase):
+    """A bank that finalize_node_questions will delete is not worth generating.
+
+    Measured on topic 276: 42 objects generated a bank and 22 of them were
+    deleted moments later, because a concept owns exactly one bank and it
+    belongs to the Normal bundle's lead. That was 52% of a 117-minute run.
+    """
+
+    def setUp(self):
+        self.course = CourseGroup.objects.create(title="Science")
+        self.topic = OutlineNode.objects.create(course=self.course, title="States")
+        self.normal = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="A",
+            generated_json={"learning_objects_confirmed": True})
+        self.other = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="B",
+            generated_json={"learning_objects_confirmed": True})
+        self.group = LearningObjectGroup.objects.create(
+            outline_node=self.topic, label="Solid",
+            version_selection={"normal_material_id": self.normal.id})
+        self.lead = LearningObject.objects.create(
+            material=self.normal, group=self.group, title="Solid", order=0,
+            content="A solid keeps its shape.")
+        self.telling = LearningObject.objects.create(
+            material=self.other, group=self.group, title="Solids", order=0,
+            represented_by=self.lead, content="Solid particles vibrate.")
+
+    def test_the_normal_bundles_lead_generates(self):
+        self.assertTrue(_is_concept_source(self.lead))
+
+    def test_another_pdfs_telling_does_not_generate(self):
+        """Its bank is deleted by finalize_node_questions the moment the
+        lead finalizes, so making it is pure cost."""
+        self.assertFalse(_is_concept_source(self.telling))
+
+    def test_a_concept_with_no_normal_bundle_still_generates(self):
+        """Nothing owns the concept, so refusing every member would leave it
+        with no questions at all."""
+        orphan_group = LearningObjectGroup.objects.create(
+            outline_node=self.topic, label="Orphan",
+            version_selection={"normal_material_id": 999999})
+        orphan = LearningObject.objects.create(
+            material=self.other, group=orphan_group, title="Orphan", order=9,
+            content="Text with no Normal bundle.")
+        self.assertTrue(_is_concept_source(orphan))
+
+    def test_an_ungrouped_object_still_generates(self):
+        loose = LearningObject.objects.create(
+            material=self.normal, group=None, title="Loose", order=5,
+            content="On its own.")
+        self.assertTrue(_is_concept_source(loose))

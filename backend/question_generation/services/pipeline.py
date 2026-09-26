@@ -244,12 +244,16 @@ def concept_source_text(node):
 def _is_concept_source(node):
     """Whether ``node`` is the one object of its concept that generates.
 
-    A concept's Normal bundle can be several objects (see
-    ``concept_source_text``); every one of them would otherwise read the same
-    bundle text and generate the same bank. Only the bundle's lead -- the
-    object questions are saved against -- generates. An ungrouped object, or
-    one whose bundle is not the concept's Normal source, is unaffected and
-    always generates from its own text.
+    A concept owns exactly one bank and it belongs to the Normal bundle's
+    lead -- ``finalize_node_questions`` deletes every other bank in the group
+    as soon as that lead finalizes. So an object from another PDF's telling
+    is not merely redundant: its bank is already condemned when it is made.
+    Measured on topic 276, that was 22 of 42 objects and 52% of a 117-minute
+    run, spent on questions nothing would ever read.
+
+    Two cases still generate from their own text, because no one else will
+    speak for them: an object in no group at all, and one whose group has no
+    Normal bundle to own it.
     """
     if node.group_id is None:
         return True
@@ -257,8 +261,10 @@ def _is_concept_source(node):
     from lessons.services.concept_bundles import bundle_lead
 
     normal = version_bundles(node.group).get("NORMAL") or []
-    if not any(item.id == node.id for item in normal):
+    if not normal:
         return True
+    if not any(item.id == node.id for item in normal):
+        return False
     lead = bundle_lead(normal)
     return lead is not None and lead.id == node.id
 
