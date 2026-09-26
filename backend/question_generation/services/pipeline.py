@@ -154,22 +154,68 @@ def _print_material_summary(material, node_count, all_questions, stats):
     )
 
 
-def concept_source_text(node):
-    """The text a concept's questions are written from.
+# The one role a learner is never served. EXTRA is excluded everywhere else
+# that builds a version -- learning_path/services/published.py::_versions and
+# course/services.py::_build_chunk both skip it -- so it is not text to write
+# questions about either.
+#
+# Stated as what to exclude rather than what to include, because a bundle
+# whose role has not been classified yet is still a telling the learner may
+# be served once it is. Reading only the assigned roles (via version_bundles)
+# left such a concept generating from its Normal bundle alone -- the very bug
+# this widening exists to fix.
+UNSERVED_VERSION_ROLE = "EXTRA"
 
-    A concept may be taught as several objects of one PDF, and the Normal
-    track speaks all of them. Generating from the lead object alone would ask
-    about a fraction of what the student hears.
+
+def concept_source_text(node):
+    """The text a concept's questions are written from: every telling of it.
+
+    A concept holds one bundle per PDF, and the adaptive engine serves those
+    bundles as the Normal, Simplified and Elaborated versions of one concept.
+    A learner escalated to Elaborated hears another PDF's wording, so a bank
+    written from the Normal bundle alone asks about text that learner was
+    never read.
+
+    It also starves the higher-order half of the bank. A HOT question has to
+    combine two or more stated facts; measured on topic 276, the Normal
+    bundle for "Solid" is 32 words and often does not hold two, so the model
+    supplied the second from its own knowledge. Every telling together is
+    220 words of the same concept -- more facts, no change of subject.
     """
-    from course.version_assignment import version_bundles
-    from lessons.services.concept_bundles import bundle_text
+    from course.version_assignment import bundle_roles, normal_material_id
+    from lessons.services.concept_bundles import (
+        bundle_text,
+        bundles_for_group,
+        material_order,
+    )
 
     if node.group_id is None:
         return node.content or ""
-    normal = version_bundles(node.group).get("NORMAL") or []
-    if not any(item.id == node.id for item in normal):
+
+    group = node.group
+    bundles = bundles_for_group(group)
+    normal_id = normal_material_id(group)
+    if not any(item.id == node.id for item in bundles.get(normal_id) or []):
         return node.content or ""
-    return bundle_text(normal) or (node.content or "")
+
+    roles = bundle_roles(group)
+    # The Normal telling leads, then the rest in upload order, so the model
+    # reads the concept the way the topic teaches it.
+    rank = {
+        material_id: index
+        for index, material_id in enumerate(material_order(group.outline_node))
+    }
+    others = sorted(
+        (material_id for material_id in bundles if material_id != normal_id),
+        key=lambda material_id: (rank.get(material_id, len(rank)), material_id),
+    )
+
+    objects = []
+    for material_id in [normal_id, *others]:
+        if roles.get(material_id) == UNSERVED_VERSION_ROLE:
+            continue
+        objects.extend(bundles.get(material_id) or [])
+    return bundle_text(objects) or (node.content or "")
 
 
 def _is_concept_source(node):
@@ -201,6 +247,7 @@ def _draft_questions_for_node(
     classifier,
     on_event=None,
     generation_fingerprint="",
+    correction="",
 ):
     """Run every LLM call for one node and persist the results as drafts.
 
@@ -293,6 +340,7 @@ def _draft_questions_for_node(
             thinking_order=thinking_order,
             format_split=padded,
             on_metrics=record_metrics,
+            correction=correction,
         )
         batch = [
             GeneratedQuestion(
@@ -323,6 +371,83 @@ def _draft_questions_for_node(
             formats=sorted(padded),
         )
     return drafted
+
+
+# ── Phase 1b: grounding gate (corrective RAG) ──
+
+def _validate_drafts_for_node(node, index, on_event=None, stats=None):
+    """Check every draft against the topic's source text; delete what fails.
+
+    Returns ``(surviving_count, failures)`` where each failure is
+    ``(question_text, reason)`` — the material a corrective retry needs to
+    tell the model what not to repeat.
+
+    Deleting rather than flagging is deliberate. A draft the source does not
+    support has no downstream use: the classifier would happily assign it a
+    Bloom level, and a teacher reviewing forty questions cannot be the thing
+    that catches a wrong answer key. See services/grounding.py.
+    """
+    from question_generation.models import GeneratedQuestion
+    from .grounding import verify
+
+    drafts = list(
+        GeneratedQuestion.objects.filter(node=node, status="draft").order_by("id")
+    )
+    if not drafts:
+        return 0, []
+
+    failures, reject_ids, unverified = [], [], 0
+    for draft in drafts:
+        result = verify(draft, index)
+        if result["stage"] in ("lexical_only", "judge_unavailable"):
+            unverified += 1
+        if result["passed"]:
+            logger.debug('  ✓ grounded — "%s"', draft.question_text)
+            continue
+        failures.append((draft.question_text, result["reason"]))
+        reject_ids.append(draft.id)
+        logger.debug('  ⊘ ungrounded (%s) — "%s"', result["stage"], draft.question_text)
+        _emit(
+            on_event, "question_ungrounded", draft.question_text,
+            reason=result["reason"], stage=result["stage"],
+            verdict=result["verdict"], node_id=node.id,
+            novel_terms=result["novel_terms"][:8],
+            retrieved=result["retrieved"],
+        )
+
+    if reject_ids:
+        GeneratedQuestion.objects.filter(id__in=reject_ids).delete()
+    if stats is not None:
+        stats["ungrounded"] = stats.get("ungrounded", 0) + len(reject_ids)
+        stats["unverified"] = stats.get("unverified", 0) + unverified
+
+    surviving = len(drafts) - len(reject_ids)
+    _emit(
+        on_event, "grounding_checked",
+        f"Grounding gate kept {surviving} of {len(drafts)} draft(s)",
+        node_id=node.id, kept=surviving, rejected=len(reject_ids),
+        unverified=unverified,
+    )
+    return surviving, failures
+
+
+def _bank_is_short(node):
+    """True while this node's surviving drafts cannot fill the quota.
+
+    Measured on drafts rather than final rows because the gate runs before
+    classification: a thinking order is judged by what was *requested* of it,
+    which is what the draft still carries at this point.
+    """
+    from question_generation.models import GeneratedQuestion
+
+    counts = Counter(
+        GeneratedQuestion.objects.filter(node=node, status="draft")
+        .values_list("thinking_order", flat=True)
+    )
+    return any(
+        counts.get(order, 0) < config["count"]
+        for order, config in QUESTION_DISTRIBUTION.items()
+    )
 
 
 # ── Phase 2: post-processing (deterministic, no LLM) ──
@@ -464,25 +589,63 @@ def generate_questions_for_node(
     on_event=None,
     stats=None,
     generation_fingerprint="",
+    grounding_index=None,
 ):
-    """Generate and finalize one LearningObject's question bank.
+    """Generate, ground-check and finalize one LearningObject's question bank.
 
-    Two phases: every LLM call happens first and lands in the database as
-    drafts, then a single deterministic pass classifies, deduplicates and
-    trims them. There is no regeneration loop — LOT and HOT are wide enough
-    that ordinary prompt drift lands inside the intended bucket, and a bucket
-    that still comes up short is accepted with a warning rather than paid for
-    with more LLM calls.
+    Three phases. Every LLM call happens first and lands in the database as
+    drafts. The grounding gate then checks each draft against the topic's own
+    source text and deletes what it cannot support, retrying generation with
+    the rejection reasons attached while the bank is short. Finally a single
+    deterministic pass classifies, deduplicates and trims the survivors.
+
+    The corrective loop is bounded by QUESTION_VALIDATION_MAX_RETRIES and
+    stops early once the quota is met, because each pass is a full set of LLM
+    calls. A bank still short after the last pass is accepted as-is, the same
+    way a thinking-order shortfall already is — a thin bank a learner can
+    trust beats a full one it cannot.
+
+    ``grounding_index`` is the topic's retrieval index, built once per run by
+    the caller. Without one the gate is skipped entirely, which keeps direct
+    service and test calls network-free.
 
     on_event(event_type, message, data) receives trace events when provided.
     stats, when given a dict, accumulates run totals for a material summary.
     """
-    drafted = _draft_questions_for_node(
-        node,
-        classifier,
-        on_event=on_event,
-        generation_fingerprint=generation_fingerprint,
-    )
+    from .grounding import correction_note, enabled
+
+    gate_on = grounding_index is not None and enabled()
+    max_retries = int(getattr(settings, "QUESTION_VALIDATION_MAX_RETRIES", 1))
+    correction, drafted = "", 0
+
+    for attempt in range(max_retries + 1):
+        drafted += _draft_questions_for_node(
+            node,
+            classifier,
+            on_event=on_event,
+            generation_fingerprint=generation_fingerprint,
+            correction=correction,
+        )
+        if not gate_on:
+            break
+
+        _emit(
+            on_event, "grounding_started",
+            f"Checking drafts against the lesson's source text (pass {attempt + 1})",
+            node_id=node.id, attempt=attempt + 1,
+        )
+        _surviving, failures = _validate_drafts_for_node(
+            node, grounding_index, on_event=on_event, stats=stats,
+        )
+        if not failures or not _bank_is_short(node) or attempt == max_retries:
+            break
+        correction = correction_note(failures)
+        _emit(
+            on_event, "grounding_retry",
+            f"Regenerating {len(failures)} rejected question(s) with correction feedback",
+            node_id=node.id, attempt=attempt + 1, rejected=len(failures),
+        )
+
     if stats is not None:
         stats["total_drafted"] = stats.get("total_drafted", 0) + drafted
 
@@ -575,10 +738,29 @@ def generate_questions_for_material(
         "excluded_create": 0,
         "duplicates": 0,
         "trimmed": 0,
+        "ungrounded": 0,
+        "unverified": 0,
         "reused_nodes": len(nodes) - len(nodes_to_generate),
     }
     classifier = None
+    grounding_index = None
     if nodes_to_generate:
+        # One index per run, shared by every concept: they all search the same
+        # topic corpus, and embedding the PDFs once per node would dominate the
+        # run. Built before the first LLM call so an unusable index is reported
+        # up front rather than discovered after a node's worth of generation.
+        from .grounding import build_index, enabled as grounding_enabled
+
+        if grounding_enabled() and material.outline_node_id:
+            grounding_index = build_index(material.outline_node)
+            _emit(
+                on_event, "grounding_index_built",
+                f"Indexed {len(grounding_index.chunks)} source passage(s) for validation",
+                material_id=material.id,
+                chunks=len(grounding_index.chunks),
+                searchable=grounding_index.searchable,
+                reason=grounding_index.reason,
+            )
         # Production background runs always provide the trace callback. Keep
         # direct service/test calls network-free unless they actually generate.
         if on_event:
@@ -628,6 +810,7 @@ def generate_questions_for_material(
             on_event=on_event,
             stats=stats,
             generation_fingerprint=fingerprints[node.id],
+            grounding_index=grounding_index,
         )
         all_questions.extend(questions)
         _emit(
@@ -649,6 +832,8 @@ def generate_questions_for_material(
         excluded_create=stats["excluded_create"],
         duplicates=stats["duplicates"],
         trimmed=stats["trimmed"],
+        ungrounded=stats["ungrounded"],
+        unverified=stats["unverified"],
         by_thinking_order=dict(Counter(q.thinking_order for q in all_questions)),
         by_bloom=dict(Counter(q.bloom_level for q in all_questions)),
     )

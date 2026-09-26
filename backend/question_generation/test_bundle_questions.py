@@ -55,6 +55,46 @@ class BundleQuestionSourceTests(TestCase):
         after = question_bank_fingerprint(concept_source_text(self.lead), QUESTION_DISTRIBUTION)
         self.assertNotEqual(before, after)
 
+    def test_every_telling_of_the_concept_reaches_the_prompt(self):
+        """A second PDF's telling is text the learner hears on remediation,
+        so questions must be written from it too."""
+        other = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="B",
+            generated_json={"learning_objects_confirmed": True})
+        LearningObject.objects.create(
+            material=other, group=self.group, title="Solids", order=0,
+            represented_by=self.lead,
+            content="Solid particles vibrate in place.")
+        text = concept_source_text(self.lead)
+        self.assertIn("A solid keeps its shape.", text)
+        self.assertIn("Ice cubes and a rock.", text)
+        self.assertIn("Solid particles vibrate in place.", text)
+
+    def test_a_single_telling_concept_is_unchanged(self):
+        """10 of topic 276's 19 concepts come from one PDF. They must read
+        exactly as before, with no blank lines and nothing duplicated."""
+        self.assertEqual(
+            concept_source_text(self.lead),
+            "A solid keeps its shape.\nIce cubes and a rock.",
+        )
+
+    def test_an_extra_bundle_is_not_offered_to_the_generator(self):
+        """EXTRA is excluded from what a learner is served (published.py
+        _versions, course/services.py _build_chunk), so it is not something
+        to write questions about either."""
+        extra = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="C",
+            generated_json={"learning_objects_confirmed": True})
+        LearningObject.objects.create(
+            material=extra, group=self.group, title="Aside", order=0,
+            represented_by=self.lead, content="An unrelated aside.")
+        self.group.version_selection = {
+            "normal_material_id": self.material.id,
+            "bundle_roles": {str(extra.id): "EXTRA"},
+        }
+        self.group.save(update_fields=["version_selection"])
+        self.assertNotIn("An unrelated aside.", concept_source_text(self.lead))
+
 
 class BundleGenerationScopeTests(TestCase):
     """One concept generates one bank, from its Normal bundle's lead.
