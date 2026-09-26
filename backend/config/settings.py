@@ -272,6 +272,35 @@ QUESTION_OVERGENERATION_FACTOR = float(
     os.getenv("QUESTION_OVERGENERATION_FACTOR", "1.0")
 )
 
+# Corrective-RAG grounding gate for generated questions
+# (question_generation/services/grounding.py). Every draft is checked against
+# the topic's own PDF text before it can become a final question.
+QUESTION_VALIDATION_ENABLED = os.getenv(
+    "QUESTION_VALIDATION_ENABLED", "True"
+).lower() in {"1", "true", "yes"}
+# Passages retrieved per draft. Three is enough to carry the one sentence a
+# question turns on plus its neighbours; more mostly dilutes the judge prompt.
+QUESTION_VALIDATION_TOP_K = int(os.getenv("QUESTION_VALIDATION_TOP_K", "3"))
+# Content words a draft may use that appear nowhere in the topic's materials.
+# Zero is the honest default for a lesson written for young learners: the
+# question should speak the lesson's own vocabulary. Raise it if a curriculum
+# legitimately expects outside terminology.
+QUESTION_VALIDATION_MAX_NOVEL_TERMS = int(
+    os.getenv("QUESTION_VALIDATION_MAX_NOVEL_TERMS", "0")
+)
+# Corrective passes after the first. Each one is a full set of LLM calls, so
+# this trades run time for bank completeness; the loop stops early once the
+# quota is met.
+QUESTION_VALIDATION_MAX_RETRIES = int(
+    os.getenv("QUESTION_VALIDATION_MAX_RETRIES", "1")
+)
+# The judging model. Deliberately separate from QUESTION_LLM_MODEL so the
+# judge can be a different (or larger) model than the generator.
+QUESTION_JUDGE_MODEL = os.getenv("QUESTION_JUDGE_MODEL", QUESTION_LLM_MODEL)
+QUESTION_JUDGE_TIMEOUT = int(
+    os.getenv("QUESTION_JUDGE_TIMEOUT", str(OLLAMA_TIMEOUT))
+)
+
 # Quiet the dev server's per-request access log; application diagnostics use
 # the standard Python logging system instead. INFO reports each step of every
 # pipeline; DEBUG adds the per-item detail (each drafted question, each
