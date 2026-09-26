@@ -179,7 +179,10 @@ class GenerationEvent(models.Model):
     """A single trace event emitted by the pipeline during a run."""
     run = models.ForeignKey(GenerationRun, on_delete=models.CASCADE, related_name="events")
     seq = models.PositiveIntegerField()
-    event_type = models.CharField(max_length=30)
+    # 30 was too narrow for the names course/bulk_version_generation.py emits
+    # ("version_classification_finished" is 31). SQLite stored them anyway;
+    # PostgreSQL rejects an over-length value outright.
+    event_type = models.CharField(max_length=64)
     message = models.TextField(blank=True, default="")
     data = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
