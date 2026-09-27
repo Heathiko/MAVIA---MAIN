@@ -97,7 +97,8 @@ one. The mechanism for reasoning about visual level exists and is half-used.
    structure as one whose headings are.
 2. Sub-headings and callouts become **parts of** their section, not peers of it.
 3. Every learning object remains its own row. Nothing is merged away.
-4. Material 48's current extraction does not change.
+4. Material 48's current section structure does not change.
+5. A learner never receives a definition stripped of the term it defines.
 
 ## Non-goals
 
@@ -174,6 +175,61 @@ to fall back to in this document. Setting `section_parent_title` is therefore th
 entire change — no new nesting mechanism is required, and the sub-headings cannot
 disturb the top signature because they are not in the candidate set at all.
 
+### Change D: a split definition keeps its term in the delivered text
+
+Restoring nesting is necessary but not sufficient, and without this change it
+makes delivery **worse**.
+
+A version's text is built by `bundle_segments`, which takes
+`clip["narration"] or item.content` — the object's `content` alone. A segment is
+`{text, audio_url}`; there is no title field, so no reader can render the term
+even if it wanted to. Today each change-of-state term is its own step and its
+card heading supplies the label. Once the four become parts of one telling, only
+`parts[0].title` survives as the step title and the learner receives:
+
+```
+Matter can change from one state to another when heat energy is added or removed...
+
+solid to liquid, caused by adding heat.
+liquid to solid, caused by removing heat.
+liquid to gas, caused by adding heat.
+gas to liquid, caused by removing heat.
+```
+
+Four unlabelled definitions with nothing saying which is melting.
+
+This defect is **already live** wherever the extractor split a `Label: value`
+pair — material 48's `Everyday examples` delivers `"ice cubes, a wooden chair, a
+rock, a coin, and a book."` with no label today. Nesting only makes it obvious by
+putting four in a row.
+
+**The fix.** `_inline_definition_split` matches
+`^(?:...)?([A-Z][A-Za-z0-9 /,&()]{1,70})\s*(?::|[-–—])\s+(.+)$` and returns
+`(title, content)`, discarding the separator. Capture the separator and return
+content that still opens with the term:
+
+```
+title   = "Melting"
+content = "Melting — solid to liquid, caused by adding heat."
+```
+
+The term stays in `title` for display; the content becomes self-contained. This
+reconstructs the source faithfully — `Key idea: solid particles are held in
+place…` and `Everyday examples: ice cubes…` both return exactly as the PDF wrote
+them, each keeping its own separator.
+
+Fixing it here rather than at render time is what keeps text, narration, audio
+and captions in agreement. `course/services.py::_version_from_segments` states
+the invariant: text is derived from the segments "so a caption can never drift
+from the wording the segment actually carries." Prefixing the title while joining
+would break it — the audio clip would say one thing and the screen another.
+
+**Open on real data.** `_multiline_definition_split` (two-column vocabulary rows)
+has a line break where the inline form has a separator. Reconstructing those as
+`term — definition` is the proposed default, but a newline inside one segment
+reads as a paragraph break downstream, so this case must be checked against real
+rows before it is settled rather than assumed.
+
 ### Change C: `_qualifies_as_section_parent` gains document context
 
 This is an API change, and the main cost of the design.
@@ -201,10 +257,29 @@ structure similarity, and grouping. Populating it on material 49, where it is
 currently empty, **will change prerequisite edges and the published path.** That
 is the intended outcome, not a side effect.
 
-This change requires re-extracting material 49, which rebuilds its objects,
-groups and suggestions and discards teacher review state on them. Materials 46
-and 48 do not need re-extraction, and the acceptance criteria include showing
-that re-extracting them changes nothing.
+Changes A-C require re-extracting material 49, which rebuilds its objects, groups
+and suggestions and discards teacher review state on them.
+
+**Change D widens this to every material.** It alters stored `content` for every
+object built by a definition split, in all three PDFs, so all three re-extract
+and all lose teacher review state. It also reaches further than the path:
+
+- **Narration and audio.** Narration is generated from `content`, so any clip
+  already recorded for a changed object no longer matches its text and must be
+  regenerated. Material 49's change-of-state objects have no narration yet, so
+  nothing is invalidated there; objects that already have clips must be
+  re-recorded or their captions will drift.
+- **Question grounding.** `grounding.build_index` builds its vocabulary from
+  `LearningObject.content`, so terms currently held only in `title` enter the
+  allowed vocabulary. This is a strict improvement — `melting` and `freezing`
+  become groundable — but it moves the validation baseline, and any before/after
+  question-yield figure must be measured after this lands, not across it.
+- **Question generation source text.** Prompts read `content`, so a generated
+  question can finally name the term it is about.
+
+Both changes together mean the 41 surviving questions on topic 276 are rebuilt.
+That is expected; the current bank was generated from concepts this spec argues
+should not exist.
 
 ## Verification
 
@@ -220,6 +295,10 @@ New tests:
 - a document with one heading level produces no spurious nesting
 - the assessment and narration guards still block promotion
 - a document with no font metrics falls back to today's numbered rule
+- an inline definition keeps its term and its own separator in `content`
+  (`Melting — …`, `Key idea: …`), while `title` still holds the term alone
+- a definition split that finds no separator is unchanged
+- a version built from several definition parts names every term it teaches
 
 **Acceptance, measured on real data.** Re-extract material 49 and show:
 
@@ -228,7 +307,11 @@ New tests:
 3. `Melting`, `Freezing`, `Evaporation`, `Condensation` carry
    `How Matter Changes State` and remain four separate objects
 4. topic 276's published path falls from 19 steps
-5. materials 46 and 48 re-extract to objects identical to their current ones
+5. materials 46 and 48 re-extract to the same **section structure** they have
+   today (their `content` changes under Change D, so the comparison is on
+   `section_title` and object boundaries, not on text)
+6. the `changing` step's delivered Normal text names all four changes of state —
+   the concrete check that Change D did its job
 
 ## Risks
 
