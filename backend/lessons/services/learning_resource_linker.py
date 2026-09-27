@@ -1,3 +1,4 @@
+from collections import Counter
 import logging
 import os
 import re
@@ -652,6 +653,82 @@ def resolve_learning_object_group(
     )
 
 
+def attach_orphan_objects_to_their_section(material: LearningMaterial) -> list[int]:
+    """Fold an uncorroborated object into the concept its section already names.
+
+    A PDF writes things no other PDF has as a separate object: a "Key idea"
+    callout, a bulleted term like "Melting -- solid to liquid, caused by adding
+    heat." Cross-PDF grouping cannot place them -- there is nothing to match --
+    so each becomes a concept of its own, taught as a step and handed to question
+    generation as forty characters of source text.
+
+    **Being alone in its group is the test, not having a section.** "Solid",
+    "Liquid" and "Gas" also sit under a heading ("Matter") and must stay three
+    concepts, because other PDFs teach them and they are grouped accordingly.
+    Filing every object under its section head swallowed them once before, and
+    the learning-path criteria's same-name veto then deleted their edges.
+
+    The object keeps its own row, so a question can still be generated from it
+    and remediation can still target it; only its group changes.
+
+    Returns the ids moved.
+    """
+    from .content_generator import _section_heading_title
+
+    if material.outline_node_id is None:
+        return []
+
+    siblings = list(
+        material.learning_objects.filter(group__isnull=False).order_by("order", "id")
+    )
+    if not siblings:
+        return []
+
+    # Group sizes are counted across the whole topic: corroboration is what a
+    # companion in ANOTHER PDF provides, so a per-material count would read
+    # every cross-PDF member as absent and move objects that are real concepts.
+    sizes = Counter(
+        LearningObject.objects.filter(
+            material__outline_node_id=material.outline_node_id,
+            group_id__in={item.group_id for item in siblings},
+        ).values_list("group_id", flat=True)
+    )
+    heads = {
+        (item.section_title or "").strip(): item
+        for item in siblings
+        if (item.section_title or "").strip()
+        and (item.title or "").strip() == (item.section_title or "").strip()
+    }
+
+    moved = []
+    for item in siblings:
+        section = (item.section_title or "").strip()
+        if not section or sizes[item.group_id] > 1:
+            continue
+        head = heads.get(section)
+        if head is None or head.pk == item.pk or head.group_id == item.group_id:
+            continue
+        if _section_heading_title(item.title or ""):
+            # Its own title is a numbered heading, so this is a section head
+            # whose section failed to register -- not a part of the one above.
+            # Object 556 ("6. Changing From One State to Another") carries the
+            # PREVIOUS section's title, and folding it would file the changes of
+            # state under "Comparing the Three States".
+            logger.info(
+                "[Sections material %s] %s (%s) looks like a section head; not folding into %r",
+                material.id, item.id, item.title[:60], section,
+            )
+            continue
+        logger.info(
+            "[Sections material %s] %s (%s) joins group %s via section %r",
+            material.id, item.id, item.title[:60], head.group_id, section,
+        )
+        item.group_id = head.group_id
+        item.save(update_fields=["group"])
+        moved.append(item.id)
+    return moved
+
+
 def ensure_learning_object_groups(material: LearningMaterial) -> None:
     """Give every object a neutral group and reuse matching cross-PDF groups."""
     if material.outline_node_id is None:
@@ -1265,6 +1342,8 @@ def synchronize_detected_questions(material: LearningMaterial, classified_blocks
 def refresh_material_learning_relationships(material: LearningMaterial) -> None:
     """Refresh neutral groups and pairs after teacher edits to learning objects."""
     ensure_learning_object_groups(material)
+    # After cross-PDF matching has settled, so only genuine leftovers are seen.
+    attach_orphan_objects_to_their_section(material)
     refresh_question_learning_object_links(material)
 
 
