@@ -1,7 +1,10 @@
 # Heading levels from style signatures
 
 **Date:** 2026-09-27
-**Status:** Draft, pending review
+**Status:** SUPERSEDED by `2026-09-27-peer-heading-absorption-design.md`.
+The root cause named below is wrong: the heading is detected correctly and
+then absorbed into its neighbour by lexical overlap. Kept for the reasoning
+trail and the style-signature measurements, which the replacement reuses.
 **Files touched:** `lessons/services/content_generator.py`,
 `lessons/services/instructional_content_classifier.py` (read-only use),
 `lessons/test_section_parents.py`
