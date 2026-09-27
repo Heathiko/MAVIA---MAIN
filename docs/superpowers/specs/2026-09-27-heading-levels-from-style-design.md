@@ -218,6 +218,19 @@ reconstructs the source faithfully — `Key idea: solid particles are held in
 place…` and `Everyday examples: ice cubes…` both return exactly as the PDF wrote
 them, each keeping its own separator.
 
+**Separator spacing is part of the rule, not a detail.** The regex consumes the
+whitespace around the separator, so rejoining naively yields `Melting— solid to
+liquid`. A dash takes a space on both sides, a colon only after:
+
+```
+":"          ->  "Key idea: solid particles are held in place…"
+"-", "–", "—"  ->  "Melting — solid to liquid, caused by adding heat."
+```
+
+Verified against the five real forms in these PDFs (`Melting`, `Freezing`,
+`Key idea`, `Everyday examples`, `Diagram description`); all five return exactly
+as written in the source.
+
 Fixing it here rather than at render time is what keeps text, narration, audio
 and captions in agreement. `course/services.py::_version_from_segments` states
 the invariant: text is derived from the segments "so a caption can never drift
@@ -307,9 +320,11 @@ New tests:
 3. `Melting`, `Freezing`, `Evaporation`, `Condensation` carry
    `How Matter Changes State` and remain four separate objects
 4. topic 276's published path falls from 19 steps
-5. materials 46 and 48 re-extract to the same **section structure** they have
-   today (their `content` changes under Change D, so the comparison is on
-   `section_title` and object boundaries, not on text)
+5. material 46 keeps `Matter` on its `Solid` / `Liquid` / `Gas` objects, which is
+   what it has today, and gains a section on its trailing `Everyday Examples`
+   (currently `''`). Material 48 is expected to change — see below — so the
+   comparison is on `section_title` and object boundaries, not on text, which
+   Change D alters in both
 6. the `changing` step's delivered Normal text names all four changes of state —
    the concrete check that Change D did its job
 
@@ -341,10 +356,42 @@ project's division of work. The user has chosen to make this change directly. It
 should be communicated before it lands, since re-extraction discards teacher
 review state and changes the published path for a shared topic.
 
-## Not yet verified
+## Proof run, 2026-09-27
 
-The design has not been run. The root cause, the style signatures and the empty
-`section_title` rows are measured facts; that relaxing the condition produces the
-tree in "Acceptance" is a prediction. The first implementation step is a
-throwaway script that prints the tree both documents would produce, before any
-production code is edited.
+A throwaway script applied Changes A, B and D to the three PDFs without writing
+anything. Results:
+
+**Material 49 — as designed.** Six sections open (`What Is Matter?`, `Solids`,
+`Liquids`, `Gases`, `Comparing the Three States`, `How Matter Changes State`).
+All three `Key idea` callouts land on `Solids` / `Liquids` / `Gases`. All four
+change-of-state terms land on `How Matter Changes State` and stay four separate
+definitions. Only the two front-matter blocks before the first heading carry no
+section, which is correct.
+
+**Material 46 — no regression.** `Solid` / `Liquid` / `Gas` keep `Matter`,
+exactly as today. Its trailing `Everyday Examples` gains a section where it
+currently has `''`.
+
+**Material 48 — changes, and this needs a decision.** The simulation opens
+`What is Matter?`, `Changing From One State to Another` and `Everyday Examples`,
+which today are `''` on their prose objects. It also corrects a live
+mis-assignment: `6. Changing From One State to Another` currently carries
+`section_title='Comparing the Three States'`, the *previous* section.
+
+Those look like improvements, but the simulation **omits the category guard**,
+which needs the LLM classifier. Material 48's real headings are numbered, so they
+already reach the numbered path today and are presumably being blocked by that
+guard — the 2026-09-12 spec records `1. What is Matter?` being misclassified as
+`assessment` for exactly this reason. So these improvements may not appear in
+production, and if they do not, the cause is the classifier and not this change.
+Confirming which requires one real extraction run.
+
+Unchanged from the earlier draft: material 48's top signature also selects
+`8. Quick Check Questions` and `9. Answer Key`, which the same guard excludes.
+
+## Still not verified
+
+Nothing has been run through `build_learning_objects_from_pdf_blocks` itself, so
+no actual `LearningObject` rows have been produced. The section assignment, the
+top signatures and the Change D reconstructions are measured; the resulting
+objects, groups, path and question bank are not.
