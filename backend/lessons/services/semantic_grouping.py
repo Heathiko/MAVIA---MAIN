@@ -465,6 +465,51 @@ def _specific_normalized_label(title: str) -> str:
     return label
 
 
+# A caption this short ("Diagram.", "A flower.") could sit under any figure.
+_MIN_CORROBORATING_CAPTION_WORDS = 4
+
+
+def figure_caption(content):
+    """The author's caption of a figure ("Figure 1. <caption>"), or ``""``.
+
+    Only the text after "Figure N." counts, and any AI description appended to
+    it ("This figure shows ...") is cut off by the extraction helper.
+    """
+    from .content_generator import _image_caption_title
+
+    return _image_caption_title(content or "") or ""
+
+
+def recorded_caption(item):
+    """The printed caption of a figure learning object, or ``""``.
+
+    Read from what extraction recorded for this image: once a figure is
+    narrated, its text is the model's description and no longer carries the
+    caption. Older uploads, never narrated, kept the caption as their text.
+    """
+    material = getattr(item, "material", None)
+    url = getattr(item, "image_url", "") or ""
+    if material is not None and url:
+        for record in (material.generated_json or {}).get("image_descriptions") or []:
+            if record.get("image_url") == url and (record.get("caption") or "").strip():
+                return record["caption"]
+    return getattr(item, "content", "") or ""
+
+
+def _normalized_caption(content):
+    caption = figure_caption(content)
+    words = re.sub(r"[^\w\s]", " ", caption.casefold()).split()
+    return " ".join(words) if len(words) >= _MIN_CORROBORATING_CAPTION_WORDS else ""
+
+
+def _captions_agree(caption_text, figures):
+    """True when every figure of the destination carries this exact caption."""
+    caption = _normalized_caption(caption_text)
+    return bool(caption) and bool(figures) and all(
+        _normalized_caption(recorded_caption(item)) == caption for item in figures
+    )
+
+
 def _label_corroborated_decision(
     *,
     source,
@@ -704,7 +749,25 @@ def semantic_decision(
         config=config,
         started_at=start,
     )
-    if (
+    caption_corroborated = (
+        kind == IMAGE_KIND
+        and corroborated is None
+        and normal_decision
+        and normal_decision["confidence"] == "high"
+        and _captions_agree(
+            recorded_caption(source) if source_object_id and source else content,
+            [
+                item for item in members[normal_decision["candidate"].group_id]
+                if item.kind == IMAGE_KIND
+            ],
+        )
+    )
+    if caption_corroborated:
+        # The author's own caption, word for word in both PDFs, is the label a
+        # generic "Figure 1" title cannot be. Stock phrasing is an AI-written
+        # description's problem; a caption is the author's, and specific.
+        normal_decision["evidence"].update(caption_corroborated=True)
+    elif (
         kind == IMAGE_KIND
         and corroborated is None
         and normal_decision

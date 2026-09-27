@@ -115,6 +115,10 @@ class LearningObjectSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True,
     )
+    # A figure still showing only its caption has no narration yet, however
+    # full its text box looks; publishing writes it.
+    narration_pending = serializers.SerializerMethodField()
+
     class Meta:
         model = LearningObject
         fields = [
@@ -132,7 +136,13 @@ class LearningObjectSerializer(serializers.ModelSerializer):
             "source_page",
             "source_block_id",
             "source_excerpt",
+            "narration_pending",
         ]
+
+    def get_narration_pending(self, obj):
+        from .services.image_describer import narration_pending
+
+        return narration_pending(obj)
 
 
 class LearningObjectMatchSuggestionSerializer(serializers.ModelSerializer):
@@ -282,6 +292,7 @@ class LearningMaterialSerializer(serializers.ModelSerializer):
     learning_objects = serializers.SerializerMethodField()
     filename = serializers.SerializerMethodField()
     generated_json = serializers.SerializerMethodField()
+    figure_narration = serializers.SerializerMethodField()
     outline_node_title = serializers.SerializerMethodField()
     outline_node_path = serializers.SerializerMethodField()
     module_node_title = serializers.SerializerMethodField()
@@ -305,7 +316,15 @@ class LearningMaterialSerializer(serializers.ModelSerializer):
             "created_at",
             "learning_objects",
             "questions",
+            "figure_narration",
         ]
+
+    def get_figure_narration(self, obj):
+        """How many figures still wait for a narration, for the upload notice."""
+        from .services.content_generator import figures_narrated_at_upload
+        from .services.image_describer import figure_narration_status
+
+        return {**figure_narration_status(obj), "narrated_at_upload": figures_narrated_at_upload()}
 
     def get_filename(self, obj):
         return obj.pdf_file.name.split("/")[-1] if obj.pdf_file else ""

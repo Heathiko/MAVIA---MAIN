@@ -254,6 +254,15 @@ def upload_learning_material(
             raise PdfProcessingUseCaseError(
                 "Selected outline node was not found for this course."
             ) from exc
+        # A module with topics under it is a heading, not a place for a PDF:
+        # filed there, the PDF is grouped with none of its topics' PDFs and
+        # takes no part in their learning paths. Its title is often also its
+        # first topic's, which is how a module gets picked by mistake.
+        if outline_node.children.exists():
+            raise PdfProcessingUseCaseError(
+                f'"{outline_node.title}" is a module with topics under it. '
+                "Select one of its topics for this PDF."
+            )
 
     module_node = None
     if module_node_id:

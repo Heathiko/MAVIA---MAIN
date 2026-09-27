@@ -16,7 +16,6 @@ export default function RegisterPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
-  const navigate = useNavigate();
 
   function update(field) {
     return (event) =>

@@ -125,6 +125,90 @@ class ImageAutoGroupingTests(TestCase):
         )
 
     @patch.dict(os.environ, LABEL_ENV)
+    def test_the_same_author_caption_groups_figures_named_only_figure_1(self):
+        """Measured live: two PDFs' flower diagrams, both "Figure 1", caption
+        identical, scored 0.996 -- and waited on a teacher, because "Figure 1"
+        is too generic to corroborate anything."""
+        caption = "Figure 1. The main parts of a flower involved in reproduction."
+        source = self.figure(self.source_material, self.source_group, "Figure 1", caption)
+        other = self.figure(self.other_material, self.other_group, "Figure 1", caption)
+        scores = {other.content: .996}
+
+        decision = self.decision(source, scores)
+
+        self.assertEqual(decision["confidence"], "high")
+        self.assertTrue(decision["evidence"]["caption_corroborated"])
+
+        with patch.object(semantic, "runtime", return_value=FakeRuntime(scores)):
+            refresh_learning_object_match_suggestions(self.source_material)
+
+        source.refresh_from_db()
+        self.assertEqual(source.group_id, self.other_group.id)
+        self.assertFalse(
+            LearningObjectMatchSuggestion.objects.filter(status="pending").exists()
+        )
+
+    @patch.dict(os.environ, LABEL_ENV)
+    def test_narrated_figures_are_matched_by_their_recorded_caption(self):
+        """Once narrated, a figure's text is the model's description, not its
+        caption; the caption extraction recorded for the image still matches."""
+        caption = "Figure 1. The main parts of a flower involved in reproduction."
+        source = self.narrated_figure(self.source_material, self.source_group, caption,
+                                      "The image shows a flower with several distinct parts.")
+        other = self.narrated_figure(self.other_material, self.other_group, caption,
+                                     "The image shows the key components of a flower.")
+
+        decision = self.decision(source, {other.content: .9})
+
+        self.assertEqual(decision["confidence"], "high")
+        self.assertTrue(decision["evidence"]["caption_corroborated"])
+
+    def narrated_figure(self, material, group, caption, narration):
+        url = f"/media/extracted_images/mat_{material.id}_img_1.png"
+        records = material.generated_json.setdefault("image_descriptions", [])
+        records.append({"image_url": url, "caption": caption})
+        material.save(update_fields=["generated_json"])
+        return LearningObject.objects.create(
+            material=material, group=group, title=narration, content=narration,
+            kind=LearningObject.Kind.IMAGE, image_url=url,
+        )
+
+    @patch.dict(os.environ, LABEL_ENV)
+    def test_different_captions_still_raise_a_card(self):
+        source = self.figure(
+            self.source_material, self.source_group, "Figure 1",
+            "Figure 1. The main parts of a flower involved in reproduction.",
+        )
+        other = self.figure(
+            self.other_material, self.other_group, "Figure 1",
+            "Figure 1. How pollen travels from one flower to another.",
+        )
+
+        decision = self.decision(source, {other.content: .95})
+
+        self.assertEqual(decision["confidence"], "medium")
+        self.assertTrue(decision["evidence"]["image_needs_label_corroboration"])
+
+    @patch.dict(os.environ, LABEL_ENV)
+    def test_a_caption_too_short_to_be_specific_corroborates_nothing(self):
+        source = self.figure(self.source_material, self.source_group, "Figure 2", "Figure 2. A flower.")
+        other = self.figure(self.other_material, self.other_group, "Figure 2", "Figure 2. A flower.")
+
+        decision = self.decision(source, {other.content: .95})
+
+        self.assertEqual(decision["confidence"], "medium")
+
+    @patch.dict(os.environ, LABEL_ENV)
+    def test_an_ai_description_is_not_a_caption(self):
+        """Stock AI phrasing is exactly what the figure gate exists to catch."""
+        source = self.figure(self.source_material, self.source_group, "Figure 1", STOCK)
+        other = self.figure(self.other_material, self.other_group, "Figure 1", STOCK)
+
+        decision = self.decision(source, {other.content: .95})
+
+        self.assertEqual(decision["confidence"], "medium")
+
+    @patch.dict(os.environ, LABEL_ENV)
     def test_text_objects_are_unaffected(self):
         source = LearningObject.objects.create(
             material=self.source_material, group=self.source_group,

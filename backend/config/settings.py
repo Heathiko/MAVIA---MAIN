@@ -99,7 +99,23 @@ else:
             # (ADAPTIVE_VARIANT_CONCURRENCY) with writes still serialized to this
             # thread; a longer SQLite lock timeout avoids spurious "database is
             # locked" errors under that pattern.
-            "OPTIONS": {"timeout": 20},
+            #
+            # The timeout alone is not enough. Django's default DEFERRED
+            # transaction reads first and asks for the write lock only on its
+            # first write; when two connections do that at once SQLite fails one
+            # of them immediately, without waiting. Measured 2026-09-27: an upload
+            # failed with "database is locked" while a page load wrote version
+            # selections. IMMEDIATE takes the write lock at BEGIN, so a second
+            # writer queues for the timeout instead. WAL lets page loads read
+            # while an upload writes.
+            #
+            # These apply to the SQLite fallback only; PostgreSQL above needs
+            # none of them.
+            "OPTIONS": {
+                "timeout": 20,
+                "transaction_mode": "IMMEDIATE",
+                "init_command": "PRAGMA journal_mode=WAL;",
+            },
         }
     }
 

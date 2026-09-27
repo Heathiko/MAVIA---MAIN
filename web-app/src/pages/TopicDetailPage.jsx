@@ -21,7 +21,6 @@ import {
   generateAllObjectVersions,
   fetchGenerationRunEvents,
   publishTopic,
-  regenerateImageNarrations,
   rejectLearningObjectMatchSuggestion,
   assignVersionSlot,
   editVersionText,
@@ -570,7 +569,7 @@ function QuestionEditForm({ question, groups, busy, onCancel, onSave }) {
       <label>Type<select value={type} onChange={(event) => changeType(event.target.value)}><option value="true_false">True/False</option><option value="multiple_choice">Multiple choice</option></select></label>
       <label>Concept to tie to<select value={conceptGroupId} onChange={(event) => setConceptGroupId(event.target.value)}>
         <option value="">No concept assigned</option>
-        {groups.map((group) => <option value={group.id} key={group.id}>{group.label || group.learning_objects?.[0]?.title || "Untitled concept"}</option>)}
+        {groups.map((group) => <option value={group.id} key={group.id}>{group.display_title || group.label || group.learning_objects?.[0]?.title || "Untitled concept"}</option>)}
       </select></label>
       {type === "multiple_choice" && choices.map((choice, index) => (
         <label key={index}>Choice {String.fromCharCode(65 + index)}<input required={index < 2} value={choice} onChange={(event) => {
@@ -1105,7 +1104,7 @@ function QuestionGenerationTool({
       if (!representative) return [];
       return [{
         ...representative,
-        conceptLabel: group.label || representative.title || "Untitled concept",
+        conceptLabel: group.display_title || group.label || representative.title || "Untitled concept",
         // Carried through so each concept can show what was generated from it.
         // Spreading the representative alone dropped these, which is why the
         // board could only ever say "generating" and never "here is the result".
@@ -1421,7 +1420,7 @@ function ManualQuestionPanel({
               const link = question.learning_object_links?.[0];
               const group = groups.find((item) => Number(item.id) === Number(link?.learning_object_group_id));
               const material = materialById.get(Number(question.material));
-              const concept = group?.label || group?.learning_objects?.[0]?.title || link?.learning_object_title || "No concept assigned";
+              const concept = group?.display_title || group?.label || group?.learning_objects?.[0]?.title || link?.learning_object_title || "No concept assigned";
               return (
                 <article className="saved-question-card" key={question.id}>
                   <div className="question-review-meta">
@@ -1518,7 +1517,7 @@ function ManualQuestionPanel({
             <option value="">Best available match</option>
             {groups.map((group) => (
               <option value={group.id} key={group.id}>
-                {group.label || group.learning_objects?.[0]?.title || "Untitled concept"}
+                {group.display_title || group.label || group.learning_objects?.[0]?.title || "Untitled concept"}
               </option>
             ))}
           </select>
@@ -1820,7 +1819,7 @@ ${question.prompt}`,
                 <header>
                   <div className="connection-group-heading-copy">
                     <span className="connection-group-number" aria-label={`Concept ${groupNumber}`}>{groupNumber}</span>
-                    <h4>{group.label || group.learning_objects[0]?.title || "Untitled concept"}</h4>
+                    <h4>{group.display_title || group.label || group.learning_objects[0]?.title || "Untitled concept"}</h4>
                   </div>
                   <span className={`connection-status ${isConnected ? "is-connected" : "is-single"}`}>
                     {versionSummary(group)}
@@ -2251,7 +2250,7 @@ function LearningObjectConnections({
   // The destinations a "Move to..." menu offers: every other concept of this
   // topic, named the way the cards name them so the two cannot disagree.
   function conceptName(group) {
-    return group.label || group.learning_objects?.[0]?.title || "Untitled concept";
+    return group.display_title || group.label || group.learning_objects?.[0]?.title || "Untitled concept";
   }
 
   function otherConcepts(groupId) {
@@ -2279,6 +2278,7 @@ function LearningObjectConnections({
     const query = searchTerm.trim().toLocaleLowerCase();
     if (!query) return true;
     const searchableText = [
+      group.display_title,
       group.label,
       ...group.learning_objects.flatMap((item) => [
         item.title,
@@ -2593,7 +2593,8 @@ function LearningObjectConnections({
           missingCount,
           // Named so the progress dialog can report the concept rather than an
           // anonymous position in a queue.
-          label: group.label
+          label: group.display_title
+            || group.label
             || group.learning_objects?.[0]?.title
             || "Untitled concept",
         }]
@@ -2959,7 +2960,7 @@ function LearningObjectConnections({
                     <header>
                       <div className="connection-group-heading-copy">
                         <span className="connection-group-number" aria-label={`Concept ${groupNumber}`}>{groupNumber}</span>
-                        <h4>{group.label || group.learning_objects[0]?.title || "Untitled concept"}</h4>
+                        <h4>{group.display_title || group.label || group.learning_objects[0]?.title || "Untitled concept"}</h4>
                       </div>
                       <span className={`connection-status ${isConnected ? "is-connected" : "is-single"}`}>
                         {isConnected
@@ -2994,7 +2995,7 @@ function LearningObjectConnections({
                             <div className="connection-object-list">
                               {bundle.learning_objects.map((item, itemIndex) => {
                                 const isImage = isImageLearningObject(item);
-                                const isMissingImageDescription = isImage && !item.content?.trim();
+                                const isMissingImageDescription = isImage && (item.narration_pending ?? !item.content?.trim());
                                 const moving = busyAction === `move-${item.id}`;
                                 return (
                                   <div className="connection-object-row" key={item.id}>
@@ -3033,7 +3034,7 @@ function LearningObjectConnections({
                                           )}
                                           <span>
                                             {isMissingImageDescription
-                                              ? "No image narration is available. Start Ollama, then confirm again to retry."
+                                              ? "Narration pending: it will be written when you publish this topic."
                                               : "Image narration included."}
                                           </span>
                                         </div>
@@ -3671,7 +3672,6 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
   const [showAudioWarning, setShowAudioWarning] = useState(false);
   const [showDeleteMaterialConfirm, setShowDeleteMaterialConfirm] = useState(false);
   const [learningObjectToDelete, setLearningObjectToDelete] = useState(null);
-  const imageNarrationRepairAttempts = useRef(new Set());
 
   const generatedJson = material.generated_json || {};
   const isAssessmentDocument = isQuestionMaterial(material);
@@ -3682,9 +3682,8 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
   const canEditLearningObjects = !learningObjectsConfirmed || reviewEditMode;
   const selectedObject = material.learning_objects.find((item) => item.id === selectedId);
   const imagesMissingDescription = material.learning_objects.filter(
-    (item) => isImageLearningObject(item) && !item.content?.trim()
+    (item) => isImageLearningObject(item) && !item.content?.trim(),
   );
-  const missingImageNarrationKey = imagesMissingDescription.map((item) => item.id).join(",");
 
   useEffect(() => {
     if (!material.learning_objects.some((item) => item.id === editingId)) {
@@ -3706,30 +3705,6 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
       setEditingId(null);
     }
   }, [learningObjectsConfirmed]);
-
-  useEffect(() => {
-    if (!learningObjectsConfirmed || !missingImageNarrationKey) return;
-
-    const attemptKey = `${material.id}:${missingImageNarrationKey}`;
-    if (imageNarrationRepairAttempts.current.has(attemptKey)) return;
-    imageNarrationRepairAttempts.current.add(attemptKey);
-
-    setBusyAction("image-narration");
-    regenerateImageNarrations(courseId, material.id)
-      .then((updatedCourse) => {
-        onCourseChange(updatedCourse);
-        const result = updatedCourse.image_description_generation;
-        if (result?.generated_count) {
-          onMessage(
-            `Generated ${result.generated_count} missing picture narration${result.generated_count === 1 ? "" : "s"} with Gemma.`
-          );
-        } else if (result?.errors?.length) {
-          onError(result.errors[0].detail || "Gemma could not generate the picture narration.");
-        }
-      })
-      .catch((err) => onError(err.message))
-      .finally(() => setBusyAction(""));
-  }, [courseId, learningObjectsConfirmed, material.id, missingImageNarrationKey, onCourseChange, onError, onMessage]);
 
   async function saveNewLearningObject(data) {
     setBusyAction("create");
@@ -3929,6 +3904,11 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
         </div>
         <span className={`status-pill status-${material.status}`}>{material.status}</span>
       </div>
+      {figureNarrationNotice(material.figure_narration) && (
+        <p role="status" className="connection-unpublished-note">
+          {figureNarrationNotice(material.figure_narration)}
+        </p>
+      )}
 
       <div className="generated-item-actions" style={{ marginTop: "0.75rem" }}>
         <button
@@ -4021,7 +4001,7 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
               <div className="generated-list learning-object-list">
                 {material.learning_objects.map((item, index) => {
                   const isImage = isImageLearningObject(item);
-                  const isMissingImageDescription = isImage && !item.content?.trim();
+                  const isMissingImageDescription = isImage && (item.narration_pending ?? !item.content?.trim());
                   const sectionTitle = item.section_title?.trim() || "";
                   const previousSectionTitle = material.learning_objects[index - 1]?.section_title?.trim() || "";
                   const startsSection = Boolean(sectionTitle) && sectionTitle !== previousSectionTitle;
@@ -4091,7 +4071,7 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
                                 )}
                                 <span>
                                   {isMissingImageDescription
-                                    ? `Learning object ${index + 1} has no image narration. Confirm again to retry Gemma, or edit it manually.`
+                                    ? `Narration pending for learning object ${index + 1}: it will be written when you publish this topic.`
                                     : "Image narration included."}
                                 </span>
                               </div>
@@ -4329,6 +4309,20 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
     </article>
   );
 }
+
+// A PDF with many figures narrates only the first few during upload; the
+// rest are narrated when the topic is published. Say so, with the count,
+// while any are still waiting.
+function figureNarrationNotice(status) {
+  if (!status || !status.pending) return "";
+  const pending = `${status.pending} figure${status.pending === 1 ? "" : "s"}`;
+  return `${pending} still need an audio narration. `
+    + "They will be narrated when you publish this topic, which can take a few minutes.";
+}
+
+// Every figure is narrated during upload, about 30 seconds each.
+const UPLOAD_NARRATION_NOTICE = "Processing this PDF. Every figure gets an audio narration (about 30 seconds each), "
+  + "so a PDF with more than 5 figures can take several minutes. Please keep this page open.";
 
 export default function TopicDetailPage() {
   const { courseId, topicId } = useParams();
@@ -4657,6 +4651,9 @@ export default function TopicDetailPage() {
 
         {error && <div className="error-banner">{error}</div>}
         {message && <div className="success-banner">{message}</div>}
+        {uploading && (
+          <p role="status" className="connection-unpublished-note">{UPLOAD_NARRATION_NOTICE}</p>
+        )}
 
         {!materials.length ? (
           <div className="empty-state">No learning material is stored under this topic yet.</div>

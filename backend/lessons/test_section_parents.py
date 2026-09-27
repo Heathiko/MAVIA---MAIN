@@ -12,6 +12,7 @@ from .services.content_generator import (
     _qualifies_as_section_parent,
     balance_learning_object_chunks,
     build_learning_objects_from_pdf_blocks,
+    build_section_learning_objects,
 )
 
 
@@ -121,6 +122,69 @@ class SectionParentTests(SimpleTestCase):
         sections = self.sections(build_learning_objects_from_pdf_blocks(blocks, []))
 
         self.assertEqual(sections.get("Particle Motion"), "Solids")
+
+    def test_layout_subsections_keep_repeated_labels_with_their_own_context(self):
+        def classified(block_id, text, *, bold=False, lines=1):
+            return {
+                "block_id": block_id,
+                "page": 5,
+                "text": text,
+                "line_count": lines,
+                "is_bold": bold,
+                "font_size": 12.0,
+                "bbox": (72.0, float(block_id * 25), 500.0, float(block_id * 25 + 12)),
+                "page_width": 612.0,
+                "category": "lesson_content",
+                "include_in_narration": True,
+            }
+
+        blocks = [
+            classified(100, "6. Particles of Matter", bold=True),
+            classified(101, "All matter is made up of extremely small particles."),
+            classified(
+                102,
+                "The arrangement and movement of these particles explain different behavior.",
+            ),
+            classified(103, "In Solids", bold=True),
+            classified(104, "Particles are packed tightly together."),
+            classified(105, "Particle movement:\n\u2194 Vibrate in place", bold=True, lines=2),
+            classified(106, "In Liquids", bold=True),
+            classified(107, "Particles are close together but can move around each other."),
+            classified(108, "Particle movement:\n\u2197 \u2193 \u2194 Move and slide", bold=True, lines=2),
+            classified(109, "In Gases", bold=True),
+            classified(110, "Particles are spread far apart and move freely."),
+            classified(
+                111,
+                "Particle movement:\n\u2197 \u2190 \u2193 \u2192 Move rapidly in different directions",
+                bold=True,
+                lines=2,
+            ),
+        ]
+
+        objects = build_section_learning_objects(blocks, [])
+        by_title = {item["title"]: item for item in objects}
+
+        self.assertEqual(
+            list(by_title),
+            ["Particles of Matter", "In Solids", "In Liquids", "In Gases"],
+        )
+        self.assertEqual(by_title["In Solids"]["section_title"], "Particles of Matter")
+        self.assertEqual(by_title["In Liquids"]["section_title"], "Particles of Matter")
+        self.assertEqual(by_title["In Gases"]["section_title"], "Particles of Matter")
+        self.assertIn("Particle movement:\n\u2194 Vibrate in place", by_title["In Solids"]["content"])
+        self.assertIn("Particle movement:\n\u2197 \u2193 \u2194 Move and slide", by_title["In Liquids"]["content"])
+        self.assertIn(
+            "Particle movement:\n\u2197 \u2190 \u2193 \u2192 Move rapidly in different directions",
+            by_title["In Gases"]["content"],
+        )
+        self.assertNotIn("In Liquids", by_title["In Solids"]["content"])
+        self.assertNotIn("In Gases", by_title["In Liquids"]["content"])
+
+        balanced = balance_learning_object_chunks(objects)
+        self.assertEqual(
+            [item["title"] for item in balanced],
+            ["Particles of Matter", "In Solids", "In Liquids", "In Gases"],
+        )
 
 
 class SectionParentEligibilityTests(SimpleTestCase):

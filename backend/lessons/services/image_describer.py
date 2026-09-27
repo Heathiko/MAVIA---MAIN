@@ -5,8 +5,8 @@ vision model (Ollama) what *concept* the figure teaches — not where things
 sit on the page, but the science it is there to show.
 
 This is purely additive. If Ollama is temporarily unavailable, extraction keeps
-the figure and its caption or visible-text fallback. Confirmation and publishing
-retry blank narrations using the saved image file.
+the figure and its caption or visible-text fallback. Publishing retries
+narrations that are blank or only that caption, using the saved image file.
 
 Point it at a different Ollama vision model with IMAGE_DESCRIPTION_MODEL
 (llava, moondream, qwen2-vl, llama3.2-vision …), or turn it off entirely
@@ -34,8 +34,43 @@ _SKIP = "SKIP"
 _MAX_NARRATION_SENTENCES = 6
 _MAX_VISIBLE_TEXT = 400
 _MAX_NEARBY_TEXT = 600
+
+# A web address in a caption is the picture's source credit ("Figure 3.
+# Greenhouse Gas Effect: https://www.flickr.com/..."). It says nothing about
+# what the picture shows, and read aloud it is a string of letters.
+_LINK = re.compile(r"\s*(?:https?://|www\.)\S+", re.IGNORECASE)
+# "Figure 3." / "Table 2:" -- the label a printed caption opens with.
+_CAPTION_LABEL = re.compile(
+    r"\s*(?:figure|fig\.?|table|diagram|illustration)\s*\d+[a-z]?\s*[.:]",
+    re.IGNORECASE,
+)
+# A printed caption is a line or two; a narration is longer.
+_MAX_CAPTION_WORDS = 30
+
+
+def caption_without_links(text: str) -> str:
+    """The caption with its source links removed."""
+    cleaned = " ".join(_LINK.sub("", text or "").split())
+    return cleaned.rstrip(" :;,-–—")
+
+
+def is_caption_only(text: str) -> bool:
+    """True when a figure's narration is just its printed caption.
+
+    That is what extraction keeps when no model described the figure, and it
+    is not a narration: a learner who cannot see the figure hears its label
+    and a source link, nothing about what it shows.
+    """
+    cleaned = caption_without_links(text)
+    return bool(
+        cleaned
+        and _CAPTION_LABEL.match(cleaned)
+        and len(cleaned.split()) <= _MAX_CAPTION_WORDS
+    )
 _CACHE_VERSION = "3"
 _CACHE_SKIP = "__SKIP__"
+# How far under a figure its own description may start: about two lines.
+_MAX_DESCRIPTION_GAP = 40.0
 _cache_lock = threading.Lock()
 _reachability_lock = threading.Lock()
 _reachable_until = 0.0
@@ -260,6 +295,46 @@ def lesson_text_around(
     if not after:
         after = _page_blocks(blocks, page_number + 1, limit, tail=False)
     return {"before": _block_text(before, limit), "after": _block_text(after, limit)}
+
+
+def passage_directly_below(blocks, *, page_number, bbox):
+    """The text block printed right under a figure, or ``None``.
+
+    Where a PDF puts a figure's own description: in the figure's column,
+    starting within a couple of lines of its bottom edge. A printed caption in
+    between ("Figure 1: ...") is stepped over.
+    """
+    if not bbox:
+        return None
+    left, _top, right, bottom = (float(value) for value in bbox)
+
+    def box(item):
+        return [float(value) for value in (item.get("bbox") or (0, 0, 0, 0))]
+
+    def shares_column(item):
+        x0, _, x1, _ = box(item)
+        overlap = min(right, x1) - max(left, x0)
+        return overlap > 0.5 * min(right - left, x1 - x0)
+
+    below = sorted(
+        (
+            item for item in blocks
+            if item.get("page") == page_number
+            and (item.get("text") or "").strip()
+            and box(item)[1] >= bottom - 2
+            and shares_column(item)
+        ),
+        key=lambda item: box(item)[1],
+    )
+    edge = bottom
+    for item in below:
+        if box(item)[1] - edge > _MAX_DESCRIPTION_GAP:
+            return None
+        if _CAPTION_LABEL.match(item.get("text") or ""):
+            edge = box(item)[3]
+            continue
+        return item
+    return None
 
 
 def _page_blocks(blocks, page_number, limit, *, tail):
@@ -599,13 +674,68 @@ def _learning_object_image_bytes(learning_object) -> bytes | None:
     return candidate.read_bytes()
 
 
-def populate_missing_image_descriptions(material) -> dict:
-    """Retry blank image narrations using images already stored by the backend."""
+def _extracted_captions(material) -> dict:
+    """``{image_url: caption}`` as extraction recorded them for this material."""
+    return {
+        item.get("image_url"): item.get("caption") or ""
+        for item in (material.generated_json or {}).get("image_descriptions") or []
+        if item.get("image_url")
+    }
+
+
+def _still_the_extracted_caption(learning_object, captions) -> bool:
+    """True when the narration is exactly what extraction fell back to.
+
+    Compared with the caption recorded for this very image, not judged by its
+    shape: a teacher's own short narration that happens to open "Figure 2."
+    is theirs and must never be overwritten.
+    """
+    caption = captions.get(learning_object.image_url, "")
+    content = learning_object.content or ""
+    return bool(caption.strip()) and caption_without_links(content) == caption_without_links(caption)
+
+
+def narration_pending(learning_object) -> bool:
+    """True for a figure with no narration yet: blank, or still only its caption.
+
+    The captions are read once per material and kept on it, so a page listing
+    every figure does not re-read the material's record for each one.
+    """
+    if getattr(learning_object, "kind", "") != "image":
+        return False
+    material = learning_object.material
+    captions = getattr(material, "_extracted_captions_cache", None)
+    if captions is None:
+        captions = _extracted_captions(material)
+        material._extracted_captions_cache = captions
+    return not (learning_object.content or "").strip() or _still_the_extracted_caption(learning_object, captions)
+
+
+def figure_narration_status(material) -> dict:
+    """``{"figures": n, "pending": m}``: figures, and those still without narration."""
     from lessons.models import LearningObject
 
+    captions = _extracted_captions(material)
+    figures = [
+        item for item in material.learning_objects.all()
+        if item.kind == LearningObject.Kind.IMAGE
+    ]
+    pending = [
+        item for item in figures
+        if not (item.content or "").strip() or _still_the_extracted_caption(item, captions)
+    ]
+    return {"figures": len(figures), "pending": len(pending)}
+
+
+def populate_missing_image_descriptions(material) -> dict:
+    """Retry image narrations that are blank or still only the printed caption."""
+    from lessons.models import LearningObject
+
+    captions = _extracted_captions(material)
     images = [item for item in material.learning_objects.filter(
         kind=LearningObject.Kind.IMAGE,
-    ).order_by("order", "id") if not (item.content or "").strip()]
+    ).order_by("order", "id")
+        if not (item.content or "").strip() or _still_the_extracted_caption(item, captions)]
     logger.info("Image narration retry: material=%s blank_images=%s", material.id, len(images))
     generated_ids = []
     errors = []
@@ -625,7 +755,12 @@ def populate_missing_image_descriptions(material) -> dict:
             image_bytes,
             lesson_title=(material.outline_node.title if material.outline_node_id else material.title),
             nearby_text=(material.extracted_text or "")[:_MAX_NEARBY_TEXT],
-            caption=learning_object.title,
+            # The caption the figure was printed with, when that is all it has;
+            # its title alone ("Figure 3") tells the model nothing.
+            caption=(
+                caption_without_links(captions.get(learning_object.image_url, ""))
+                or learning_object.title
+            ),
         )
         if not description:
             errors.append({

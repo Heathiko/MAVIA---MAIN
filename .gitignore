@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *.sqlite3
 db.sqlite3
+# SQLite's WAL journal files (settings.py turns WAL on)
+*.sqlite3-wal
+*.sqlite3-shm
 .env
 .env.*
 !.env.example
