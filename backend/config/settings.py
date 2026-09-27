@@ -3,6 +3,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import dj_database_url
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -73,17 +74,34 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-        # course's variant generation fans Ollama calls across a thread pool
-        # (ADAPTIVE_VARIANT_CONCURRENCY) with writes still serialized to this
-        # thread; a longer SQLite lock timeout avoids spurious "database is
-        # locked" errors under that pattern.
-        "OPTIONS": {"timeout": 20},
+# Set DATABASE_URL to run on PostgreSQL, e.g.
+#   postgres://postgres:postgres@localhost:5432/mavia_db
+# Left unset, this falls back to the original SQLite file so a checkout without
+# a local PostgreSQL server still runs.
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+if DATABASE_URL:
+    DATABASES = {
+        "default": dj_database_url.parse(
+            DATABASE_URL,
+            # Reuse connections instead of reconnecting per request; course's
+            # variant generation opens one per worker thread.
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+            # course's variant generation fans Ollama calls across a thread pool
+            # (ADAPTIVE_VARIANT_CONCURRENCY) with writes still serialized to this
+            # thread; a longer SQLite lock timeout avoids spurious "database is
+            # locked" errors under that pattern.
+            "OPTIONS": {"timeout": 20},
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},

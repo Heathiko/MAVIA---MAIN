@@ -547,14 +547,6 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             "question_count": len(all_questions),
             "suggestion_count": len(payload["match_suggestions"]),
         }
-        logger.info(
-            "Learning-resource payload: node=%s duration_ms=%.1f groups=%s questions=%s suggestions=%s",
-            node.id,
-            elapsed_ms,
-            len(groups),
-            len(all_questions),
-            len(payload["match_suggestions"]),
-        )
         return payload
 
     def _refresh_relationship_snapshots(self, materials, *, recompute=True):

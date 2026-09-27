@@ -1187,7 +1187,7 @@ function QuestionGenerationTool({
         carried = [...carried, ...await waitForGeneration(started.run_id, carried)];
       }
       onResourcesChange(await fetchLearningResources(courseId, topicId));
-      onMessage("One LOTS/HOTS question bank was generated for each concept from its Normal version.");
+      onMessage("");
     } catch (err) {
       onError(err.message);
     } finally {
@@ -4495,7 +4495,12 @@ export default function TopicDetailPage() {
       <aside className="card lesson-pdf-sidebar" aria-label="Uploaded PDF navigation">
         <div className="lesson-sidebar-brand-row">
           <Link to="/courses" className="lesson-sidebar-brand" title="Mavia home">
-            <span className="lesson-sidebar-brand-mark" aria-hidden="true">M</span>
+            <img
+              className="lesson-sidebar-brand-mark"
+              src="/android-chrome-192x192.png"
+              alt=""
+              aria-hidden="true"
+            />
             <span className="lesson-sidebar-brand-copy">
               <strong>Mavia</strong>
               <small>Lesson material workspace</small>

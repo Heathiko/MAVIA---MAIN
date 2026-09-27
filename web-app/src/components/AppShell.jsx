@@ -20,9 +20,10 @@ export default function AppShell({ nav = [], primaryAction, rail, children }) {
     <div className="mv-app">
       <div className="mv-topbar">
         <Link to="/" className="mv-brand" style={{ color: "var(--mv-brand-900)" }}>
-          <span
+          <img
             className="mv-brand__dot"
-            style={{ background: "var(--mv-brand-500)" }}
+            src="/android-chrome-192x192.png"
+            alt=""
             aria-hidden="true"
           />
           MAVIA

@@ -8,7 +8,12 @@ function Shell({ eyebrow, title, children }) {
       <div className="mv-auth">
         <aside className="mv-auth__aside">
           <Link to="/" className="mv-brand">
-            <span className="mv-brand__dot" aria-hidden="true" />
+            <img
+              className="mv-brand__dot"
+              src="/android-chrome-192x192.png"
+              alt=""
+              aria-hidden="true"
+            />
             MAVIA
           </Link>
           <div>

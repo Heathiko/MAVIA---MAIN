@@ -3,6 +3,11 @@ djangorestframework>=3.15
 django-cors-headers>=4.3
 python-dotenv>=1.0
 
+# PostgreSQL. Only needed when DATABASE_URL points at Postgres;
+# without it settings.py falls back to SQLite.
+psycopg[binary]>=3.2
+dj-database-url>=2.2
+
 # lessons (content generation): PDF text/image extraction, TF-IDF outline
 # matching, and edge-tts audio. Deterministic except for the optional figure
 # describer, which calls a local Ollama vision model over HTTP (requests) and

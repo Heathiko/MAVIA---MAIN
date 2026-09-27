@@ -832,15 +832,12 @@ button {
 }
 
 .lesson-sidebar-brand-mark {
-  display: inline-grid;
+  display: block;
   width: 2.35rem;
   height: 2.35rem;
   flex: 0 0 auto;
-  place-items: center;
-  border-radius: 10px;
-  color: #ffffff;
-  background: #1e5fa8;
-  font-weight: 900;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 .lesson-sidebar-brand-copy {
