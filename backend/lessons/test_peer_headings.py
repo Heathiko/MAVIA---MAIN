@@ -64,13 +64,19 @@ class PeerHeadingTests(SimpleTestCase):
         # A plainly-formatted PDF renders every heading at one size and weight,
         # with no colour. Nothing visual distinguishes parent from child, so the
         # decision has to come from the titles themselves.
+        #
+        # The child is deliberately NOT an "Examples of ..." heading: that form
+        # is absorbed by _current_concept_accepts_supporting_component before
+        # containment is ever consulted, so a test using it would pass with this
+        # rule disabled and pin nothing. "Particles in a Solid" has no such
+        # shortcut -- only containment can absorb it.
         flat = {"font_size": 14.0, "is_bold": True, "text_color": 0}
         body = {"font_size": 11.0, "is_bold": False, "text_color": 0}
         blocks = [
             block(1, "Solids", **flat),
             block(2, "In a solid, particles are packed tightly together.", **body),
-            block(3, "Examples of Solids", **flat),
-            block(4, "An ice cube, a wooden block, and a rock are all solids.", **body),
+            block(3, "Particles in a Solid", **flat),
+            block(4, "Particles in a solid vibrate in place but do not move past each other.", **body),
         ]
 
         objects = build_learning_objects_from_pdf_blocks(blocks, [])
