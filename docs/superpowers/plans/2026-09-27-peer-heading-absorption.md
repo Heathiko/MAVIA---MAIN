@@ -237,13 +237,37 @@ This is the case that rejected the earlier font-signature design. It must keep w
         self.assertEqual(self.titles(objects), ["Solids"])
 ```
 
-- [ ] **Step 9: Run all five and verify they pass**
+- [ ] **Step 8b: Pin the known soft spot (Review Focus 3)**
+
+Containment is easy to satisfy when the parent's title is one word. This test
+records the behaviour rather than claiming it is ideal, so that if it is ever
+judged wrong there is a named test to change.
+
+```python
+    def test_a_one_word_parent_absorbs_a_heading_that_names_it(self):
+        # Soft spot, pinned deliberately: a single-word parent is contained by
+        # anything mentioning it, so "States of Matter" folds into "Matter".
+        # Arguably they are siblings. If that is ever judged wrong, this is the
+        # test to change -- the rule is doing exactly what it says.
+        blocks = [
+            block(1, "Matter", is_bold=True),
+            block(2, "Matter is anything that has mass and takes up space."),
+            block(3, "States of Matter", is_bold=True),
+            block(4, "Matter is found as a solid, a liquid, or a gas in everyday life."),
+        ]
+
+        objects = build_learning_objects_from_pdf_blocks(blocks, [])
+
+        self.assertEqual(self.titles(objects), ["Matter"])
+```
+
+- [ ] **Step 9: Run all six and verify they pass**
 
 ```bash
 cd backend && python manage.py test lessons.test_peer_headings -v 2
 ```
 
-Expected: 5 tests, all PASS.
+Expected: 6 tests, all PASS.
 
 - [ ] **Step 10: Run the whole lessons suite**
 
@@ -251,7 +275,7 @@ Expected: 5 tests, all PASS.
 cd backend && python manage.py test lessons 2>&1 | tail -5
 ```
 
-Expected: the Step 1 baseline count plus 5, all passing. The existing `lessons.tests` test named `test_numbered_concept_keeps_its_subheadings_and_short_bullet_examples` must still pass — `Particles in a Solid` and `Examples of Solids` both contain their parent `Solid`.
+Expected: the Step 1 baseline count plus 6, all passing. The existing `lessons.tests` test named `test_numbered_concept_keeps_its_subheadings_and_short_bullet_examples` must still pass — `Particles in a Solid` and `Examples of Solids` both contain their parent `Solid`.
 
 If any other test fails, read it before changing it. A test asserting that a heading sharing *one* word gets absorbed is asserting the behaviour this task removes; anything else is a real regression — stop and report.
 
@@ -419,7 +443,7 @@ Expected: PASS.
 cd backend && python manage.py test lessons.test_definition_terms -v 2
 ```
 
-Expected: 5 tests, all PASS.
+Expected: 6 tests, all PASS.
 
 - [ ] **Step 9: Run the whole lessons suite**
 

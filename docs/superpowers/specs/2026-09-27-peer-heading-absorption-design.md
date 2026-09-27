@@ -147,6 +147,51 @@ breaking the very case the absorption rule exists for. Verified — a flat-style
 stopped absorbing under the signature guard. Styling is evidence some documents
 supply and others do not; containment is a property of the titles themselves.
 
+### Rejected: scoring subordination with the sentence encoder
+
+The containment rule is lexical, against a hardcoded filler list that already
+exists in this function. The obvious objection is that this is brittle, and the
+project already runs `all-MiniLM-L6-v2` in `semantic_grouping`. It was measured
+rather than argued about:
+
+| parent | incoming | is child | cosine |
+|---|---|---|---|
+| `Solids` | `Examples of Solids` | yes | 0.8024 |
+| `Solids` | `Key properties of solids` | yes | 0.7527 |
+| `Matter` | `States of Matter` | arguable | 0.6758 |
+| `Solids` | `Liquids` | **no** | **0.5414** |
+| `Solid` | `Particles in a Solid` | **yes** | **0.4575** |
+| `How Matter Changes State` | `Melting` | **yes** | **0.3382** |
+| `Comparing the Three States` | `How Matter Changes State` | no | 0.3254 |
+| `Liquids` | `Everyday examples` | no | 0.1869 |
+| `Gases` | `Everyday examples` | no | 0.1510 |
+| `Comparing the Three States` | `Review Questions` | no | 0.1015 |
+
+Children span 0.338-0.802, siblings 0.102-0.541. **The ranges overlap, so no
+threshold exists.** `Solids`/`Liquids` scores higher than two genuine
+parent-child pairs, so any cut either fuses two of the lesson's seven core
+concepts or fails to absorb the sub-headings the rule exists for.
+
+This is structural, not a tuning problem. Cosine similarity measures topical
+relatedness, and every heading in one lesson is about that lesson, so siblings
+score high by construction. The judgement needed is **directional** — is B part
+of A? — and a symmetric score cannot express direction. Obtaining it would need
+natural-language inference or hypernym detection, a new dependency rather than a
+reuse of what the project already runs.
+
+On the same pairs the containment rule is wrong zero times.
+
+### Rejected: comparing heading style signatures
+
+An earlier draft compared `(font_size, is_bold, text_color)`: identical styling
+means siblings, so do not absorb. Rejected after testing. A plainly-formatted
+PDF renders every heading at one size and weight with no colour, and the guard
+would then split its genuine sub-headings out as concepts — breaking the case
+the absorption rule exists for. Verified: a flat-styled `Solids` /
+`Examples of Solids` pair absorbs correctly today and stops absorbing under the
+signature guard. Styling is evidence some documents supply and others do not;
+containment is a property of the titles themselves.
+
 ### Change 2: a split definition keeps its term in the delivered text
 
 Carried over unchanged from the superseded spec, where it was Change D. It is
