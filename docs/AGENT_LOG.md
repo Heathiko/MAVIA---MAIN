@@ -708,9 +708,151 @@ mine, and neither would have shown without running it on real material):
   questions, so its accuracy is anecdotal — two questions, one model comparison.
 
 
+### 2026-09-27 — Claude Code — generation-time grounding: the bank goes 18 -> 41 with nothing ungrounded
+
+**Branch:** `question-revisions` (11 commits). **`mavia-latest` was rewound to
+`f9c8937`** at the user's request and holds none of this work. Nothing pushed.
+
+**Tests:** `python manage.py test question_generation` — 130, OK. Verified in a
+clean `git worktree`, not only the working tree (see the Critical below).
+
+**What this session did.** The previous entry added a corrective-RAG gate after
+generation. This one fixed *generation*, because the user's call was right: the
+gate should stay strict and the generator should meet it, not the reverse.
+Five changes, each measured on topic 276:
+
+1. **Questions are written from every telling of a concept**, not the Normal
+   bundle alone (`concept_source_text`). Solid 32 -> 220 words. A learner on a
+   remediation rung was being asked about text they were never read.
+2. **The prompt forbids outside knowledge.** It had no prohibition at all, and
+   the HOT template actively said "do NOT ask for a fact stated word-for-word",
+   which pushed the model off-source with nowhere to go but its own knowledge.
+3. **`_validate_question` actually validates** — it accepted any answer letter
+   present in the choices, which is how `D) plasma` shipped.
+4. **Each format gets its own whole schema shape via `anyOf`.** This was the
+   big one. One merged shape had to leave `choices` optional, and Ollama
+   compiles the schema into a decoding grammar, so optional meant the model
+   skipped the options *every time*. HOT was MCQ-only, so every HOT call
+   produced nothing usable and the HOT bucket was filled by accident from LOT
+   output the Bloom classifier relabelled.
+5. **Stopped generating banks that are deleted on arrival.** 22 of 42 objects
+   generated a bank that `finalize_node_questions` deletes moments later.
+
+**Measured, topic 276:**
+
+| | gate only | + generator fixes | + anyOf |
+|---|---|---|---|
+| questions | 27 | 18 | **41** |
+| HOT | 5 | 5 | **12** |
+| ungrounded | 0 | 0 | **0** |
+| gate rejections | 228 | 40 | 100 |
+| runtime | 117 min | 44 min | 66 min |
+
+(The 27 -> 18 dip is not a regression: the 27 included banks attached to
+non-lead objects that survived only by finishing last.)
+
+**Live database:** topic 276's bank regenerated several times. Backups:
+`db.sqlite3.pre-grounding-gate.20260926` (76 questions, no gate),
+`db.sqlite3.baseline-strict-gate-old-generator.20260927` (27),
+`db.sqlite3.pre-anyof.20260927` (18). No learner responses existed at any point.
+
+**Decisions made on the user's behalf:**
+- Retrieval is scoped to the topic's materials, not a global PDF index. A
+  global one would let the judge validate a question against a passage the
+  learner never hears.
+- The lexical stage scans the stem and the *marked answer only*, not the
+  distractors. A wrong option is wrong on purpose and often uses unfamiliar
+  words; scanning them rejected questions whose stem and key were both
+  straight from the source.
+- Only the requested formats are offered in the schema. Left free the model
+  reaches for true/false — asked for two MCQ and one TF it returned three TF.
+
+**Watch out:**
+- **`anyOf` support depends on the model's grammar conversion.** Verified on
+  `llama3.2:3b` only. Re-test before switching `QUESTION_LLM_MODEL`, which the
+  user is considering (`gemma3:4b`, to run one model across MAVIA). Note also
+  that `gemma3:4b` was measured as a *worse* judge than `llama3.2:3b` — it
+  passed both "plasma" questions that llama rejected.
+- **Killing a background run does not kill its Python child.** Stopping one
+  regeneration left a process writing to `db.sqlite3` while a second started,
+  silently corrupting a measurement. Kill by PID and verify with
+  `Get-CimInstance Win32_Process`.
+- A whole-branch review found that `grounding.py` had never been committed
+  while `pipeline.py` imported it — the branch did not run on a fresh
+  checkout, and every green test result had been measured against a working
+  tree that differed from `HEAD`. Fixed; verify in a worktree, not the tree
+  you are editing.
+
+**Uncommitted and not mine:** PostgreSQL work in `backend/config/settings.py`,
+the web-app changes, and both IEEE manuscript `.docx` files. A broad `git add`
+had staged all of it at one point; it was unstaged before committing. Check
+`git status` before the next commit.
+
+**Not done:** the user ended the session mid-decision on the True/False-in-MCQ
+defect below.
+
+
 ---
 
 ## Open threads
+
+- **True/false questions wearing an MCQ costume.** 2 of 14 MCQs in topic 276's
+  bank are propositions padded to four options: Q621 "A book and a balloon both
+  occupy space but have different shapes." with `{A: True, B: False, C: "It
+  doesn't matter", D: "This statement is irrelevant"}`, and Q616 padded with
+  `liquid`/`gas`. Cause: with `anyOf` the model commits to the MCQ branch while
+  decoding, and that shape requires A-D, so a model that wanted a proposition
+  must invent two options. Both are HOT, the bucket changed from MCQ-only to a
+  mixed split. **Decision left open:** reject them, or convert them to real TF
+  items (better for a thin bank, but means rewriting model output). Note the
+  detection rule — "options offer True and False as the answer frame" — is
+  structural and holds across science lessons, but would wrongly reject a
+  legitimate programming MCQ like "what does `print(3 > 2)` output?". Say so in
+  the comment rather than claim it is universal. — raised by Claude Code,
+  2026-09-27
+- **The gate now rejects more than it accepts:** 100 rejections against 76
+  drafts on the last run, and MCQ is hit far harder than TF (14 MCQ vs 27 TF
+  survive, though generation produces ~55% MCQ). Plausibly because the lexical
+  stage scans the marked answer, and an MCQ's answer is a phrase where a TF's
+  is just "True". Unmeasured — the rejections are in `GenerationEvent` with
+  their stage and reason, so it is directly answerable. — raised by Claude
+  Code, 2026-09-27
+- **Five concepts still have no questions** (Melting, Freezing, Condensation,
+  "Matter usually exists...", the changes-of-state figure). They are the short
+  ones, but a reliability harness got 6/6 from Melting in isolation, so the
+  questions are generated and then rejected by the gate. Path mode advances to
+  the next step *with* a question, so an empty concept is never taught. —
+  raised by Claude Code, 2026-09-27
+- **The four-category spread is very uneven** — Skills 24, Facts 9, Meaning 7,
+  Outcome 1 — because `category` is a fixed lookup on `bloom_level`
+  (`BLOOM_TO_CATEGORY`), not a prediction. Worth stating that way in the
+  manuscript: a panel asking "how is category predicted?" has a sharp question
+  and the answer is "it isn't". — raised by Claude Code, 2026-09-27
+- **Students are served the answer key.** `adaptive.views.LessonDetailView`
+  (permission `IsStudent`) returns `lessons.Question.correct_answer` via
+  `lessons/services/lesson_package.py::_lesson_questions`. On topic 276 that is
+  76 of 93 rows with a populated answer, sent to any enrolled learner's device.
+  Path mode is careful about this (`adaptive.services.student_safe_step`); this
+  endpoint is not. — raised by Claude Code, 2026-09-26
+- **Three learning objects are unreachable by any learner.** lo557/558/559
+  (material 48's *Everyday Examples* telling) sit in group 574's `EXTRA` bundle.
+  `_versions` skips `EXTRA`, `represented_by` disqualifies them as alternates,
+  and they are the only 3 of topic 276's 45 objects with no audio in any
+  playlist. Decide what `EXTRA` is for, or stop generating it. — raised by
+  Claude Code, 2026-09-26
+- **The question judge is uncalibrated.** `QUESTION_JUDGE_MODEL` decides what
+  reaches a learner, and its accuracy rests on two questions and one model
+  comparison (`llama3.2:3b` caught the "plasma" answers, `gemma3:4b` did not).
+  A labelled set of supported/unsupported questions is wanted before the
+  lexical stage's tolerance (`QUESTION_VALIDATION_MAX_NOVEL_TERMS`) is relaxed
+  from 0. — raised by Claude Code, 2026-09-26
+- **A bundle with no assigned version role still feeds the prompt.** The EXTRA
+  exclusion in `concept_source_text` only fires once a role is stored, and
+  nothing orders the versions step before question generation. A teacher who
+  generates before opening the versions screen, then publishes, can serve a
+  question written from a bundle later marked EXTRA. The run trace names them;
+  regenerating on a role change was not implemented. Zero unclassified bundles
+  on topic 276 today. — raised by Claude Code, 2026-09-27
 
 - **Students are served the answer key.** `adaptive.views.LessonDetailView`
   (permission `IsStudent`) returns `lessons.Question.correct_answer` via
