@@ -97,28 +97,55 @@ a sibling, so it treats every overlap as subordination.
 
 ## Design
 
-### Change 1: a heading is not absorbed by a heading of its own rank
+### Change 1: a sub-heading must name its parent, not merely brush against it
 
-`extract_pdf_text_blocks` already records `font_size`, `is_bold` and
-`text_color` on every block. Form the signature `(round(font_size*2)/2,
-is_bold, text_color)`. Absorption is skipped when the incoming heading's
-signature equals the signature of the block that opened the current concept.
+The absorption test is one line:
 
-Measured on the failing document:
+```python
+return bool(title_words and len(title_words) <= 3 and set(title_words) & heading_words)
+```
 
-| heading | signature | verdict |
-|---|---|---|
-| `Comparing the Three States` | `(15.0, True, 2046052)` | opens the concept |
-| `How Matter Changes State` | `(15.0, True, 2046052)` | **same rank — do not absorb** |
-| `Everyday examples` | `(12.5, True, 3036053)` | lower rank — absorb, as today |
+`&` is a non-empty intersection: **one** shared word is enough. The `<= 3` limit
+was meant to keep this to short concept names, but `Comparing the Three States`
+reduces to exactly three content words after the ignore-list and plural-folding
+— `{comparing, three, state}` — so it slips under the limit, and then `state`
+alone carries the decision.
 
-**When either signature is unavailable, behaviour is unchanged.** The blocks in
-the existing test carry `is_bold` but no `font_size`, so that test keeps passing
-untouched — which is the point: the guard only fires where the document supplies
-evidence that the two headings are the same rank.
+A genuine sub-heading does not merely share a word with its parent; it **names**
+it. `Examples of Solids` contains the whole of `Solids`. `Particles in a Solid`
+contains the whole of `Solid`. `How Matter Changes State` does not contain
+`Comparing the Three States` — it shares one word out of three.
 
-This requires the loop to remember the signature of the block that opened the
-current concept, alongside the title it already keeps.
+So require containment. One operator:
+
+```python
+return bool(title_words and len(title_words) <= 3 and set(title_words) <= heading_words)
+```
+
+Measured over the real pairs:
+
+| parent | incoming | should absorb | `&` (today) | `<=` (proposed) |
+|---|---|---|---|---|
+| `Comparing the Three States` | `How Matter Changes State` | no | **yes** | no |
+| `Solids` | `Examples of Solids` | yes | yes | yes |
+| `Solid` | `Particles in a Solid` | yes | yes | yes |
+| `1. Solid` | `Examples of Solids` | yes | yes | yes |
+| `Matter` | `States of Matter` | yes | yes | yes |
+| `Solids` | `Liquids` | no | no | no |
+| `Comparing the Three States` | `Review Questions` | no | no | no |
+| `Gases` | `Everyday examples` | no | no | no |
+
+Today's rule is wrong on 1 of 8; the containment rule on 0 of 8.
+
+**This uses no font metrics, so it holds for any PDF.** An earlier draft of this
+spec proposed comparing `(font_size, is_bold, text_color)` signatures — same
+styling means siblings, so do not absorb. That was rejected after testing: a
+plainly-styled PDF that renders every heading at one size and weight, with no
+colour at all, would have had its genuine sub-headings split out as concepts,
+breaking the very case the absorption rule exists for. Verified — a flat-styled
+`Solids` / `Examples of Solids` pair absorbs correctly today and would have
+stopped absorbing under the signature guard. Styling is evidence some documents
+supply and others do not; containment is a property of the titles themselves.
 
 ### Change 2: a split definition keeps its term in the delivered text
 

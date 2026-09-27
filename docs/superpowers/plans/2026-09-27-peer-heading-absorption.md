@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stop a heading being absorbed into the concept above it when the two are visual peers, and keep a split definition's term in the text a learner receives.
+**Goal:** Stop a heading being absorbed into the concept above it when it merely shares a word rather than naming it, and keep a split definition's term in the text a learner receives.
 
-**Architecture:** Two independent changes inside `lessons/services/content_generator.py`. The first adds a rank guard to the existing lexical-overlap absorption test, using the `(font_size, is_bold, text_color)` signature already recorded on every block: two headings a document styles identically are siblings, so a shared word between them is coincidence, not subordination. The second makes `_inline_definition_split` return content that still opens with its term. Neither adds a new subsystem; both narrow existing behaviour.
+**Architecture:** Two independent changes inside `lessons/services/content_generator.py`. The first narrows the heading-absorption test from "shares any word with the open concept" to "contains the whole of its title" — a sub-heading names its parent, a sibling merely brushes against it. The second makes `_inline_definition_split` return content that still opens with its term. Neither adds a new subsystem, both narrow existing behaviour, and neither reads font metrics.
 
 **Tech Stack:** Python 3.12, Django, `python manage.py test` (Django test runner — there is no pytest in this project), PyMuPDF for block extraction.
 
@@ -13,19 +13,19 @@
 ## Global Constraints
 
 - Test runner is `python manage.py test` from `backend/`. Never `pytest`.
-- Behaviour must be **unchanged when font metrics are absent**. Blocks in existing tests carry `is_bold` but no `font_size`; every one of those tests must pass untouched.
+- The decision must rest on the titles alone, so it behaves identically whether or not a PDF carries font metrics. Blocks in existing tests carry `is_bold` but no `font_size`; every one of those tests must pass untouched.
 - A numbered heading already bypasses absorption via `not _section_heading_title(text)`. Do not alter that path.
-- Working keys on the `current` dict must be removed in `_finalize_current_learning_object` before the object is appended, alongside `parts`, `has_supporting_components`, `expected_enumerated_item` and `from_inline_definition`.
-- Font sizes round to the nearest 0.5pt, matching the tolerance the existing section-close comparison already uses (`+ 0.5`).
+- Do not use `font_size`, `is_bold` or `text_color` to decide heading rank. That approach was tried and rejected — Task 1 Step 7 holds the case that kills it.
+- Leave the `len(title_words) <= 3` limit in `_heading_refers_to_current_concept` alone. It is what stops a long section heading absorbing the rest of the document.
 - Do not fix the three `Key idea` objects with empty `section_title`. The spec records it as a known defect and forbids fixing it blind.
 
 ## Review Focus
 
-1. **A block with `font_size: None`** (scanned PDF routed through transcription) — the signature is `None`, the guard must not fire, and absorption behaves exactly as today. Covered in Task 1, Step 9.
-2. **The new working key leaking into the saved object** — `heading_signature` must not survive into the learning-object payload, or it reaches `LearningObject` creation as an unexpected field. Covered in Task 1, Step 11.
-3. **Two peers that share no word** — the guard must not change them; they were never absorbed in the first place and must still each open an object. Covered in Task 1, Step 7.
-4. **Fractional font differences** (15.0 versus 15.04 from PDF rounding) — must read as the same rank, not two. Covered in Task 1, Step 13.
-5. **A definition whose content is empty or whose separator is absent** — `_inline_definition_split` already returns `None` for these; Change 2 must not make it return a title-only string. Covered in Task 2, Step 7.
+1. **A PDF with flat styling** — every heading one size and weight, no colour. Nothing visual separates parent from child, so a genuine sub-heading must still be absorbed on the strength of its title alone. This is the case that rejected the earlier font-signature design. Covered in Task 1, Step 7.
+2. **Two headings sharing no word** — must be unaffected; they were never absorbed and must still each open an object. Covered in Task 1, Step 6.
+3. **A parent title of four or more content words** — the `<= 3` limit still applies, so such a parent absorbs nothing regardless of containment. Unchanged by this task and deliberately left alone; that limit is what keeps a long section heading from swallowing the document.
+4. **A plural parent naming a singular child** — `Solids` folds to `solid`, so `Particles in a Solid` must still contain it. Covered in Task 1, Step 8.
+5. **A definition whose body is empty or whose separator is absent** — `_inline_definition_split` already returns `None` for these; Change 2 must not make it return a title-only string. Covered in Task 2, Step 7.
 
 ## Fixtures verified before this plan was written
 
@@ -35,20 +35,32 @@ Every block fixture below was run through the real
 ```
 defect (expect 1 object, absorbed)         -> ['Comparing the Three States']
                                                 content contains "How Matter Changes State:"
-peers, no shared word (expect 2)           -> ['Solids', 'Liquids']
+headings sharing no word (expect 2)        -> ['Solids', 'Liquids']
 true sub-heading (expect 1, absorbed)      -> ['Solids']
-no font metrics (expect 1, absorbed)       -> ['Comparing the Three States']
+flat-styled sub-heading (expect 1)         -> ['Solids']
 ```
 
 So Task 1's first test genuinely reproduces the production defect from synthetic
-blocks, and the three tests that must *not* change already behave as asserted.
+blocks, and the tests that must *not* change already behave as asserted.
+
+The containment rule was then run end to end against material 49's real PDF,
+with `_heading_refers_to_current_concept` patched in memory:
+
+```
+BEFORE  Melting / Freezing / Evaporation / Condensation -> 'Comparing the Three States'
+        (and no "How Matter Changes State" object at all)
+AFTER   How Matter Changes State -> its own object
+        Melting / Freezing / Evaporation / Condensation -> 'How Matter Changes State'
+        flat-styled sub-heading still absorbs correctly
+```
+
 The predicted failures in this plan are measured, not guessed.
 
 ## File Structure
 
 | File | Responsibility |
 |---|---|
-| `backend/lessons/services/content_generator.py` | Modify. Add `_heading_style_signature` and `_same_heading_rank`; guard the absorption branch; record the signature on `current`; pop it on finalize; change `_inline_definition_split`. |
+| `backend/lessons/services/content_generator.py` | Modify. One operator in `_heading_refers_to_current_concept`; the separator capture in `_inline_definition_split`. |
 | `backend/lessons/test_peer_headings.py` | Create. Everything about rank-guarded absorption. |
 | `backend/lessons/test_definition_terms.py` | Create. Everything about a definition keeping its term. |
 
@@ -56,63 +68,57 @@ Two new focused test files rather than growing `lessons/tests.py` (4900+ lines),
 
 ---
 
-### Task 1: Rank-guarded heading absorption
+### Task 1: A sub-heading must name its parent
 
 **Files:**
-- Modify: `backend/lessons/services/content_generator.py` (add helpers near `_heading_refers_to_current_concept`; guard at line 2463-2474; `current` dict at 2501-2512; `_finalize_current_learning_object`)
+- Modify: `backend/lessons/services/content_generator.py` — the return line of `_heading_refers_to_current_concept`, one operator
 - Test: `backend/lessons/test_peer_headings.py` (create)
 
 **Interfaces:**
 - Consumes: nothing from other tasks.
-- Produces: `_heading_style_signature(block: dict) -> tuple[float, bool, object] | None` and `_same_heading_rank(current: dict, block: dict) -> bool`. Task 2 does not use them.
+- Produces: nothing other tasks use. `_heading_refers_to_current_concept(current: dict, heading: str) -> bool` keeps its signature; only its verdict narrows.
 
 - [ ] **Step 1: Record the baseline**
-
-Run and write the number into the commit message later:
 
 ```bash
 cd backend && python manage.py test lessons 2>&1 | tail -5
 ```
 
-Expected: a passing run. Record the test count. If anything already fails, stop and report it rather than proceeding — you need a clean baseline to attribute later failures.
+Expected: a passing run. Record the test count. If anything already fails, stop and report rather than proceeding — you need a clean baseline to attribute later failures.
 
-- [ ] **Step 2: Write the failing test for the real defect**
+- [ ] **Step 2: Write the failing test**
 
 Create `backend/lessons/test_peer_headings.py`:
 
 ```python
-"""A heading styled like its neighbour is a sibling, not a sub-heading.
+"""A sub-heading names its parent; a sibling merely brushes against it.
 
-`_heading_refers_to_current_concept` reads a shared word as subordination, so
-"Particles in a Solid" folds into "1. Solid". That is right. It is wrong between
-peers: "Comparing the Three States" swallowed "How Matter Changes State" because
-both contain "state", and the four change-of-state terms below it inherited the
-wrong section.
+`_heading_refers_to_current_concept` absorbs a heading that shares ANY word with
+the open concept. That is right for "Examples of Solids" under "Solids", which
+contains the whole parent title. It is wrong for "How Matter Changes State"
+under "Comparing the Three States", which shares only "state" -- and that is why
+Melting, Freezing, Evaporation and Condensation inherited the wrong section.
 """
 
 from django.test import SimpleTestCase
 
 from .services.content_generator import build_learning_objects_from_pdf_blocks
 
-H2 = {"font_size": 15.0, "is_bold": True, "text_color": 2046052}
-H3 = {"font_size": 12.5, "is_bold": True, "text_color": 3036053}
-BODY = {"font_size": 11.0, "is_bold": False, "text_color": 0}
 
-
-def block(block_id, text, style, line_count=1):
-    return {"block_id": block_id, "page": 1, "text": text, "line_count": line_count, **style}
+def block(block_id, text, line_count=1, **extra):
+    return {"block_id": block_id, "page": 1, "text": text, "line_count": line_count, **extra}
 
 
 class PeerHeadingTests(SimpleTestCase):
     def titles(self, objects):
         return [item["title"] for item in objects]
 
-    def test_a_peer_heading_sharing_a_word_opens_its_own_object(self):
+    def test_a_heading_sharing_one_word_is_not_a_sub_heading(self):
         blocks = [
-            block(1, "Comparing the Three States", H2),
-            block(2, "The table below sets the three states side by side.", BODY),
-            block(3, "How Matter Changes State", H2),
-            block(4, "Matter can change from one state to another when heat is added.", BODY),
+            block(1, "Comparing the Three States", is_bold=True),
+            block(2, "The table below sets the three states side by side."),
+            block(3, "How Matter Changes State", is_bold=True),
+            block(4, "Matter can change from one state to another when heat is added."),
         ]
 
         objects = build_learning_objects_from_pdf_blocks(blocks, [])
@@ -126,78 +132,33 @@ class PeerHeadingTests(SimpleTestCase):
 - [ ] **Step 3: Run it and watch it fail**
 
 ```bash
-cd backend && python manage.py test lessons.test_peer_headings.PeerHeadingTests.test_a_peer_heading_sharing_a_word_opens_its_own_object -v 2
+cd backend && python manage.py test lessons.test_peer_headings.PeerHeadingTests.test_a_heading_sharing_one_word_is_not_a_sub_heading -v 2
 ```
 
-Expected: FAIL. The list is `['Comparing the Three States']` — the second heading was absorbed, and its text appended as a part.
+Expected: FAIL. The list is `['Comparing the Three States']` — the second heading was absorbed and its text appended as a part.
 
-- [ ] **Step 4: Add the two helpers**
+- [ ] **Step 4: Change the operator**
 
-In `content_generator.py`, directly above `def _heading_refers_to_current_concept`:
+In `_heading_refers_to_current_concept`, the final line. Replace:
 
 ```python
-def _heading_style_signature(block: dict) -> tuple | None:
-    """A heading's visual rank, as the document itself styles it.
-
-    ``None`` when the PDF carries no font metrics -- a transcribed scan, or a
-    synthetic block in a test -- which is what keeps this inert wherever the
-    evidence for it does not exist.
-    """
-    size = block.get("font_size")
-    if not size:
-        return None
-    return (round(float(size) * 2) / 2, bool(block.get("is_bold")), block.get("text_color"))
-
-
-def _same_heading_rank(current: dict, block: dict) -> bool:
-    """Whether an incoming heading is the visual peer of the open concept's.
-
-    Absorption reads a shared word as subordination, which is right for
-    "Particles in a Solid" under "1. Solid". Two headings a document styles
-    identically are siblings, so a word they happen to share is a coincidence of
-    vocabulary rather than a parent-child relationship -- "Comparing the Three
-    States" and "How Matter Changes State" both contain "state". Unknown rank on
-    either side means today's behaviour, unchanged.
-    """
-    incoming = _heading_style_signature(block)
-    return incoming is not None and incoming == current.get("heading_signature")
+    return bool(title_words and len(title_words) <= 3 and set(title_words) & heading_words)
 ```
 
-- [ ] **Step 5: Guard the absorption branch and record the signature**
-
-At line 2463, add the guard as the second condition:
+with:
 
 ```python
-        if heading_title:
-            if current is not None and not _same_heading_rank(current, block) and (
-                _current_concept_accepts_supporting_component(current, heading_title)
-                or (
-                    not _section_heading_title(text)
-                    and _heading_refers_to_current_concept(current, heading_title)
-                )
-            ):
+    # Containment, not overlap. A sub-heading names its parent -- "Examples of
+    # Solids" holds the whole of "Solids" -- where a sibling only brushes
+    # against it: "How Matter Changes State" shares one word of "Comparing the
+    # Three States", which reduces to exactly three and so slipped under the
+    # limit below, letting "state" alone carry the decision.
+    return bool(title_words and len(title_words) <= 3 and set(title_words) <= heading_words)
 ```
 
-At the `current = {` dict built from a heading (line 2501), add one key after `"title"`:
+Also change the docstring's first line from `"""Use lexical overlap to keep concept-specific subheadings with a concept."""` to `"""Keep a subheading with the concept whose title it names."""`
 
-```python
-            current = {
-                "order": len(learning_objects),
-                "section_title": section_parent_title,
-                "title": heading_title,
-                # Working key: what rank the document gave this heading, so the
-                # next one can tell subordination from coincidence. Popped in
-                # _finalize_current_learning_object.
-                "heading_signature": _heading_style_signature(block),
-                "type": "lesson_content",
-                "content": "",
-                "source": "teacher_pdf",
-                "source_page": block.get("page"),
-                "source_block_id": block.get("block_id"),
-                "source_excerpt": "",
-```
-
-- [ ] **Step 6: Run the test to verify it passes**
+- [ ] **Step 5: Run the test to verify it passes**
 
 ```bash
 cd backend && python manage.py test lessons.test_peer_headings -v 2
@@ -205,17 +166,30 @@ cd backend && python manage.py test lessons.test_peer_headings -v 2
 
 Expected: PASS.
 
-- [ ] **Step 7: Add the peers-sharing-no-word test**
+- [ ] **Step 6: Add the genuine sub-heading tests**
 
 Append to `PeerHeadingTests`:
 
 ```python
-    def test_two_peers_sharing_no_word_are_unaffected(self):
+    def test_a_sub_heading_naming_its_parent_is_still_absorbed(self):
         blocks = [
-            block(1, "Solids", H2),
-            block(2, "In a solid, particles are packed tightly together.", BODY),
-            block(3, "Liquids", H2),
-            block(4, "In a liquid, particles slide past one another freely.", BODY),
+            block(1, "Solids", is_bold=True),
+            block(2, "In a solid, particles are packed tightly together."),
+            block(3, "Examples of Solids", is_bold=True),
+            block(4, "An ice cube, a wooden block, and a rock are all solids."),
+        ]
+
+        objects = build_learning_objects_from_pdf_blocks(blocks, [])
+
+        self.assertEqual(self.titles(objects), ["Solids"])
+        self.assertIn("Examples of Solids:", objects[0]["content"])
+
+    def test_two_headings_sharing_no_word_are_unaffected(self):
+        blocks = [
+            block(1, "Solids", is_bold=True),
+            block(2, "In a solid, particles are packed tightly together."),
+            block(3, "Liquids", is_bold=True),
+            block(4, "In a liquid, particles slide past one another freely."),
         ]
 
         objects = build_learning_objects_from_pdf_blocks(blocks, [])
@@ -223,134 +197,89 @@ Append to `PeerHeadingTests`:
         self.assertEqual(self.titles(objects), ["Solids", "Liquids"])
 ```
 
-- [ ] **Step 8: Add the genuine sub-heading test**
+- [ ] **Step 7: Add the flat-styling test (Review Focus 1)**
+
+This is the case that rejected the earlier font-signature design. It must keep working.
 
 ```python
-    def test_a_lower_rank_heading_sharing_a_word_is_still_absorbed(self):
+    def test_a_sub_heading_styled_exactly_like_its_parent_is_still_absorbed(self):
+        # A plainly-formatted PDF renders every heading at one size and weight,
+        # with no colour. Nothing visual distinguishes parent from child, so the
+        # decision has to come from the titles themselves.
+        flat = {"font_size": 14.0, "is_bold": True, "text_color": 0}
+        body = {"font_size": 11.0, "is_bold": False, "text_color": 0}
         blocks = [
-            block(1, "Solids", H2),
-            block(2, "In a solid, particles are packed tightly together.", BODY),
-            block(3, "Examples of Solids", H3),
-            block(4, "An ice cube, a wooden block, and a rock are all solids.", BODY),
+            block(1, "Solids", **flat),
+            block(2, "In a solid, particles are packed tightly together.", **body),
+            block(3, "Examples of Solids", **flat),
+            block(4, "An ice cube, a wooden block, and a rock are all solids.", **body),
         ]
 
         objects = build_learning_objects_from_pdf_blocks(blocks, [])
 
         self.assertEqual(self.titles(objects), ["Solids"])
-        self.assertIn("Examples of Solids:", objects[0]["content"])
 ```
 
-- [ ] **Step 9: Add the no-font-metrics test (Review Focus 1)**
+- [ ] **Step 8: Add the plural-folding test (Review Focus 4)**
 
 ```python
-    def test_absorption_is_unchanged_when_the_pdf_carries_no_font_metrics(self):
-        # A transcribed scan has no sizes at all. The guard must not fire, so a
-        # shared word still means subordination, exactly as before this change.
-        plain = {"is_bold": True}
+    def test_containment_survives_a_plural_parent(self):
+        # "Solids" folds to "solid", so a child naming "Solid" still contains it.
         blocks = [
-            block(1, "Comparing the Three States", plain),
-            block(2, "The table below sets the three states side by side.", {}),
-            block(3, "How Matter Changes State", plain),
-            block(4, "Matter can change from one state to another when heat is added.", {}),
+            block(1, "Solids", is_bold=True),
+            block(2, "In a solid, particles are packed tightly together."),
+            block(3, "Particles in a Solid", is_bold=True),
+            block(4, "Particles in a solid vibrate in place but do not move past each other."),
         ]
 
         objects = build_learning_objects_from_pdf_blocks(blocks, [])
 
-        self.assertEqual(self.titles(objects), ["Comparing the Three States"])
-        self.assertIn("How Matter Changes State:", objects[0]["content"])
+        self.assertEqual(self.titles(objects), ["Solids"])
 ```
 
-- [ ] **Step 10: Run all four and verify they pass**
+- [ ] **Step 9: Run all five and verify they pass**
 
 ```bash
 cd backend && python manage.py test lessons.test_peer_headings -v 2
 ```
 
-Expected: 4 tests, all PASS.
+Expected: 5 tests, all PASS.
 
-- [ ] **Step 11: Add the key-leak test (Review Focus 2)**
-
-```python
-    def test_the_rank_working_key_never_reaches_the_saved_object(self):
-        blocks = [
-            block(1, "Solids", H2),
-            block(2, "In a solid, particles are packed tightly together.", BODY),
-        ]
-
-        objects = build_learning_objects_from_pdf_blocks(blocks, [])
-
-        self.assertNotIn("heading_signature", objects[0])
-```
-
-- [ ] **Step 12: Run it, watch it fail, then pop the key**
-
-```bash
-cd backend && python manage.py test lessons.test_peer_headings.PeerHeadingTests.test_the_rank_working_key_never_reaches_the_saved_object -v 2
-```
-
-Expected: FAIL — `'heading_signature' unexpectedly found`.
-
-Then in `_finalize_current_learning_object`, add one line beside the other working-key pops:
-
-```python
-    parts = current.pop("parts", [])
-    current.pop("has_supporting_components", None)
-    current.pop("expected_enumerated_item", None)
-    current.pop("from_inline_definition", None)
-    current.pop("heading_signature", None)
-```
-
-Re-run: expected PASS.
-
-- [ ] **Step 13: Add the fractional-size test (Review Focus 4)**
-
-```python
-    def test_a_fractional_font_difference_still_reads_as_one_rank(self):
-        # PyMuPDF averages span sizes, so the same authored style can arrive as
-        # 15.0 on one heading and 15.04 on the next.
-        blocks = [
-            block(1, "Comparing the Three States", {**H2, "font_size": 15.04}),
-            block(2, "The table below sets the three states side by side.", BODY),
-            block(3, "How Matter Changes State", H2),
-            block(4, "Matter can change from one state to another when heat is added.", BODY),
-        ]
-
-        objects = build_learning_objects_from_pdf_blocks(blocks, [])
-
-        self.assertEqual(
-            self.titles(objects),
-            ["Comparing the Three States", "How Matter Changes State"],
-        )
-```
-
-- [ ] **Step 14: Run the whole lessons suite**
+- [ ] **Step 10: Run the whole lessons suite**
 
 ```bash
 cd backend && python manage.py test lessons 2>&1 | tail -5
 ```
 
-Expected: the Step 1 baseline count plus 6, all passing. `lessons.tests.…test_numbered_concept_keeps_its_subheadings_and_short_bullet_examples` must still pass — its blocks have no `font_size`, so the guard is inert there.
+Expected: the Step 1 baseline count plus 5, all passing. The existing `lessons.tests` test named `test_numbered_concept_keeps_its_subheadings_and_short_bullet_examples` must still pass — `Particles in a Solid` and `Examples of Solids` both contain their parent `Solid`.
 
-- [ ] **Step 15: Commit**
+If any other test fails, read it before changing it. A test asserting that a heading sharing *one* word gets absorbed is asserting the behaviour this task removes; anything else is a real regression — stop and report.
+
+- [ ] **Step 11: Commit**
 
 ```bash
 cd backend && git add lessons/services/content_generator.py lessons/test_peer_headings.py
-git commit -m "Stop a peer heading being absorbed by its neighbour
+git commit -F - <<'COMMITMSG'
+Absorb a sub-heading only when it names its parent
 
-_heading_refers_to_current_concept reads a shared word as subordination,
-which is right for \"Particles in a Solid\" under \"1. Solid\" and wrong
-between siblings. On page 3 of Solid_Liquid_and_Gas.pdf the comparison
-table's text rows are excluded, leaving \"Comparing the Three States\"
-bodyless, and \"How Matter Changes State\" is then swallowed because both
-titles contain \"state\" -- so Melting, Freezing, Evaporation and
-Condensation inherited the wrong section.
+_heading_refers_to_current_concept absorbed any heading sharing one word
+with the open concept. "Comparing the Three States" reduces to exactly
+three content words, so it slipped under the <= 3 limit, and "state"
+alone was enough to swallow "How Matter Changes State" -- leaving
+Melting, Freezing, Evaporation and Condensation under the wrong section
+and the concept that owns them with no object at all.
 
-Two headings a document styles identically are peers. The guard compares
-the (font_size, is_bold, text_color) signature already recorded on every
-block, and is inert when either side has no metrics, so tests built from
-synthetic blocks are untouched.
+A real sub-heading names its parent: "Examples of Solids" contains the
+whole of "Solids". Requiring containment rather than overlap is wrong on
+0 of the 8 real pairs, where overlap is wrong on 1.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+Deliberately uses no font metrics. Comparing style signatures was tried
+first and rejected: a plainly-styled PDF with one heading size and no
+colour would have had its genuine sub-headings split out, breaking the
+case this rule exists for.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+COMMITMSG
 ```
 
 ---
