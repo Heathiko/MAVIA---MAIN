@@ -71,7 +71,13 @@ QUESTION_DISTRIBUTION = {
     },
     "HOT": {
         "count": _COUNTS["HOT"],
-        "format_split": _split(_COUNTS["HOT"], {"MCQ": 1}),
+        # Multiple-choice only left HOT hostage to one format: when MCQ
+        # generation broke, every HOT call produced nothing and the bucket was
+        # filled by accident, from LOT output the Bloom classifier relabelled.
+        # It stays majority multiple-choice -- a true/false question a learner
+        # can guess right half the time is weak evidence of mastery -- but it
+        # now has somewhere to fall back to.
+        "format_split": _split(_COUNTS["HOT"], {"MCQ": 2, "TF": 1}),
     },
 }
 # Per node: one call per thinking order, 3 LOT + 3 HOT = 6 questions

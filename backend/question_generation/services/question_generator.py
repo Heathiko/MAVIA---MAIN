@@ -118,7 +118,11 @@ FEW_SHOT_EXAMPLES = {
 FORMAT_INSTRUCTIONS = {
     "MCQ": (
         "Each question must have exactly 4 choices (A, B, C, D). "
-        "Only one choice is correct. Distractors should be plausible."
+        "Only one choice is correct. Each wrong choice must name a specific "
+        "misconception a learner could hold about THIS content -- something "
+        "the content shows to be wrong. Do not invent an option the lesson "
+        "never mentions: an unfamiliar word is not a distractor, it is a "
+        "giveaway."
     ),
     "TF": (
         "Each question must be a clear statement that is either True or False. "
@@ -186,49 +190,88 @@ def _ollama_metrics(data):
     }
 
 
+def _multiple_choice_shape():
+    """One whole multiple-choice item: a stem, four named options, a letter."""
+    text = {"type": "string"}
+    return {
+        "type": "object",
+        "properties": {
+            "question": text,
+            "format": {"type": "string", "enum": ["MCQ"]},
+            "choices": {
+                "type": "object",
+                "properties": {k: text for k in ("A", "B", "C", "D")},
+                "required": ["A", "B", "C", "D"],
+            },
+            # Constrained at decode time so an out-of-range answer cannot be
+            # emitted. It does not stop a *wrong* letter -- "D" is legal even
+            # when D says "plasma" -- which is what _validate_question and the
+            # CRAG gate are for.
+            "correct_answer": {"type": "string", "enum": ["A", "B", "C", "D"]},
+            "explanation": text,
+        },
+        # The explanation is required so the model has to state why its answer
+        # follows from the content. A model that cannot write one usually could
+        # not ground the question either.
+        "required": ["question", "format", "choices", "correct_answer", "explanation"],
+    }
+
+
+def _true_false_shape():
+    """One whole true/false item. It has no ``choices`` field at all.
+
+    Deliberately absent rather than optional: a field the model is never
+    offered is one it cannot fill with null.
+    """
+    text = {"type": "string"}
+    return {
+        "type": "object",
+        "properties": {
+            "question": text,
+            "format": {"type": "string", "enum": ["TF"]},
+            "correct_answer": {"type": "string", "enum": ["True", "False"]},
+            "explanation": text,
+        },
+        "required": ["question", "format", "correct_answer", "explanation"],
+    }
+
+
 def build_response_schema(format_split):
     """JSON schema handed to Ollama so the response cannot be malformed.
 
-    Constraining the shape at decode time is what makes a single call able to
-    return a mix of multiple-choice and true/false questions: the parser no
-    longer has to gamble on the model closing its JSON correctly.
+    Ollama compiles this into a grammar that constrains decoding token by
+    token, so the shape is not checked after the fact -- it cannot be written
+    wrong in the first place. That is what lets one call return a mix of
+    multiple-choice and true/false questions.
 
-    ``choices`` is deliberately optional -- a true/false item has none, and
-    requiring it would make every one of them violate the schema.
+    Every item must match one *whole* shape, via ``anyOf``. A single merged
+    shape had to leave ``choices`` optional, because a true/false item has
+    none -- and optional told the model it could skip the options. It skipped
+    them every time: measured on concept 532, an MCQ-only call returned three
+    questions and none survived validation, each with ``choices: null``. HOT
+    was the worst hit, being multiple-choice only, so every HOT call produced
+    nothing usable and its questions arrived only as LOT-call output the Bloom
+    classifier happened to relabel.
+
+    Only the requested formats are offered. The model reaches for true/false
+    when left free -- asked for two multiple-choice and one true/false, it
+    returned three true/false -- and a true/false question a learner can guess
+    right half the time is weak evidence of mastery. Pinning the shapes keeps
+    the mix the distribution asked for.
+
+    ``anyOf`` support depends on the model's grammar conversion. Verified on
+    llama3.2:3b; re-test before trusting it on another model.
     """
-    formats = [fmt for fmt in SUPPORTED_FORMATS if format_split.get(fmt)]
-    letter = {"type": "string"}
-    # Every legal answer for either format, not just the ones requested: the
-    # split is a request, not a contract (see generate_questions), so a usable
-    # true/false item arriving in an MCQ-only call is kept -- and its answer
-    # has to be legal for the schema to have let it through at all.
-    answers = ["A", "B", "C", "D", "True", "False"]
+    shapes = {"MCQ": _multiple_choice_shape, "TF": _true_false_shape}
+    offered = [
+        shapes[fmt]() for fmt in SUPPORTED_FORMATS if format_split.get(fmt)
+    ] or [shapes[fmt]() for fmt in SUPPORTED_FORMATS]
     return {
         "type": "object",
         "properties": {
             "questions": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question": {"type": "string"},
-                        "format": {"type": "string", "enum": formats or list(SUPPORTED_FORMATS)},
-                        "choices": {
-                            "type": "object",
-                            "properties": {k: letter for k in ("A", "B", "C", "D")},
-                        },
-                        # Constrained at decode time so an out-of-range answer
-                        # cannot be emitted. It does not stop a wrong letter --
-                        # "D" is legal even when D says "plasma" -- which is
-                        # what _validate_question and the CRAG gate are for.
-                        "correct_answer": {"type": "string", "enum": answers},
-                        "explanation": {"type": "string"},
-                    },
-                    # The explanation is required so the model has to state why
-                    # its answer follows from the content. A model that cannot
-                    # write one usually could not ground the question either.
-                    "required": ["question", "format", "correct_answer", "explanation"],
-                },
+                "items": {"anyOf": offered},
             },
         },
         "required": ["questions"],
