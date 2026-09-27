@@ -1445,7 +1445,7 @@ def _is_discourse_continuation_label(text: str) -> bool:
 
 
 def _heading_refers_to_current_concept(current: dict, heading: str) -> bool:
-    """Use lexical overlap to keep concept-specific subheadings with a concept."""
+    """Keep a subheading with the concept whose title it names."""
     ignored = {
         "a",
         "an",
@@ -1473,7 +1473,12 @@ def _heading_refers_to_current_concept(current: dict, heading: str) -> bool:
         for word in _normalized_heading_label(heading).split()
         if word not in ignored and not word.isdigit()
     }
-    return bool(title_words and len(title_words) <= 3 and set(title_words) & heading_words)
+    # Containment, not overlap. A sub-heading names its parent -- "Examples of
+    # Solids" holds the whole of "Solids" -- where a sibling only brushes
+    # against it: "How Matter Changes State" shares one word of "Comparing the
+    # Three States", which reduces to exactly three and so slipped under the
+    # limit below, letting "state" alone carry the decision.
+    return bool(title_words and len(title_words) <= 3 and set(title_words) <= heading_words)
 
 
 def _raw_learning_object_heading_title(block: dict) -> str | None:
