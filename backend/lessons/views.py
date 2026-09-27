@@ -37,6 +37,7 @@ from .services.concept_bundles import (
     bundles_for_group,
     material_order,
 )
+from .services.concept_titles import display_titles
 
 from .models import (
     CourseGroup,
@@ -116,9 +117,12 @@ logger = logging.getLogger(__name__)
 def _active_topic_run(outline_node, *, stale_after=timedelta(minutes=30)):
     """Return a live topic run and close runs that stopped reporting progress."""
     cutoff = timezone.now() - stale_after
+    # A run with a finish time has ended, whatever its status says: a worker
+    # that died mid-failure could save the time but not the status.
     for run in GenerationRun.objects.filter(
         outline_node=outline_node,
         status="running",
+        finished_at__isnull=True,
     ).order_by("-id"):
         latest_event = run.events.order_by("-created_at").first()
         last_activity = latest_event.created_at if latest_event else run.started_at
@@ -167,11 +171,22 @@ def _run_topic_publish_in_background(run_id, course_id, node_id, set_confirmed):
         run.status = "finished"
     except Exception as exc:  # a failed publish must not leave the run "running" forever
         logger.exception("Publish run %s failed", run_id)
-        record("publish_failed", str(exc))
+        # Status first: recording the event writes too, and when the failure
+        # was the database itself ("database is locked") that write fails as
+        # well -- which used to skip this line and save the run as "running".
         run.status = "failed"
+        _record_failure(record, "publish_failed", exc, run_id)
     finally:
         run.finished_at = timezone.now()
         run.save(update_fields=["status", "finished_at"])
+
+
+def _record_failure(record, event_type, exc, run_id):
+    """Record why a run failed, without letting that write fail the run's close."""
+    try:
+        record(event_type, str(exc))
+    except Exception:
+        logger.exception("Could not record the failure of run %s", run_id)
 
 
 def _run_all_versions_in_background(run_id, node_id):
@@ -193,8 +208,9 @@ def _run_all_versions_in_background(run_id, node_id):
         run.status = "finished"
     except Exception as exc:
         logger.exception("Bulk version run %s failed", run_id)
-        record("versions_bulk_failed", str(exc))
+        # Status first; see _run_topic_publish_in_background.
         run.status = "failed"
+        _record_failure(record, "versions_bulk_failed", exc, run_id)
     finally:
         run.finished_at = timezone.now()
         run.save(update_fields=["status", "finished_at"])
@@ -301,6 +317,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         }
 
         groups = []
+        # (group, members) per concept shown, for titles built once at the end:
+        # a concept's title depends on whether a sibling shares its name.
+        titled = []
         for group in group_queryset:
             learning_objects = [
                 item
@@ -309,6 +328,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             ]
             if not learning_objects:
                 continue
+            titled.append((group, learning_objects))
             version_state = assign_group_versions(group)
             group_bundles = bundles_for_group(group)
             # Shown per PDF. Built from the same rows as the flat list -- only
@@ -507,6 +527,22 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     ).data,
                 }
             )
+        title_entries = [
+            (
+                group,
+                members,
+                min(
+                    (order_index.get(item.material_id, len(order_index)), item.order, item.id)
+                    for item in members
+                ),
+            )
+            for group, members in titled
+        ]
+        titles = display_titles(title_entries)
+        for entry in groups:
+            # Display only: "label" stays the stored name every edit uses.
+            entry["display_title"] = titles.get(entry["id"], entry["label"])
+
         payload = {
             "grouping_warnings": [
                 material.generated_json["grouping_warning"]
@@ -2355,10 +2391,14 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        image_result = populate_missing_image_descriptions(material)
         self._set_learning_objects_confirmed(material, True)
         response = self._serialize_course_detail(course, request)
-        response.data["image_description_generation"] = image_result
+        response.data["image_description_generation"] = {
+            "generated_count": 0,
+            "generated_learning_object_ids": [],
+            "errors": [],
+            "deferred": True,
+        }
         return response
 
     @action(

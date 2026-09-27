@@ -282,6 +282,8 @@ def find_captioned_figure_regions(page, page_dict: dict | None = None) -> list[d
     text_blocks = []
     visual_rects = []
 
+    image_rects = []
+    drawing_rects = []
     for block in page_dict.get("blocks", []):
         bbox = block.get("bbox")
         if not bbox:
@@ -292,37 +294,58 @@ def find_captioned_figure_regions(page, page_dict: dict | None = None) -> list[d
             if text:
                 text_blocks.append({"text": text, "rect": rect})
         elif block.get("type") == 1:
-            visual_rects.append(rect)
+            image_rects.append(rect)
 
     get_drawings = getattr(page, "get_drawings", None)
     if callable(get_drawings):
         try:
-            visual_rects.extend(fitz.Rect(item["rect"]) for item in get_drawings() if item.get("rect"))
+            drawing_rects.extend(fitz.Rect(item["rect"]) for item in get_drawings() if item.get("rect"))
         except (RuntimeError, TypeError, ValueError):
             pass
 
-    usable_visuals = []
-    for rect in visual_rects:
-        area = max(rect.width, 0) * max(rect.height, 0)
-        if area <= 0 or area / page_area >= 0.75:
-            continue
-        usable_visuals.append(rect)
+    def usable(rects):
+        kept = []
+        for rect in rects:
+            area = max(rect.width, 0) * max(rect.height, 0)
+            if area <= 0 or area / page_area >= 0.75:
+                continue
+            kept.append(rect)
+        return kept
+
+    usable_images = usable(image_rects)
+    usable_drawings = usable(drawing_rects)
 
     regions = []
     captions = [
         item
         for item in text_blocks
-        if re.match(r"^\s*(?:figure|fig\.)\s*\d+\s*[.:]", item["text"], flags=re.IGNORECASE)
+        # "Figure 2:", "Figure 5A:", "Fig. 3B." -- modules letter related figures.
+        if re.match(r"^\s*(?:figure|fig\.?)\s*\d+[A-Za-z]?\s*[.:]", item["text"], flags=re.IGNORECASE)
+        and len(item["text"].split()) <= 20
     ]
-    for caption in captions:
-        caption_rect = caption["rect"]
-        nearby_visuals = [
+
+    def above_in_same_column(rects, caption_rect):
+        # A figure sits directly above its caption, in the same column. On a
+        # two-column page the text beside a figure, and a banner or frame
+        # higher up, are not part of it; counting them grew one crop over
+        # most of a page.
+        return [
             rect
-            for rect in usable_visuals
+            for rect in rects
             if rect.y0 < caption_rect.y0
             and rect.y1 <= caption_rect.y0 + 4
             and caption_rect.y0 - rect.y1 <= page_rect.height * 0.35
+            and min(rect.x1, caption_rect.x1) - max(rect.x0, caption_rect.x0) > 0
         ]
+
+    for caption in captions:
+        caption_rect = caption["rect"]
+        # A picture beats a drawn shape: page furniture -- banners, boxes,
+        # rules -- is drawn too, and is only the figure when nothing else is.
+        nearby_visuals = (
+            above_in_same_column(usable_images, caption_rect)
+            or above_in_same_column(usable_drawings, caption_rect)
+        )
         if not nearby_visuals:
             continue
 
@@ -355,12 +378,16 @@ def find_captioned_figure_regions(page, page_dict: dict | None = None) -> list[d
             min(page_rect.y1, crop_bbox.y1 + 5),
         )
 
+        # Labels printed on the figure belong to it. Only text lying inside
+        # the figure itself counts, and the crop never grows to take in more:
+        # growing to each block it touched then took in the next, until the
+        # "figure" was the whole page.
+        figure_area = fitz.Rect(visual_bbox.x0 - 4, visual_bbox.y0 - 4, visual_bbox.x1 + 4, visual_bbox.y1 + 4)
         contained_items = []
         for item in text_blocks:
             center = (item["rect"].x0 + item["rect"].x1) / 2, (item["rect"].y0 + item["rect"].y1) / 2
-            if crop_bbox.contains(fitz.Point(*center)):
+            if figure_area.contains(fitz.Point(*center)):
                 contained_items.append(item)
-                crop_bbox.include_rect(item["rect"])
         crop_bbox = fitz.Rect(
             max(page_rect.x0, crop_bbox.x0 - 4),
             max(page_rect.y0, crop_bbox.y0 - 4),
@@ -405,8 +432,18 @@ def extract_pdf_text_blocks(file_path: str) -> list[dict]:
                 bold_found = False
                 font_sizes = []
                 colors = []
+                # Words set upside down on the page (a line's writing direction
+                # points left). Printed answer keys are often turned over so a
+                # learner cannot read them by accident; lesson text never is.
+                upright_words = inverted_words = 0
                 for line in block.get("lines", []):
                     spans = line.get("spans", [])
+                    line_words = sum(len((span.get("text") or "").split()) for span in spans)
+                    direction = line.get("dir") or (1.0, 0.0)
+                    if float(direction[0]) < -0.9:
+                        inverted_words += line_words
+                    else:
+                        upright_words += line_words
                     line_text_segments = []
                     for span in spans:
                         span_text = span.get("text") or ""
@@ -462,6 +499,7 @@ def extract_pdf_text_blocks(file_path: str) -> list[dict]:
                         "page_width": float(page_rect.width) if page_rect is not None else None,
                         "page_height": float(page_rect.height) if page_rect is not None else None,
                         "is_figure_text": is_figure_text,
+                        "is_inverted": inverted_words > upright_words,
                     }
                 )
                 block_id += 1
@@ -641,7 +679,12 @@ def classify_instructional_blocks(blocks: list[dict], batch_size: int = 20) -> l
                 0.65 if is_instructional else 0.4,
             )
 
-    return [classified_by_id[block["block_id"]] for block in blocks if block["block_id"] in classified_by_id]
+    classified = [classified_by_id[block["block_id"]] for block in blocks if block["block_id"] in classified_by_id]
+    # One block at a time cannot see that a line sits on a credits page or an
+    # upside-down answer key; the page-level pass can.
+    from .page_roles import apply_page_roles
+
+    return apply_page_roles(blocks, classified)
 
 
 def detect_instructional_document_role(classified_blocks: list[dict]) -> str:

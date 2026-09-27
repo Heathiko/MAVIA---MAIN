@@ -54,6 +54,7 @@ from .services.content_generator import (
     _normalize_pdf_content_part,
     _plausible_table_bbox,
     _split_numbered_definition_run,
+    _sync_learning_objects,
     describe_pdf_images,
     exclude_text_blocks_inside_tables,
     extract_meaningful_pdf_images,
@@ -1581,6 +1582,36 @@ class LearningResourceRelationshipTests(TestCase):
 
 
 class ConfirmLearningObjectsTests(TestCase):
+    @patch("lessons.views.populate_missing_image_descriptions")
+    def test_confirmation_does_not_run_image_model_in_request(self, populate):
+        client = authenticated_api_client()
+        course = CourseGroup.objects.create(title="Science 7")
+        material = LearningMaterial.objects.create(
+            course=course,
+            title="Diagram PDF",
+            pdf_file=SimpleUploadedFile("diagram.pdf", b"%PDF-1.4"),
+            generated_json={},
+            status=LearningMaterial.Status.COMPLETED,
+        )
+        LearningObject.objects.create(
+            material=material,
+            kind=LearningObject.Kind.IMAGE,
+            title="Extracted diagram",
+            content="",
+            image_url="/media/extracted_images/diagram.png",
+            order=0,
+        )
+
+        response = client.post(
+            f"/api/courses/{course.id}/materials/{material.id}/confirm-learning-objects/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["image_description_generation"]["deferred"])
+        populate.assert_not_called()
+
     def test_learning_objects_can_be_reordered_before_confirmation(self):
         client = authenticated_api_client()
         course = CourseGroup.objects.create(title="Science 7")
@@ -2378,6 +2409,150 @@ class OutlineTitleFragmentTests(TestCase):
 
 
 class LearningObjectPreservationTests(TestCase):
+    def test_single_self_labelled_passage_replaces_unrelated_empty_heading_title(self):
+        blocks = [
+            {
+                "block_id": 1,
+                "page": 3,
+                "text": "Comparing the Three States",
+                "line_count": 1,
+                "is_bold": True,
+                "font_size": 16,
+            },
+            {
+                "block_id": 2,
+                "page": 3,
+                "text": (
+                    "How Matter Changes State: Matter can change from one state "
+                    "to another when heat energy is"
+                ),
+                "line_count": 1,
+                "font_size": 11,
+            },
+            {
+                "block_id": 3,
+                "page": 3,
+                "text": "added or removed.",
+                "line_count": 1,
+                "font_size": 11,
+            },
+        ]
+
+        learning_objects = build_learning_objects_from_pdf_blocks(blocks, [])
+
+        self.assertEqual(len(learning_objects), 1)
+        self.assertEqual(learning_objects[0]["title"], "How Matter Changes State")
+        self.assertEqual(
+            learning_objects[0]["content"],
+            "Matter can change from one state to another when heat energy is added or removed.",
+        )
+        self.assertEqual(
+            learning_objects[0]["source_excerpt"],
+            blocks[1]["text"],
+        )
+
+    def test_separate_short_definition_blocks_stay_with_their_introducing_passage(self):
+        blocks = [
+            {
+                "block_id": 1,
+                "page": 3,
+                "text": "Changing From One State to Another",
+                "line_count": 1,
+                "is_bold": True,
+                "font_size": 16,
+                "bbox": (50, 80, 400, 100),
+            },
+            {
+                "block_id": 2,
+                "page": 3,
+                "text": (
+                    "Matter changes state when heat is added or removed. "
+                    "The following entries name each direction of change."
+                ),
+                "line_count": 2,
+                "font_size": 11,
+                "bbox": (50, 110, 500, 145),
+            },
+            {
+                "block_id": 3,
+                "page": 3,
+                "text": "Melting: solid to liquid, caused by adding heat",
+                "line_count": 1,
+                "font_size": 11,
+                "bbox": (50, 160, 500, 175),
+            },
+            {
+                "block_id": 4,
+                "page": 3,
+                "text": "Freezing: liquid to solid, caused by removing heat",
+                "line_count": 1,
+                "font_size": 11,
+                "bbox": (50, 180, 500, 195),
+            },
+            {
+                "block_id": 5,
+                "page": 3,
+                "text": "Evaporation: liquid to gas, caused by adding heat",
+                "line_count": 1,
+                "font_size": 11,
+                "bbox": (50, 200, 500, 215),
+            },
+            {
+                "block_id": 6,
+                "page": 3,
+                "text": "Condensation: gas to liquid, caused by removing heat",
+                "line_count": 1,
+                "font_size": 11,
+                "bbox": (50, 220, 500, 235),
+            },
+        ]
+
+        learning_objects = build_learning_objects_from_pdf_blocks(blocks, [])
+        balanced = balance_learning_object_chunks(learning_objects)
+
+        self.assertEqual(len(balanced), 1)
+        self.assertEqual(balanced[0]["title"], "Changing From One State to Another")
+        self.assertEqual(
+            balanced[0]["chunk_operation"],
+            "preserved_shared_definition_group",
+        )
+        for label in ("Melting", "Freezing", "Evaporation", "Condensation"):
+            self.assertIn(f"{label}:", balanced[0]["content"])
+
+    def test_persistence_compacts_order_after_structural_item_is_filtered(self):
+        course = CourseGroup.objects.create(title="Science")
+        material = LearningMaterial.objects.create(
+            course=course,
+            title="Matter",
+            pdf_file=SimpleUploadedFile("matter.pdf", b"%PDF-1.4"),
+            status=LearningMaterial.Status.COMPLETED,
+        )
+        generated_json = {
+            "learning_objects": [
+                {
+                    "title": "Lesson 1: Matter",
+                    "content": "",
+                    "type": "lesson_content",
+                },
+                {
+                    "title": "Matter Has Mass",
+                    "content": "Matter has mass and occupies space.",
+                    "type": "lesson_content",
+                    "source_page": 1,
+                },
+            ]
+        }
+
+        _sync_learning_objects(material, generated_json)
+
+        saved = material.learning_objects.get()
+        self.assertEqual(saved.order, 0)
+        self.assertEqual(generated_json["learning_objects"][0]["order"], 0)
+        self.assertEqual(
+            generated_json["learning_objects"][0]["learning_object_id"],
+            saved.id,
+        )
+
     def test_overview_scaffolding_and_topic_catalog_are_not_learning_objects(self):
         blocks = [
             {"block_id": 1, "page": 1, "text": "UNIT OVERVIEW", "line_count": 1, "is_bold": True},

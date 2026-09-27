@@ -815,6 +815,18 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
     """
     if material.outline_node_id is None:
         return
+    # A newly extracted material is still a teacher draft. It cannot create or
+    # review cross-PDF connections yet, so loading the CPU semantic models here
+    # only delays the upload response and consumes substantial memory. Keep the
+    # review queue empty and initialize semantic inference only after the
+    # teacher confirms the learning objects.
+    if not learning_objects_are_confirmed(material):
+        LearningObjectMatchSuggestion.objects.filter(
+            Q(source_learning_object__material=material)
+            | Q(candidate_learning_object__material=material),
+            status=LearningObjectMatchSuggestion.Status.PENDING,
+        ).delete()
+        return
     from . import semantic_grouping
     if semantic_grouping.mode() != "legacy":
         try:
@@ -827,13 +839,6 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
             material.generated_json = data
             material.save(update_fields=["generated_json"])
             return
-    if not learning_objects_are_confirmed(material):
-        LearningObjectMatchSuggestion.objects.filter(
-            Q(source_learning_object__material=material)
-            | Q(candidate_learning_object__material=material),
-            status=LearningObjectMatchSuggestion.Status.PENDING,
-        ).delete()
-        return
     retained_ids = []
     reciprocal_cache = {}
     learning_objects = list(
