@@ -52,6 +52,7 @@ backend/db.sqlite3.pre-*
 # Thesis manuscript drafts (kept out of the shared repo)
 MAVIA MANUSCRIPT.docx
 MAVIA CHAPTER 3.docx
+MAVIA MANUSCRIPT*
 
 # Editor and office lock files
 ~$*
