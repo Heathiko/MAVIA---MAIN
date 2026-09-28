@@ -3065,7 +3065,14 @@ class LearningObjectPreservationTests(TestCase):
         self.assertEqual(len(learning_objects), 1)
         self.assertEqual(learning_objects[0]["type"], "image_description")
         self.assertEqual(learning_objects[0]["title"], "Category Comparison")
-        self.assertEqual(learning_objects[0]["content"], "")
+        # With no narration yet, the table reads its own rows instead of
+        # saying nothing; it stays a stand-in that publish narrates over.
+        self.assertEqual(
+            learning_objects[0]["content"],
+            "Shape: First category, Description one. Second category, Description two. "
+            "Volume: First category, Description three. Second category, Description four.",
+        )
+        self.assertEqual(descriptions[0]["stand_in"], learning_objects[0]["content"])
         self.assertTrue(learning_objects[0]["is_table"])
 
     def test_justified_prose_split_across_fake_columns_is_not_a_table(self):
@@ -3481,10 +3488,14 @@ class LearningObjectPreservationTests(TestCase):
             learning_objects[0]["title"],
             "Text Description of a Fern's Reproductive Structures",
         )
-        self.assertIn(
-            "Figure 1 - Text Description of a Fern's Reproductive Structures",
-            learning_objects[0]["content"],
+        # The authored description stays in what is read aloud; the bare
+        # "Figure 1" label does not, since the PDF has no figure to point at.
+        self.assertTrue(
+            learning_objects[0]["content"].startswith(
+                "Text Description of a Fern's Reproductive Structures"
+            )
         )
+        self.assertNotIn("Figure 1", learning_objects[0]["content"])
         self.assertIn("1. Sporangium (spore case)", learning_objects[0]["content"])
         self.assertIn("2. Spores", learning_objects[0]["content"])
         self.assertIn("3. Rhizoids", learning_objects[0]["content"])
@@ -4202,7 +4213,9 @@ class LearningObjectPreservationTests(TestCase):
             ],
         )
 
-        self.assertEqual(learning_objects[0]["title"], "Diagram showing the water cycle")
+        # The printed caption names the figure; the description is what is
+        # narrated, not what the concept is called (BUG-004).
+        self.assertEqual(learning_objects[0]["title"], "The water cycle")
         self.assertEqual(learning_objects[0]["content"], "Diagram showing the water cycle.")
 
         pending = build_section_learning_objects(

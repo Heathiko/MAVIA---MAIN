@@ -9,6 +9,7 @@ from rest_framework.test import APIClient
 from lessons.models import CourseGroup, LearningMaterial, LearningObject, LearningObjectGroup, OutlineNode
 from question_generation.models import GenerationRun
 
+from .testing import without_measurements
 from .bulk_version_generation import classify_all_source_versions
 from .models import LessonVariant
 from .variant_generator import fill_missing_slots
@@ -18,6 +19,7 @@ from .version_assignment import bundle_roles
 @override_settings(ADAPTIVE_VARIANT_GENERATION_ENABLED=True)
 class BulkVersionGenerationTests(TestCase):
     def setUp(self):
+        without_measurements(self)
         self.course = CourseGroup.objects.create(title="Science")
         self.node = OutlineNode.objects.create(course=self.course, title="Matter", order=0)
         self.material = LearningMaterial.objects.create(

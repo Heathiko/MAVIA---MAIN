@@ -276,10 +276,15 @@ def _rank_candidate_groups(
         .exclude(material_id=material.id)
         .select_related("group", "material")
     )
+    from .content_generator import is_recap_section
+
     best_by_group = {}
     for candidate in candidates:
         group_members = candidate.group.learning_objects.exclude(pk=source_object_id)
         if group_members.filter(material_id=material.id).exists():
+            continue
+        if any(is_recap_section(member.title, member.section_title) for member in group_members):
+            # Nothing is paired into a summary's concept.
             continue
         evidence = learning_object_match_evidence(
             title,
@@ -310,6 +315,11 @@ def _match_decision(
     source_object_id: int | None = None,
 ) -> dict | None:
     if not learning_objects_are_confirmed(material):
+        return None
+    from .content_generator import is_recap_section
+    if is_recap_section(title, section_title):
+        # A summary restates several concepts, so it is no version of any one
+        # of them in another PDF; it stays its own step.
         return None
     from . import semantic_grouping
     if semantic_grouping.mode() != "legacy":
@@ -693,19 +703,77 @@ def attach_orphan_objects_to_their_section(material: LearningMaterial) -> list[i
             group_id__in={item.group_id for item in siblings},
         ).values_list("group_id", flat=True)
     )
-    heads = {
-        (item.section_title or "").strip(): item
+    referenced_sections = {
+        (item.section_title or "").strip()
         for item in siblings
         if (item.section_title or "").strip()
-        and (item.title or "").strip() == (item.section_title or "").strip()
     }
+    heads = {
+        (item.title or "").strip(): item
+        for item in siblings
+        if (item.title or "").strip() in referenced_sections
+    }
+    # A long section is cut into "SOLID (Part 1 of 3)" pieces, so no object is
+    # titled "SOLID" itself; its first piece heads the section.
+    for item in siblings:
+        base = _PART_SUFFIX.sub("", item.title or "").strip()
+        if base != (item.title or "").strip() and base in referenced_sections:
+            heads.setdefault(base, item)
+    # Each later piece is paired with the nearest earlier "Part 1" of the same
+    # passage: same title, same section, same number of parts. Several
+    # passages can share a title ("Diagram description (Part 1 of 2)" under
+    # each state of matter), and must never be fused.
+    first_piece_of = {}
+    open_passages = {}
+    for item in siblings:
+        marker = _PART_SUFFIX.search(item.title or "")
+        if not marker:
+            continue
+        key = (
+            _PART_SUFFIX.sub("", item.title).strip().casefold(),
+            (item.section_title or "").strip().casefold(),
+            int(marker.group("total")),
+        )
+        if int(marker.group("number")) == 1:
+            open_passages[key] = item
+        elif key in open_passages:
+            first_piece_of[item.pk] = open_passages[key]
 
     moved = []
+    joins = dict((material.generated_json or {}).get(SECTION_JOINS_KEY) or {})
+    # A section whose heading has no text of its own ("How Flowering Plants
+    # Reproduce" over steps 1-4) has no head object. Its first part stands in
+    # for the head, so the steps are taught together as one section rather
+    # than as four concepts.
+    first_parts = {}
+    named_after_section = {}
     for item in siblings:
         section = (item.section_title or "").strip()
-        if not section or sizes[item.group_id] > 1:
+        if sizes[item.group_id] > 1:
+            continue
+        # A later piece of one split passage ("What Is Matter? (Part 2 of 2)")
+        # is the same passage as its first piece: it follows that piece into
+        # whatever concept the first piece was matched to.
+        first_piece = first_piece_of.get(item.pk)
+        if first_piece is not None and first_piece.group_id != item.group_id:
+            logger.info(
+                "[Sections material %s] %s (%s) follows its first piece into group %s",
+                material.id, item.id, item.title[:60], first_piece.group_id,
+            )
+            item.group_id = first_piece.group_id
+            item.save(update_fields=["group"])
+            moved.append(item.id)
+            joins[str(item.id)] = first_piece.group_id
+            continue
+        if not section:
+            continue
+        if _is_glossary_section(section):
+            # "Key Vocabulary": each term is something the lesson teaches and
+            # a question can target, so the terms stay concepts of their own.
             continue
         head = heads.get(section)
+        if head is None and not _section_heading_title(item.title or ""):
+            head = first_parts.setdefault(section, item)
         if head is None or head.pk == item.pk or head.group_id == item.group_id:
             continue
         if _section_heading_title(item.title or ""):
@@ -726,6 +794,99 @@ def attach_orphan_objects_to_their_section(material: LearningMaterial) -> list[i
         item.group_id = head.group_id
         item.save(update_fields=["group"])
         moved.append(item.id)
+        # Recorded so the join can be released when another PDF arrives:
+        # whether a part is taught elsewhere is only known once every PDF is in.
+        joins[str(item.id)] = head.group_id
+        if first_parts.get(section) is head:
+            named_after_section[head.group_id] = section
+    # A first part standing in for a heading with no text of its own gave the
+    # concept its own name: "Shape" instead of "Comparing the Three States".
+    # Once other parts of the section join it, the concept is the section.
+    for group_id, section in named_after_section.items():
+        group = LearningObjectGroup.objects.filter(pk=group_id).first()
+        # Checked in Python: excluding label_locked=True in the query also
+        # excluded every group without the key, since a missing key is NULL.
+        if group and not (group.version_selection or {}).get("label_locked"):
+            group.label = section[:255]
+            group.save(update_fields=["label"])
+    if moved:
+        generated = material.generated_json or {}
+        generated[SECTION_JOINS_KEY] = joins
+        material.generated_json = generated
+        material.save(update_fields=["generated_json"])
+    return moved
+
+
+SECTION_JOINS_KEY = "section_joins"
+# The chunker's marker on a piece of a split passage: "SOLID (Part 2 of 3)".
+_PART_SUFFIX = re.compile(
+    r"\s*\(\s*part\s+(?P<number>\d+)\s+of\s+(?P<total>\d+)\s*\)\s*$", re.IGNORECASE,
+)
+
+_GLOSSARY_SECTION = re.compile(
+    r"(?:key\s+)?(?:vocabulary|glossary|terms|words)(?:\s+to\s+(?:know|remember))?"
+    r"|definition\s+of\s+terms|key\s+terms|word\s+bank|new\s+words",
+    re.IGNORECASE,
+)
+
+
+def _is_glossary_section(section: str) -> bool:
+    return bool(_GLOSSARY_SECTION.fullmatch(re.sub(r"[^\w\s]", " ", section or "").strip()))
+
+
+def release_section_joins(material: LearningMaterial) -> list[int]:
+    """Undo the section joins in ``material``'s topic, before a new PDF is matched.
+
+    A part joined its section because no other PDF taught it -- but only the
+    PDFs uploaded so far were asked. Uploaded first, PDF 1's "Solid", "Liquid"
+    and "Gas" all joined "Matter"; PDF 2's and PDF 3's sections on each state
+    then matched that one swollen concept, and the topic lost its three states.
+    Released, every part is its own concept again while the new PDF is
+    matched, and joining is redone across the whole topic afterwards, so the
+    result no longer depends on upload order.
+
+    Only a join still in place is released: a part a teacher has since moved
+    elsewhere stays where they put it. Returns the ids released.
+    """
+    if material.outline_node_id is None:
+        return []
+    released = []
+    topic_materials = LearningMaterial.objects.filter(outline_node_id=material.outline_node_id)
+    for other in topic_materials:
+        # The caller's own instance is updated, so a later save of it cannot
+        # write the old joins back.
+        target = material if other.pk == material.pk else other
+        joins = (target.generated_json or {}).get(SECTION_JOINS_KEY) or {}
+        if not joins:
+            continue
+        for object_id, joined_group_id in joins.items():
+            item = LearningObject.objects.filter(pk=int(object_id), material_id=target.pk).first()
+            if item is None or item.group_id != joined_group_id:
+                continue
+            item.group = LearningObjectGroup.objects.create(
+                outline_node_id=target.outline_node_id,
+                label=(item.title or "")[:255],
+            )
+            item.save(update_fields=["group"])
+            released.append(item.id)
+        generated = target.generated_json or {}
+        generated.pop(SECTION_JOINS_KEY, None)
+        target.generated_json = generated
+        target.save(update_fields=["generated_json"])
+    return released
+
+
+def join_sections_across_topic(material: LearningMaterial) -> list[int]:
+    """Join each uncorroborated part to its section, judged against every PDF."""
+    if material.outline_node_id is None:
+        return []
+    moved = []
+    for other in LearningMaterial.objects.filter(
+        outline_node_id=material.outline_node_id,
+        generated_json__learning_objects_confirmed=True,
+    ).order_by("id"):
+        target = material if other.pk == material.pk else other
+        moved.extend(attach_orphan_objects_to_their_section(target))
     return moved
 
 
@@ -1346,9 +1507,14 @@ def synchronize_detected_questions(material: LearningMaterial, classified_blocks
 
 def refresh_material_learning_relationships(material: LearningMaterial) -> None:
     """Refresh neutral groups and pairs after teacher edits to learning objects."""
+    # Parts joined to their sections are separated again first, so this PDF
+    # is matched against the real "Solid", not a "Matter" that swallowed it.
+    release_section_joins(material)
     ensure_learning_object_groups(material)
-    # After cross-PDF matching has settled, so only genuine leftovers are seen.
-    attach_orphan_objects_to_their_section(material)
+    # After cross-PDF matching has settled, so only genuine leftovers are seen,
+    # and across every PDF in the topic, so upload order does not decide it.
+    join_sections_across_topic(material)
+    remove_empty_learning_object_groups(material)
     refresh_question_learning_object_links(material)
 
 

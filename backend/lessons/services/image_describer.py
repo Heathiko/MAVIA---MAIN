@@ -337,6 +337,174 @@ def passage_directly_below(blocks, *, page_number, bbox):
     return None
 
 
+_SENTENCE_END = re.compile(r"[.!?][\"'”’)\]]*$")
+
+
+def _block_box(item):
+    return [float(value) for value in (item.get("bbox") or (0, 0, 0, 0))]
+
+
+def _in_column(item, left, right):
+    x0, _, x1, _ = _block_box(item)
+    return min(right, x1) - max(left, x0) > 0.5 * min(right - left, x1 - x0)
+
+
+def _joins_paragraph(earlier_text, later_text):
+    """One paragraph split over two text blocks: no full stop, or a lower-case restart."""
+    earlier, later = (earlier_text or "").strip(), (later_text or "").strip()
+    return bool(earlier and later) and (
+        not _SENTENCE_END.search(earlier) or later[:1].islower()
+    )
+
+
+def passage_blocks_below(blocks, *, page_number, bbox):
+    """The paragraph printed right under a figure, as its text blocks (maybe none).
+
+    PyMuPDF can split one paragraph into several blocks. Taking only the first
+    left the rest of a printed description in the lesson, where the learner
+    heard it after the figure had already said it.
+    """
+    first = passage_directly_below(blocks, page_number=page_number, bbox=bbox)
+    if first is None:
+        return []
+    left, _top, right, _bottom = (float(value) for value in bbox)
+    following = sorted(
+        (
+            item for item in blocks
+            if item.get("page") == page_number
+            and (item.get("text") or "").strip()
+            and _block_box(item)[1] > _block_box(first)[1]
+            and _in_column(item, left, right)
+        ),
+        key=lambda item: _block_box(item)[1],
+    )
+    passage = [first]
+    for item in following:
+        if _block_box(item)[1] - _block_box(passage[-1])[3] > _MAX_DESCRIPTION_GAP:
+            break
+        if not _joins_paragraph(passage[-1].get("text"), item.get("text")):
+            break
+        passage.append(item)
+    return passage
+
+
+def passage_blocks_above(blocks, *, page_number, bbox):
+    """The paragraph printed right above a figure, as its text blocks (maybe none)."""
+    if not bbox:
+        return []
+    left, top, right, _bottom = (float(value) for value in bbox)
+    above = sorted(
+        (
+            item for item in blocks
+            if item.get("page") == page_number
+            and (item.get("text") or "").strip()
+            and _block_box(item)[3] <= top + 2
+            and _in_column(item, left, right)
+        ),
+        key=lambda item: _block_box(item)[3],
+        reverse=True,
+    )
+    edge = top
+    passage = []
+    for item in above:
+        if edge - _block_box(item)[3] > _MAX_DESCRIPTION_GAP:
+            break
+        if not passage and _CAPTION_LABEL.match(item.get("text") or ""):
+            # A caption printed over the figure ("Table 1: ...") is stepped over.
+            edge = _block_box(item)[1]
+            continue
+        if passage and not _joins_paragraph(item.get("text"), passage[0].get("text")):
+            break
+        passage.insert(0, item)
+        edge = _block_box(item)[1]
+    return passage
+
+
+def passage_text(passage_blocks):
+    return " ".join(" ".join((item.get("text") or "").split()) for item in passage_blocks)
+
+
+def redundant_printed_passages(blocks, *, page_number, bbox, narration):
+    """The printed paragraphs next to a figure that say what its narration says.
+
+    Returns ``[{"where", "blocks", "text", "score"}]`` for the passage below and
+    the one above that pass the check, the passage below first. Scored with the
+    same TF-IDF cosine as the upload-time printed-description check, so both
+    paths agree on what counts as the same explanation.
+    """
+    from .content_generator import (
+        _MIN_PRINTED_DESCRIPTION_WORDS,
+        _PRINTED_DESCRIPTION_SIMILARITY,
+        _adjacent_learning_object_similarity,
+    )
+
+    if not narration or not bbox:
+        return []
+    found = []
+    for where, passage in (
+        ("below", passage_blocks_below(blocks, page_number=page_number, bbox=bbox)),
+        ("above", passage_blocks_above(blocks, page_number=page_number, bbox=bbox)),
+    ):
+        text = passage_text(passage)
+        if len(text.split()) < _MIN_PRINTED_DESCRIPTION_WORDS:
+            continue
+        score = _adjacent_learning_object_similarity({"content": narration}, {"content": text})
+        # Logged every time so a change of vision model that drifts the
+        # scores towards the threshold shows up before descriptions are missed.
+        logger.info(
+            "Printed-passage check: page=%s where=%s words=%s score=%.3f threshold=%.2f",
+            page_number, where, len(text.split()), score, _PRINTED_DESCRIPTION_SIMILARITY,
+        )
+        if score >= _PRINTED_DESCRIPTION_SIMILARITY:
+            found.append({"where": where, "blocks": passage, "text": text, "score": score})
+    return found
+
+
+def spoken_table(visible_text):
+    """Read a table's own text row by row, for when no narration exists yet.
+
+    "Property | Solid | Liquid | Gas" over "Shape | Definite | Not definite |
+    Not definite" is spoken "Shape: Solid, Definite. Liquid, Not definite. Gas,
+    Not definite." Without it, a table whose text left the lesson (so it is
+    not read twice) said nothing at all until the model narrated it.
+    """
+    rows = [
+        [cell.strip() for cell in line.split("|")]
+        for line in (visible_text or "").splitlines()
+        if line.strip()
+    ]
+    rows = [row for row in rows if any(row)]
+    if len(rows) < 2 or len(rows[0]) < 2:
+        return ". ".join(" ".join(cell for cell in row if cell) for row in rows)
+    header = rows[0]
+    sentences = []
+    for row in rows[1:]:
+        label = row[0] or "Row"
+        if len(row) != len(header):
+            # PDF extraction merged or lost a cell ("Not definite Not
+            # definite" with the Gas column gone). Pairing values with column
+            # names would now name them wrongly; say them in order instead.
+            values = ", ".join(value for value in row[1:] if value)
+            if values:
+                sentences.append(f"{label}: {values}.")
+            continue
+        pairs = [
+            f"{header[column] or 'Column ' + str(column + 1)}, {value}"
+            for column, value in enumerate(row[1:], start=1)
+            if value and column < len(header)
+        ]
+        if pairs:
+            sentences.append(f"{label}: " + ". ".join(pairs) + ".")
+    return " ".join(sentences)
+
+
+def figure_pointer(caption="", title=""):
+    """What a figure says when the lesson's own text around it describes it."""
+    label = caption_without_links(caption) or (title or "").strip()
+    lead = f"{label.rstrip('.')}. " if label else ""
+    return f"{lead}This figure is described in the lesson text around it."
+
+
 def _page_blocks(blocks, page_number, limit, *, tail):
     """One neighbouring page's text, from the end of it or the start."""
     def top(item):
@@ -683,15 +851,28 @@ def _extracted_captions(material) -> dict:
     }
 
 
-def _still_the_extracted_caption(learning_object, captions) -> bool:
+def _extracted_stand_ins(material) -> dict:
+    """``{image_url: stand-in}``: what a figure says until narrated (a table's rows)."""
+    return {
+        item.get("image_url"): item.get("stand_in") or ""
+        for item in (material.generated_json or {}).get("image_descriptions") or []
+        if item.get("image_url") and item.get("stand_in")
+    }
+
+
+def _still_the_extracted_caption(learning_object, captions, stand_ins=None) -> bool:
     """True when the narration is exactly what extraction fell back to.
 
-    Compared with the caption recorded for this very image, not judged by its
-    shape: a teacher's own short narration that happens to open "Figure 2."
-    is theirs and must never be overwritten.
+    Compared with the caption (or, for a table, the row-by-row reading)
+    recorded for this very image, not judged by its shape: a teacher's own
+    short narration that happens to open "Figure 2." is theirs and must never
+    be overwritten.
     """
-    caption = captions.get(learning_object.image_url, "")
     content = learning_object.content or ""
+    stand_in = (stand_ins or {}).get(learning_object.image_url, "")
+    if stand_in and " ".join(content.split()) == " ".join(stand_in.split()):
+        return True
+    caption = captions.get(learning_object.image_url, "")
     return bool(caption.strip()) and caption_without_links(content) == caption_without_links(caption)
 
 
@@ -708,7 +889,13 @@ def narration_pending(learning_object) -> bool:
     if captions is None:
         captions = _extracted_captions(material)
         material._extracted_captions_cache = captions
-    return not (learning_object.content or "").strip() or _still_the_extracted_caption(learning_object, captions)
+    stand_ins = getattr(material, "_extracted_stand_ins_cache", None)
+    if stand_ins is None:
+        stand_ins = _extracted_stand_ins(material)
+        material._extracted_stand_ins_cache = stand_ins
+    return not (learning_object.content or "").strip() or _still_the_extracted_caption(
+        learning_object, captions, stand_ins,
+    )
 
 
 def figure_narration_status(material) -> dict:
@@ -716,15 +903,62 @@ def figure_narration_status(material) -> dict:
     from lessons.models import LearningObject
 
     captions = _extracted_captions(material)
+    stand_ins = _extracted_stand_ins(material)
     figures = [
         item for item in material.learning_objects.all()
         if item.kind == LearningObject.Kind.IMAGE
     ]
     pending = [
         item for item in figures
-        if not (item.content or "").strip() or _still_the_extracted_caption(item, captions)
+        if not (item.content or "").strip() or _still_the_extracted_caption(item, captions, stand_ins)
     ]
     return {"figures": len(figures), "pending": len(pending)}
+
+
+def _printed_passages_for(material, image_url, narration):
+    """Printed paragraphs beside this figure that its new narration repeats."""
+    generated = material.generated_json or {}
+    record = next(
+        (
+            item for item in generated.get("image_descriptions") or []
+            if image_url and item.get("image_url") == image_url
+        ),
+        None,
+    )
+    if not record or not record.get("bbox"):
+        return []
+    return redundant_printed_passages(
+        generated.get("classified_blocks") or [],
+        page_number=record.get("page_number") or record.get("page"),
+        bbox=record.get("bbox"),
+        narration=narration,
+    )
+
+
+def _passage_still_in_lesson(material, passages):
+    """The first passage whose text the lesson still says, or ``None``.
+
+    A teacher may have rewritten or removed that paragraph since upload. Then
+    the figure is the only place the explanation is left, and it keeps the
+    model's narration rather than pointing at text that is gone.
+    """
+    from lessons.models import LearningObject
+
+    if not passages:
+        return None
+    lesson_text = " ".join(
+        " ".join((content or "").split()).casefold()
+        for content in material.learning_objects.filter(
+            kind=LearningObject.Kind.TEXT,
+        ).values_list("content", flat=True)
+    )
+    for passage in passages:
+        # The opening of the paragraph is enough to find it, and survives a
+        # teacher fixing a typo further down.
+        opening = " ".join(passage["text"].split()[:12]).casefold()
+        if opening and opening in lesson_text:
+            return passage
+    return None
 
 
 def populate_missing_image_descriptions(material) -> dict:
@@ -732,10 +966,11 @@ def populate_missing_image_descriptions(material) -> dict:
     from lessons.models import LearningObject
 
     captions = _extracted_captions(material)
+    stand_ins = _extracted_stand_ins(material)
     images = [item for item in material.learning_objects.filter(
         kind=LearningObject.Kind.IMAGE,
     ).order_by("order", "id")
-        if not (item.content or "").strip() or _still_the_extracted_caption(item, captions)]
+        if not (item.content or "").strip() or _still_the_extracted_caption(item, captions, stand_ins)]
     logger.info("Image narration retry: material=%s blank_images=%s", material.id, len(images))
     generated_ids = []
     errors = []
@@ -768,6 +1003,21 @@ def populate_missing_image_descriptions(material) -> dict:
                 "detail": "Gemma did not return an image narration. Confirm Ollama is running and retry.",
             })
             continue
+        # The same check upload makes: when the author's own paragraph beside
+        # the figure already explains it, the learner hears that paragraph, and
+        # the figure only announces itself instead of explaining it again.
+        explained_by = _passage_still_in_lesson(
+            material,
+            _printed_passages_for(material, learning_object.image_url, description),
+        )
+        if explained_by:
+            description = figure_pointer(
+                captions.get(learning_object.image_url, ""), learning_object.title,
+            )
+            logger.info(
+                "Image narration dropped: material=%s learning_object=%s repeats the %s passage (score %.3f)",
+                material.id, learning_object.id, explained_by["where"], explained_by["score"],
+            )
         learning_object.content = description
         learning_object.save(update_fields=["content"])
         generated_ids.append(learning_object.id)

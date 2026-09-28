@@ -315,11 +315,22 @@ def _proxy(objects):
     )
 
 
+# Bumped when the classification prompt or its checks change, so results
+# stored under the old rules are classified once more under the new ones.
+# 2: Gemma reports its evidence and its label is checked against it.
+# 3: evidence shortened to one phrase per list; the label is checked by
+#    measurements of the texts (content_measures), not by the evidence.
+CLASSIFICATION_VERSION = 3
+
+
 def _roles_signature(bundles, ordered_ids):
-    return hashlib.sha256("|".join(
-        f"{material_id}:{bundle_text(bundles[material_id])}"
-        for material_id in ordered_ids
-    ).encode()).hexdigest()
+    return hashlib.sha256("|".join([
+        f"v{CLASSIFICATION_VERSION}",
+        *(
+            f"{material_id}:{bundle_text(bundles[material_id])}"
+            for material_id in ordered_ids
+        ),
+    ]).encode()).hexdigest()
 
 
 def assign_group_versions(group, *, use_llm=False):
@@ -352,6 +363,7 @@ def assign_group_versions(group, *, use_llm=False):
             "classification_complete": True,
             "assigned": [],
             "needs_confirmation": [],
+            "kept_as_own_step": [],
             "extras": 0,
             "classification_error": "",
         }
@@ -448,17 +460,32 @@ def assign_group_versions(group, *, use_llm=False):
         verdict = compare(normal_text, bundle_text(objects))
         llm = classifications.get(lead.id)
         llm_slot = llm["slot"] if llm and llm["slot"] in ROLES else None
-        # Gemma owns the classification. Readability remains visible evidence
-        # for teacher review, and proposes the role on its own when the model
-        # was not asked; either way a teacher can move any bundle afterwards.
+        llm_confidence = llm["confidence"] if llm else None
+        # Gemma decides the role; measurements of the two texts check it
+        # (facts kept, content added, easier to read). FKGL and confidence are
+        # recorded, never decisive. (Readability still proposes a role on its
+        # own only when Gemma gave no answer at all, as before.)
+        review = (
+            review_gemma_role(llm, verdict, normal_text, bundle_text(objects))
+            if llm_slot else None
+        )
+        accepted = bool(review and review["accepted"])
         proposals.append({
             "material_id": material_id,
             "learning_object_id": lead.id,
             "objects": objects,
-            "slot": llm_slot or verdict["slot"],
-            "confident": bool(llm_slot) or verdict["confident"],
+            # The role to store: Gemma's, or the overlap-rule correction.
+            "slot": (review["slot"] if review else None) or llm_slot or verdict["slot"],
+            "confident": accepted if llm_slot else verdict["confident"],
+            # A role that failed the check is not stored, so the text is never
+            # served as that version; it stays available as its own telling.
+            "rejected": bool(llm_slot) and not accepted,
+            "review_issues": review["issues"] if review else [],
+            "review_concerns": review["concerns"] if review else [],
+            "review_measures": review["measures"] if review else None,
+            "llm_evidence": (llm or {}).get("evidence"),
             "llm_slot": llm_slot,
-            "llm_confidence": llm["confidence"] if llm else None,
+            "llm_confidence": llm_confidence,
             "llm_reason": llm["reason"] if llm else "",
             "readability_slot": verdict["slot"],
             "readability_confident": verdict["confident"],
@@ -466,10 +493,18 @@ def assign_group_versions(group, *, use_llm=False):
             "delta_words": verdict["delta_words"],
             "ratio": verdict["ratio"],
             "assigned_by": (
-                LessonVariant.AssignedBy.LLM_VALIDATED if llm_slot
+                LessonVariant.AssignedBy.LLM_VALIDATED if accepted
                 else LessonVariant.AssignedBy.HEURISTIC
             ),
         })
+        if llm_slot:
+            logger.info(
+                "Content-version check: group=%s material=%s gemma=%s confidence=%s "
+                "readability=%s%s accepted=%s issues=%s concerns=%s",
+                group.id, material_id, llm_slot, llm_confidence, verdict["slot"],
+                "" if verdict["confident"] else "(unsure)", accepted,
+                review["issues"], review["concerns"],
+            )
 
     by_material = {proposal["material_id"]: proposal for proposal in proposals}
     decided_at = selection.get("bundle_roles_decided_at") or {}
@@ -516,6 +551,12 @@ def assign_group_versions(group, *, use_llm=False):
             slot = stored_roles[material_id]
             who = LessonVariant.AssignedBy.LLM_VALIDATED
             persisted.add(material_id)
+        elif proposal.get("rejected"):
+            # Readability caught Gemma's role (or nothing supported a
+            # low-confidence one). No role is stored, so the text is not
+            # served as that version and claims no slot; it stays a teaching
+            # step and is listed for the teacher, like any open question.
+            continue
         else:
             slot = proposal["slot"]
             who = proposal["assigned_by"]
@@ -532,17 +573,26 @@ def assign_group_versions(group, *, use_llm=False):
 
     assigned = []
     needs_confirmation = []
+    # A role readability caught is settled, not an open question: the text
+    # stays a teaching step of its own and the missing version is generated.
+    # Listing it under "needs your decision" would hand the teacher a task
+    # for every catch.
+    kept_as_own_step = []
     for material_id in candidate_ids:
         proposal = by_material[material_id]
-        entry = {**_public(proposal), "slot": roles[material_id]}
+        role = roles.get(material_id, proposal["slot"])
+        entry = {**_public(proposal), "slot": role}
         if material_id in persisted:
-            if roles[material_id] in PRIMARY_SLOTS:
+            if role in PRIMARY_SLOTS:
                 assigned.append({**entry, "persisted": True})
+            continue
+        if proposal.get("rejected"):
+            kept_as_own_step.append(entry)
             continue
         if not proposal["confident"]:
             needs_confirmation.append(entry)
             continue
-        if roles[material_id] in PRIMARY_SLOTS:
+        if role in PRIMARY_SLOTS:
             assigned.append(entry)
     extras = sum(role == "EXTRA" for role in roles.values())
 
@@ -619,6 +669,7 @@ def assign_group_versions(group, *, use_llm=False):
         "classification_complete": classification_complete,
         "assigned": assigned,
         "needs_confirmation": needs_confirmation,
+        "kept_as_own_step": kept_as_own_step,
         "extras": extras,
         "classification_error": classification_error,
     }
@@ -747,6 +798,85 @@ def assign_source_as_representative(group, source):
         heading=bundle_label(new_normal),
     )
     return source
+
+
+def review_gemma_role(llm, verdict, normal_text=None, candidate_text=None):
+    """Keep Gemma's role only when measurements of the two texts agree with it.
+
+    Gemma proposes the role; ``content_measures`` checks it without Gemma:
+
+    * SIMPLIFIED -- the facts are kept, nothing is added, and it is easier to
+      read (Dale-Chall);
+    * ELABORATED -- the facts are kept and something is added.
+
+    One correction is made: SIMPLIFIED on a text that keeps the facts and adds
+    content becomes ELABORATED (the overlap rule). Any other role the
+    measurements do not support is not stored. A problem Gemma itself reports
+    (a missing fact, a contradiction, another topic) also stops it. Extra is
+    left exactly as before. FKGL and Gemma's self-reported confidence are
+    recorded as concerns only: neither tells whether the label is right.
+
+    Measured on 21 labelled pairs, real texts, batched as MAVIA calls Gemma:
+    Gemma's label alone right 10 times; with this check right 17 times and
+    wrongly stored 3 times (18 before any check). It still cannot see a
+    contradiction or a missing fact inside one sentence ("Solids change their
+    shape to fit their container"): that is meaning, and these measurements
+    read overlap.
+
+    The returned ``slot`` is the role to store (Gemma's, or the corrected one).
+    """
+    from .content_measures import MeasurementUnavailable, measure_versions
+
+    llm = llm or {}
+    slot = llm.get("slot")
+    issues, concerns, measures = [], [], None
+    problems = (llm.get("evidence") or {}).get("problems") or []
+    if problems:
+        (concerns if slot == "EXTRA" else issues).append("gemma_reports_a_problem")
+    if slot in PRIMARY_SLOTS and normal_text is not None and candidate_text is not None:
+        try:
+            measures = measure_versions(normal_text, candidate_text)
+        except MeasurementUnavailable:
+            # Without the encoder there is nothing to check against; Gemma's
+            # role is kept and the gap is recorded.
+            concerns.append("measurements_unavailable")
+        if measures:
+            if (
+                slot == "SIMPLIFIED"
+                and measures["facts_kept"]
+                and measures["adds_content"]
+                and not issues
+            ):
+                # The overlap rule, applied from the measurements: a text that
+                # keeps the facts and adds content is Elaborated, however much
+                # it also simplifies. Measured: gemma3:4b called PDF 2's Solid,
+                # Liquid and Gas sections -- which add characteristics and
+                # everyday examples -- "Simplified" when batched. Only this
+                # one direction is corrected; nothing is ever relabelled
+                # Simplified.
+                slot = "ELABORATED"
+                concerns.append("relabelled_simplified_as_elaborated")
+            if not measures["facts_kept"]:
+                issues.append("facts_not_kept")
+            if slot == "SIMPLIFIED" and measures["adds_content"]:
+                issues.append("simplified_but_adds_content")
+            if slot == "SIMPLIFIED" and not measures["easier"]:
+                issues.append("simplified_but_not_easier")
+            if slot == "ELABORATED" and not measures["adds_content"]:
+                issues.append("elaborated_but_adds_nothing")
+    if slot in PRIMARY_SLOTS and verdict.get("confident") and verdict.get("slot") != slot:
+        concerns.append("fkgl_points_the_other_way")
+    confidence = llm.get("confidence")
+    threshold = float(getattr(settings, "CONTENT_VERSION_LLM_AUTO_THRESHOLD", 0.80))
+    if confidence is not None and float(confidence) < threshold:
+        concerns.append("low_self_reported_confidence")
+    return {
+        "accepted": slot in ROLES and not issues,
+        "slot": slot,
+        "issues": issues,
+        "concerns": concerns,
+        "measures": measures,
+    }
 
 
 def _public(proposal):

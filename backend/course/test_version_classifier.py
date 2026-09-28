@@ -199,3 +199,48 @@ class VersionClassifierTests(SimpleTestCase):
         # count and position rules invited the same answer a second time.
         correction = post.call_args.kwargs["json"]["prompt"].rsplit("CANDIDATES TO CLASSIFY:", 1)[1]
         self.assertIn("Use only these slots: ELABORATED, EXTRA, SIMPLIFIED.", correction)
+
+
+class EvidenceParsingTests(SimpleTestCase):
+    """Gemma's reported evidence is parsed so its label can be checked against it."""
+
+    def parse(self, **fields):
+        row = {"position": 1, "slot": "ELABORATED", "confidence": 0.8, "reason": "r.", **fields}
+        return _parse(json.dumps({"assignments": [row]}), [7], require_original=False)[7]
+
+    def test_evidence_lists_are_kept(self):
+        row = self.parse(additions=["adds a pencil example"], simplifications=[], problems=[])
+
+        self.assertEqual(row["evidence"]["additions"], ["adds a pencil example"])
+        self.assertEqual(row["evidence"]["problems"], [])
+
+    def test_none_placeholders_and_blanks_are_not_evidence(self):
+        row = self.parse(additions=["None", " ", "N/A", "[]", "'[]'", "{}"], problems=["[]"])
+
+        self.assertEqual(row["evidence"]["additions"], [])
+        self.assertEqual(row["evidence"]["problems"], [])
+
+    def test_missing_fields_parse_as_empty_evidence(self):
+        row = self.parse()
+
+        self.assertEqual(
+            row["evidence"], {"simplifications": [], "additions": [], "problems": []},
+        )
+
+    def test_evidence_is_kept_brief(self):
+        row = self.parse(additions=["x" * 900, "b", "c", "d", "e"])
+
+        self.assertEqual(len(row["evidence"]["additions"]), 3)
+        self.assertEqual(len(row["evidence"]["additions"][0]), 200)
+
+    def test_the_prompt_carries_the_overlap_rule_and_asks_for_evidence(self):
+        from .version_classifier import _prompt
+
+        prompt = _prompt(
+            [SimpleNamespace(id=2, title="t", content="c")],
+            representative=SimpleNamespace(id=1, title="t", content="o"),
+        )
+
+        self.assertIn("both simplifies the wording AND adds substantial explanation", prompt)
+        for field in ("simplifications", "additions", "problems"):
+            self.assertIn(f'"{field}"', prompt)

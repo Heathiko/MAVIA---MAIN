@@ -353,8 +353,46 @@ def refresh_heading_unit_suggestions(node, runtime_instance=None):
             # an earlier placement in this very pass can have connected a side
             # since the candidates were listed.
             continue
-        if automatic and score >= auto and not _label_is_locked([*left, *right]):
+        # A section matched to a single figure or table that carries its
+        # heading, word for word, as its own title: for a specific heading
+        # that is the corroboration an exact label gets in semantic grouping,
+        # and the same bar applies, the review threshold. Measured: PDF 1's
+        # "Comparing the Three States" section and PDF 3's table of that title
+        # scored 0.48 -- a table is worded nothing like prose -- and waited on
+        # a teacher card. Two prose sections are comparable wording and keep
+        # the auto bar, as does a generic heading ("Everyday Examples").
+        label_is_specific = bool(semantic_grouping._specific_normalized_label(candidate["label"]))
+        titled_figure = any(
+            len(side) == 1 and side[0].kind == LearningObject.Kind.IMAGE
+            and heading_key(side[0].title) == candidate["label"]
+            for side in (left, right)
+        )
+        bar = threshold if label_is_specific and titled_figure else auto
+        if automatic and score >= bar and not _label_is_locked([*left, *right]):
+            unit_ids = [item.id for item in [*left, *right]]
+
+            def _grouped_with_other_figures(item):
+                # Only figures: a table already grouped with the same table
+                # from another PDF. Text left behind is the concept's own
+                # telling and stays where it is (see StrandedCompanionTests).
+                outside = LearningObject.objects.filter(group_id=item.group_id).exclude(pk__in=unit_ids)
+                return (
+                    item.kind == LearningObject.Kind.IMAGE
+                    and outside.exists()
+                    and not outside.exclude(kind=LearningObject.Kind.IMAGE).exists()
+                )
+
+            # A figure already grouped with the same figure of another PDF
+            # brings the unit to it, rather than being pulled away and leaving
+            # it behind: PDF 3's table grouped with PDF 2's would otherwise
+            # leave PDF 2's alone, depending on upload order.
             target = next(
+                (
+                    item.group for item in [*left, *right]
+                    if item.group_id and _grouped_with_other_figures(item)
+                ),
+                None,
+            ) or next(
                 (item.group for item in [*left, *right] if item.group_id), None,
             ) or LearningObjectGroup.objects.create(
                 # A run often opens with a figure whose own title names
@@ -364,6 +402,22 @@ def refresh_heading_unit_suggestions(node, runtime_instance=None):
                 label=(bundle_label(left) or bundle_label(right))[:255],
             )
             place_unit([*left, *right], target)
+            # The concept is the section both sides were matched on, so it is
+            # named after that heading -- not after whichever table was
+            # grouped first ("6. SOLID VS. LIQUID VS. GAS" in one upload
+            # order, "Comparing the Three States" in another).
+            heading = next(
+                (
+                    item.section_title.strip() for item in [*left, *right]
+                    if (item.section_title or "").strip()
+                    and heading_key(item.section_title) == candidate["label"]
+                ),
+                "",
+            )
+            target.refresh_from_db()
+            if heading and not (target.version_selection or {}).get("label_locked"):
+                target.label = heading[:255]
+                target.save(update_fields=["label"])
             placed += 1
             continue
         lead_left, lead_right = bundle_lead(left), bundle_lead(right)

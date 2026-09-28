@@ -15,6 +15,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from course.models import LessonVariant
+from course.testing import without_measurements
 from course.version_assignment import assign_group_versions
 
 from .models import (
@@ -29,6 +30,7 @@ from .tests import authenticated_api_client
 
 class GenerateButtonBundleTests(TestCase):
     def setUp(self):
+        without_measurements(self)
         self.client = authenticated_api_client()
         self.course = CourseGroup.objects.create(title="Science")
         self.topic = OutlineNode.objects.create(course=self.course, title="States")

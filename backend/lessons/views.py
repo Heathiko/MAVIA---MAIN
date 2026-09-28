@@ -17,6 +17,7 @@ from course.models import LessonVariant
 from course.bulk_version_generation import classify_all_source_versions
 from course.services import sync_course_outline
 from course.variant_generator import (
+    NORMAL_FALLBACK_GENERATOR,
     _fingerprint as version_fingerprint,
     fill_missing_bundle_slots,
     fill_missing_slots,
@@ -469,6 +470,15 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                             }
                             for row in rows
                         ],
+                        # No generated version passed the quality check, so this
+                        # level holds the Normal text (BUG-002). Publishing is
+                        # not held back; the teacher is told, and may write an
+                        # explanation of their own, which clears the warning.
+                        "fallback": any(
+                            row.generator_model == NORMAL_FALLBACK_GENERATOR
+                            and row.assigned_by != LessonVariant.AssignedBy.TEACHER
+                            for row in rows
+                        ),
                         # Written from different text than the object has now.
                         # Publishing refuses these until a teacher checks them.
                         "stale": any(

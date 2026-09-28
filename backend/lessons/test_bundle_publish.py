@@ -18,6 +18,7 @@ from django.utils import timezone
 
 from course.models import LessonVariant
 from course.services import _build_chunk
+from course.testing import without_measurements
 from course.version_assignment import set_bundle_role
 from learning_path.models import LearningPathStep
 
@@ -50,6 +51,7 @@ class TwoPdfPublishTests(TestCase):
     """One PDF supplies Simplified; the other is the Normal wording."""
 
     def setUp(self):
+        without_measurements(self)
         media_root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
         media = override_settings(MEDIA_ROOT=media_root, MEDIA_URL="/media/")

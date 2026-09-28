@@ -49,6 +49,16 @@ class OrphanSectionTests(TestCase):
         orphan.refresh_from_db()
         self.assertEqual(orphan.group_id, head.group_id)
 
+    def test_an_orphan_joins_a_head_that_does_not_name_itself_as_a_section(self):
+        head_group, figure_group = self.group("Solids"), self.group("Particle diagram")
+        head = self.add("Solids", "", 0, head_group)
+        figure = self.add("Particle diagram", "Solids", 1, figure_group)
+
+        attach_orphan_objects_to_their_section(self.material)
+
+        figure.refresh_from_db()
+        self.assertEqual(figure.group_id, head.group_id)
+
     def test_an_object_corroborated_elsewhere_is_never_moved(self):
         # "Solid" sits under a "Matter" heading but another PDF teaches it too,
         # so its group has a companion. It is a concept, not a part of Matter.

@@ -223,3 +223,80 @@ class ImageAutoGroupingTests(TestCase):
 
         self.assertEqual(decision["confidence"], "high")
         self.assertNotIn("image_needs_label_corroboration", decision["evidence"])
+
+    # The labels printed inside a figure are the author's, like a caption.
+
+    def labelled_figure(self, material, group, title, visible_text, narration=STOCK):
+        url = f"/media/extracted_images/mat_{material.id}_img_{title[:5]}.png"
+        records = material.generated_json.setdefault("image_descriptions", [])
+        records.append({"image_url": url, "caption": "", "visible_text": visible_text})
+        material.save(update_fields=["generated_json"])
+        return LearningObject.objects.create(
+            material=material, group=group, title=title, content=narration,
+            kind=LearningObject.Kind.IMAGE, image_url=url,
+        )
+
+    @patch.dict(os.environ, LABEL_ENV)
+    def test_the_same_printed_labels_group_the_figures(self):
+        labels = "Evaporation, Condensation, Precipitation, Collection"
+        source = self.labelled_figure(self.source_material, self.source_group, "Solids - figure", labels)
+        other = self.labelled_figure(
+            self.other_material, self.other_group, "Water cycle - figure", labels, OTHER_STOCK,
+        )
+
+        decision = self.decision(source, {other.content: .95})
+
+        self.assertEqual(decision["confidence"], "high")
+        self.assertTrue(decision["evidence"]["figure_text_corroborated"])
+
+    @patch.dict(os.environ, LABEL_ENV)
+    def test_labels_extracted_with_a_stray_word_still_agree(self):
+        source = self.labelled_figure(
+            self.source_material, self.source_group, "A - figure",
+            "Evaporation Condensation Precipitation Collection Runoff",
+        )
+        other = self.labelled_figure(
+            self.other_material, self.other_group, "B - figure",
+            "Evaporation Condensation Precipitation Collection Runoff Sun", OTHER_STOCK,
+        )
+
+        decision = self.decision(source, {other.content: .95})
+
+        self.assertEqual(decision["confidence"], "high")
+
+    @patch.dict(os.environ, LABEL_ENV)
+    def test_a_few_common_labels_corroborate_nothing(self):
+        # "Solid, Liquid, Gas" labels half the figures of this topic.
+        source = self.labelled_figure(self.source_material, self.source_group, "A - figure", "Solid Liquid Gas")
+        other = self.labelled_figure(
+            self.other_material, self.other_group, "B - figure", "Solid Liquid Gas", OTHER_STOCK,
+        )
+
+        decision = self.decision(source, {other.content: .95})
+
+        self.assertEqual(decision["confidence"], "medium")
+
+    @patch.dict(os.environ, LABEL_ENV)
+    def test_different_printed_labels_still_raise_a_card(self):
+        source = self.labelled_figure(
+            self.source_material, self.source_group, "A - figure",
+            "Evaporation Condensation Precipitation Collection",
+        )
+        other = self.labelled_figure(
+            self.other_material, self.other_group, "B - figure",
+            "Melting Freezing Boiling Condensation Sublimation", OTHER_STOCK,
+        )
+
+        decision = self.decision(source, {other.content: .95})
+
+        self.assertEqual(decision["confidence"], "medium")
+
+    @patch.dict(os.environ, LABEL_ENV)
+    def test_figures_sharing_only_a_generated_section_name_raise_a_card(self):
+        source = self.figure(self.source_material, self.source_group, "Solids - figure", STOCK)
+        other = self.figure(self.other_material, self.other_group, "Solids - figure", OTHER_STOCK)
+
+        decision = self.decision(source, {other.content: .95})
+
+        self.assertEqual(decision["confidence"], "medium")
+        self.assertNotIn("label_corroborated", decision["evidence"])

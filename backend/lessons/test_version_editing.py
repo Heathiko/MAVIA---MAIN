@@ -197,3 +197,37 @@ class VersionEditingTests(TestCase):
         )
         versions = response.data["learning_object_groups"][0]["versions"]
         self.assertEqual(versions["slots"]["simplified"]["id"], row.id)
+
+    def _fallback_variant(self):
+        from course.variant_generator import NORMAL_FALLBACK_GENERATOR
+
+        return LessonVariant.objects.create(
+            learning_object=self.first, variant="SIMPLIFIED", narration=SHORT,
+            origin="generated", generator_model=NORMAL_FALLBACK_GENERATOR,
+        )
+
+    def _slots(self):
+        response = self.client.get(
+            f"/api/courses/{self.course.id}/outline-nodes/{self.node.id}/learning-resources/"
+        )
+        return response.data["learning_object_groups"][0]["versions"]["slots"]
+
+    def test_a_level_holding_the_normal_text_carries_a_warning(self):
+        """BUG-002: no generated version passed the check."""
+        self._fallback_variant()
+
+        self.assertTrue(self._slots()["simplified"]["fallback"])
+
+    def test_the_teachers_own_explanation_clears_the_warning(self):
+        row = self._fallback_variant()
+
+        self.client.post(self._edit_url(row), {"narration": "A solid keeps its shape."}, format="json")
+
+        slot = self._slots()["simplified"]
+        self.assertFalse(slot["fallback"])
+        self.assertEqual(slot["text"], "A solid keeps its shape.")
+
+    def test_an_ordinary_generated_version_carries_no_warning(self):
+        self._variant()
+
+        self.assertFalse(self._slots()["simplified"]["fallback"])

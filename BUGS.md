@@ -13,11 +13,32 @@ another. Name the PDF file, the section heading, and quote the text involved.
 If you want your local IDs for yourself, put them in a *Local IDs* line at the
 end of the entry.
 
+## Status overview (updated 2026-09-29)
+
+The 2026-09-29 round covered the first three pipeline stages only:
+**extraction, grouping and content versions.** Question generation (BUG-005 to
+BUG-008, BUG-011), the learning path (BUG-009) and publishing (BUG-010,
+BUG-012) were not changed. See *Notes for the whole team* at the end for the
+decisions, known limits and what is still untested. None of this is committed
+yet; it is on the `fixExtractionPipeline` branch working tree.
+
+| Bug | Stage | Status |
+|---|---|---|
+| BUG-001 | Content versions | Fixed (A, B, C, D). E is not a bug (Extra is reserved) |
+| BUG-002 | Content versions (generated) | Fixed, with known limits |
+| BUG-003 | Extraction | Fixed |
+| BUG-004 | Extraction / grouping | Fixed (question part out of scope) |
+| BUG-005 – BUG-008 | Question generation | Open (not in this round) |
+| BUG-009 | Learning path | Open (not in this round) |
+| BUG-010 | Publishing | Open; its *Gases* cause is gone (see entry) |
+| BUG-011, BUG-012 | Questions / publishing | Open (not in this round) |
+| BUG-013 – BUG-025 | Extraction / grouping / figures | Found and fixed in this round |
+
 ---
 
 ## BUG-001 — Classification step saves wrong Normal/Simplified/Elaborated/Extra roles
 
-**Status:** Open
+**Status:** Fixed (causes A, B, C, D) · E is not a bug — see *Resolution* below
 **Stage:** Content-version classification (`backend/course/version_assignment.py`, `version_classifier.py`, `readability.py`)
 **Found:** 2026-09-27, run-through of the *Solid, Liquid and Gas* topic, with three PDFs uploaded in this order:
 
@@ -118,8 +139,9 @@ The readability check said Elaborated with full confidence and was overruled
 
 ### Causes (each can be fixed separately)
 
-- [ ] **A. Grouping sends mismatched text into classification.** This is the
-  largest cause and the one classification cannot fix.
+- [x] **A. Grouping sends mismatched text into classification.** This is the
+  largest cause and the one classification cannot fix. *Fixed — see
+  Resolution A.*
   - PDF 3's three sibling sections (*Solids*, *Liquids*, *Gases*) were split
     across three concepts: *Liquids* went into "Matter", while *Solids* and
     *Gases* were each paired with a paragraph from PDF 2's *Summary* section.
@@ -131,7 +153,9 @@ The readability check said Elaborated with full confidence and was overruled
     (`lessons/services/semantic_grouping.py`,
     `lessons/services/concept_bundles.py`).
 
-- [ ] **B. The LLM confidence threshold is never used.**
+- [x] **B. The LLM confidence threshold is never used.** *Fixed differently —
+  see Resolution B/C: confidence is recorded, but no longer trusted as a
+  probability.*
   `CONTENT_VERSION_LLM_AUTO_THRESHOLD = 0.80` is defined in
   `config/settings.py:298`, but nothing reads it. In
   `course/version_assignment.py:459`, `"confident": bool(llm_slot) or ...` treats
@@ -141,7 +165,8 @@ The readability check said Elaborated with full confidence and was overruled
   - Fix: treat an LLM verdict as confident only when its confidence is at least
     the threshold. Send anything below it to the teacher.
 
-- [ ] **C. A confident readability result cannot stop the LLM.** In Wrong 4, all
+- [x] **C. A confident readability result cannot stop the LLM.** *Fixed
+  differently — see Resolution B/C: measurements now check every label.* In Wrong 4, all
   four readability checks passed and pointed to Elaborated (grade-level
   difference, word ratio, word difference, both signals agreeing). Gemma's
   opposite answer still won. `readability.py` itself says a disagreement is
@@ -152,16 +177,19 @@ The readability check said Elaborated with full confidence and was overruled
   - Where: the proposal loop in `assign_group_versions`
     (`course/version_assignment.py:444-472`).
 
-- [ ] **D. Extraction splits a sentence into a heading and its body.** In Wrong
+- [x] **D. Extraction splits a sentence into a heading and its body.** *Fixed
+  with BUG-003.* In Wrong
   4, the Normal text starts with "solid, liquid, and gas. …", so classification
   compared an incomplete sentence. Tracked separately as **BUG-003**, because
   it affects more than classification.
 
-- [ ] **E. Extra is a dead end.** Text saved as Extra is never shown to any
+- [x] **E. Extra is a dead end.** Text saved as Extra is never shown to any
   learner: `_versions` skips `EXTRA`, and `represented_by` removes those
   objects from the path. A teacher-written passage classified as Extra is
   effectively deleted. We need to decide what Extra is for, or stop producing
-  it. (Also in `docs/AGENT_LOG.md`.)
+  it. (Also in `docs/AGENT_LOG.md`.) *Not a bug: Extra is deliberately held
+  back and reserved for a teammate's feature. Its behaviour was left exactly
+  as it was in this round (it is not checked either — see Notes).*
 
 ### How to reproduce
 
@@ -187,11 +215,90 @@ covered by tests. Add a test for B and C when fixing them.
 623, 641; materials 50/52/53 = PDF 1/2/3; objects 649 (PDF 3 *Liquids*), 646
 (*Solids*), 652 (*Gases*), 620 (split sentence).
 
+### Resolution (2026-09-29)
+
+**A. Grouping.** Three separate causes, all fixed:
+
+1. **Upload order decided the concepts.** Section joining ran per PDF at
+   upload. PDF 1, uploaded alone, folded its "Solid", "Liquid" and "Gas"
+   paragraphs into "Matter" (nothing else taught them *yet*); PDF 2's and
+   PDF 3's sections on each state then matched that swollen concept. In a
+   throwaway run, "Matter" held 20 objects and the topic had no Solid, Liquid
+   or Gas concept at all. Joins are now recorded, released before a new PDF is
+   matched, and redone across every PDF of the topic (`release_section_joins`,
+   `join_sections_across_topic` in `lessons/services/learning_resource_linker.py`).
+   Measured: upload orders 1-2-3, 3-2-1 and 2-3-1 give the same 9 concepts.
+2. **A summary was paired as a version of one concept.** A summary restates
+   several concepts, so it scores close to each of them. Summary / recap
+   sections ("Summary", "Recap", "Key takeaways", "What I have learned",
+   "Conclusion"…) are never paired with another PDF's object, and nothing is
+   paired into them (`is_recap_section` in `lessons/services/content_generator.py`,
+   guarded in `semantic_grouping.semantic_decision` and the legacy matcher).
+   Their parts stay together as one step, which also removes the two concepts
+   both called "Summary: what to remember".
+3. **Split passages were separated.** A later piece ("What Is Matter? (Part 2
+   of 2)", "SOLID (Part 3 of 3)") now follows its own Part 1 into whatever
+   concept Part 1 joined. Pieces of different passages that share a title
+   ("Diagram description" under each state) are never fused.
+
+**B/C. Classification.** Readability can no longer decide the label on its
+own, and Gemma's label is no longer trusted blindly:
+
+- Gemma still makes **one** classification call per concept. The prompt now
+  has the criteria and the overlap rule (simplifies *and* adds explanation =
+  Elaborated), and Gemma writes short evidence (what got easier / what was
+  added / what is wrong) **before** the label. Asked for the label first,
+  gemma3:4b committed to "Simplified" and then wrote evidence contradicting it.
+- The label is then checked by **measurements of the two texts**, not by
+  Gemma (`backend/course/content_measures.py`, `review_gemma_role` in
+  `version_assignment.py`):
+  - facts kept — every Normal sentence still matched (MiniLM mean coverage ≥ 0.55,
+    the encoder grouping already uses);
+  - something added — a candidate sentence matching nothing in Normal
+    (similarity < 0.6);
+  - easier — Dale-Chall (familiar-word list; plurals and endings matched).
+  Simplified = facts kept + nothing added + easier. Elaborated = facts kept +
+  something added.
+- **Overlap-rule correction:** Gemma says Simplified, but the text keeps the
+  facts and adds content → stored as **Elaborated**. The only relabel; nothing
+  is ever relabelled to Simplified.
+- A label that fails, or where Gemma reports a problem, is **not stored**.
+  The text is not lost: it stays available as another explanation (alternate)
+  of the concept, the missing version is generated, and the teacher gets no
+  task for it (`kept_as_own_step`, not `needs_confirmation`).
+- **FKGL and Gemma's confidence are recorded as concerns only.** Measured:
+  FKGL called both valid simplifications *harder* (explaining a term makes a
+  sentence longer) while Dale-Chall called them easier; combining FKGL with
+  Dale-Chall scored worse than Dale-Chall alone.
+- Extra is left exactly as before.
+- Stored results from before are classified once more (`CLASSIFICATION_VERSION = 3`).
+
+**Measured result** (gemma3:4b, 21 labelled pairs, real texts, batched as MAVIA
+calls it):
+
+| | Correct | Wrong label stored | Correct label withheld |
+|---|---|---|---|
+| Before (committed code) | 3 / 21 | 18 | 0 |
+| After | 17 / 21 | 3 | 1 |
+
+The 21 pairs: the 8 real grouped pairs from the three PDFs, the observed
+failures above, and written cases (valid simplification, paraphrase,
+contradiction, unrelated text, missing fact, jargon…). 16 of them were labelled
+by the developer, not a teacher, and Gemma is not fully repeatable between runs,
+so treat the numbers as "clearly better on these cases", not as accuracy.
+
+**Still wrong in that run (known limits, see Notes):** a contradiction
+("Solids change their shape to fit their container") stored as Simplified;
+an unrelated text stored as Extra (Extra is not checked); jargon
+("intermolecular forces lock particles into a lattice") stored as Elaborated.
+
+**Tests:** `course/test_version_assignment.py`, `course/test_version_classifier.py`.
+
 ---
 
 ## BUG-002 — Generated versions are not checked against their role or their source
 
-**Status:** Open
+**Status:** Fixed, with known limits — see *Resolution* below
 **Stage:** Generating missing versions (`backend/course/variant_generator.py`)
 **Found:** 2026-09-27, same *Solid, Liquid and Gas* topic and PDFs as BUG-001
 
@@ -278,24 +385,74 @@ property, it teaches the wrong idea.
 
 ### Fix items
 
-- [ ] Run `readability.compare(source, generated)` on each generated version.
+- [x] Run `readability.compare(source, generated)` on each generated version.
   Reject and retry (the request already retries up to 3 times) when the
   Simplified version is not easier, or the Elaborated version is not longer.
-- [ ] Give the Elaborated version a minimum length (e.g. more words than the
+  *Done with Dale-Chall instead of FKGL (see BUG-001 Resolution B/C for why).*
+- [x] Give the Elaborated version a minimum length (e.g. more words than the
   source).
-- [ ] Add a lexical grounding check: flag content words not found in the
+- [x] Add a lexical grounding check: flag content words not found in the
   source (or anywhere in the topic's PDFs), as question generation does.
-- [ ] Anything that still fails after retries should reach the teacher as
-  "needs review", not be saved as finished.
-- [ ] Fact-dropping (item 2) and false statements (item 4) will not be caught
+  *For Simplified only — see Resolution.*
+- [x] Anything that still fails after retries should reach the teacher as
+  "needs review", not be saved as finished. *Done as a warning instead of a
+  blocking review — see Resolution.*
+- [x] Fact-dropping (item 2) and false statements (item 4) will not be caught
   by the checks above. A teacher review or an LLM judge is needed for those.
-  Decide which.
+  Decide which. *Decided: fact-dropping is checked by the "facts kept"
+  measurement; false statements are not caught (no LLM judge / NLI model, by
+  decision). The teacher can replace any version on Content versions.*
+
+### Resolution (2026-09-29)
+
+Every generated version is checked by code, in `check_generated_version`
+(`backend/course/variant_generator.py`), using the measurements from
+`course/content_measures.py`:
+
+- **Simplified:** keeps the facts (MiniLM coverage) + easier (Dale-Chall) +
+  at most 1 unfamiliar word the source does not use.
+- **Elaborated:** keeps the facts + fuller (more words than the source). The
+  generator is told to add no new facts, so "Elaborated" here means *fuller*,
+  not *adds content*.
+
+A version that fails is **written again, with Gemma told why** ("it is not
+easier to read than the SOURCE; use shorter, everyday words"). A passing one is
+kept from whichever attempt produced it. If all 3 attempts fail, that level
+**keeps the Normal text** (`generator_model = "normal-text-fallback"`), so a
+harder or incomplete version never reaches a learner and publishing is not held
+back.
+
+**Teacher warning:** Content versions shows "Using the Normal text for now" on
+such a level, with a **Write your own explanation** button (the existing
+editor). Saving an explanation clears the warning (`fallback` flag in the
+learning-resources payload, `lessons/views.py`; `VersionSlotCard` in
+`web-app/src/pages/TopicDetailPage.jsx`). It is optional.
+
+**Measured on 10 real sources** (gemma3:4b): Elaborated 10/10 kept from Gemma;
+Simplified 5/10 kept, **5/10 fell back to the Normal text** (4 were not easier
+after 3 attempts — some sources, like "Solids have a fixed shape and volume.",
+are already simple; 1 used the words "examples, include"). Generation now makes
+about **2.4× more Gemma calls** (24 for 10 objects), because of the retries.
+
+**Known limits:**
+
+- Outside terms are **not** checked in Elaborated versions. Tried and measured
+  unusable: gemma3:4b's elaborations use 4–28 ordinary academic words each
+  ("within", "movement", "consequently") that are not on the Dale-Chall list,
+  and a word list cannot tell those from "intermolecular" or "kinetic energy".
+  The *kinetic energy / intermolecular forces* example above is still not caught.
+- A false statement in similar words (item 4) is not caught.
+- Possible tuning: allow 2 unfamiliar words in a Simplified version instead of
+  1 (would avoid fallbacks like "examples, include"). Not decided.
+
+**Tests:** `course/tests.py` (`GeneratedVersionCheckTests`,
+`GeneratedVersionMeasureTests`), `lessons/test_version_editing.py` (warning).
 
 ---
 
 ## BUG-003 — Extraction splits a lead-in phrase off as a heading, so text starts mid-sentence
 
-**Status:** Open
+**Status:** Fixed
 **Stage:** PDF extraction (heading detection)
 **Found:** 2026-09-27, same topic and PDFs as BUG-001
 
@@ -330,17 +487,39 @@ a heading.
 
 ### Fix items
 
-- [ ] Do not treat a short styled phrase as a heading when it runs into the same
+- [x] Do not treat a short styled phrase as a heading when it runs into the same
   line or sentence as the body text (it ends with ":" or ",", or the next text
   starts in lower case).
-- [ ] When such a lead-in is kept, keep it inside the body text so the sentence
+- [x] When such a lead-in is kept, keep it inside the body text so the sentence
   stays whole.
+
+### Resolution (2026-09-29)
+
+In `build_section_learning_objects` (`lessons/services/content_generator.py`):
+
+- **Any label, not a word list:** a short line (≤ 5 words) followed by text that
+  starts in **lower case** opens that sentence, so it stays in its section
+  ("Remember: cooling a gas…", "Big idea: …"). The known labels ("Key idea",
+  "As a general rule", "Everyday examples") are still recognised for PDFs where
+  the next word is capitalised.
+- **Inline "Label: text" and "Label — text"** stay one sentence when the label
+  is a lead-in (≥ 4 words, or a known label, followed by lower case) — including
+  a dash, which the first fix missed ("Flowering plants rely on pollination —
+  pollen must travel…").
+- **Guards so real concepts still split:** a label that is a word the lesson
+  itself uses ("Solid: matter with…", where the lesson says "a solid") is a
+  definition, not a lead-in; runs of definitions (glossaries) still split;
+  under a numbered section an inline label stays a part linked to that section.
+- Confirmed on the real PDF 3: all three "Key idea" lines stay inside
+  *Solids*, *Liquids* and *Gases*.
+
+**Tests:** `lessons/test_inline_leadins.py`, `lessons/test_extraction_fixes.py`.
 
 ---
 
 ## BUG-004 — Sub-sections and figure descriptions become separate concepts instead of staying in their section
 
-**Status:** Open (may overlap with the `orphan-parts-join-their-section` branch; check there first)
+**Status:** Fixed (the question-generation observation at the end is out of this round's scope)
 **Stage:** Grouping / concept bundles
 **Found:** 2026-09-27, same topic and PDFs as BUG-001
 
@@ -376,15 +555,38 @@ e.g. "The image presents three distinct arrangements of particles…".
 
 ### Fix items
 
-- [ ] Keep a sub-section and a figure/table description in the bundle of the
+- [x] Keep a sub-section and a figure/table description in the bundle of the
   section that contains it (restore the nesting; do not merge concepts after
   the fact).
-- [ ] A concept must never be named after a figure description's sentence.
+- [x] A concept must never be named after a figure description's sentence.
 
 Also seen at question generation: PDF 1's particle-diagram concept got 5
 questions about the drawing ("Which arrangement of particles represents a
 solid?"). PDF 2's changes-of-state table concept, the same kind of object, got
 none.
+
+### Resolution (2026-09-29)
+
+- **Sub-sections** ("Key idea", "Everyday examples") stay in their section:
+  see BUG-003.
+- **A figure gets the section it sits in:** the heading printed above it on
+  the page, including a heading with no text of its own (see BUG-013).
+- **Parts join their section's concept** when no other PDF teaches them
+  (`attach_orphan_objects_to_their_section`), now also when the heading has
+  no text of its own — its first part stands in for it (the flower module's
+  four steps under "How Flowering Plants Reproduce"). Glossary sections ("Key
+  Vocabulary") are excluded: each term stays its own concept.
+- **Figure names:** a supplied title, then the printed caption, then
+  "<section> - figure" / "<section> - table" (numbered when a section has
+  several), and only as a last resort the description's first sentence.
+  Generated names such as "Solids - figure" never count as matching labels
+  between PDFs, so two figures are not auto-grouped just because they sit in
+  same-named sections. Two figures *are* grouped automatically when their
+  printed caption or the text printed inside them (≥ 4 words, ≥ 80% shared)
+  agrees.
+
+**Tests:** `lessons/test_inline_leadins.py`, `lessons/test_label_corroboration.py`,
+`lessons/test_image_grouping.py`, `lessons/test_section_joins.py`.
 
 ---
 
@@ -677,6 +879,14 @@ them.
 - **Version-only sections:** a consequence of BUG-001's pairings. Whole
   sections were made into versions of other concepts.
 
+**Update 2026-09-29:** the *Gases* case is gone at its source — summaries are
+no longer paired as versions of another concept (BUG-001 Resolution A), and a
+role the measurements do not support is no longer stored, so whole sections are
+no longer turned into versions by a wrong label. **The code bug itself is still
+open** (publishing, not changed in this round): a joined step reads versions
+only from its first part's concept. Extras are held back on purpose (BUG-001 E),
+so the publish-time check below should treat Extra as intentional, not missing.
+
 ### Fix items
 
 - [ ] When `_passage_parts` joins parts from different concepts, take the
@@ -766,5 +976,405 @@ version the learner is on.
   step's versions.
 - [ ] Decide what a step with no questions should do (block publishing, warn
   the teacher, or pass the learner through), and make publish report it.
+
+---
+
+## BUG-013 — A table or figure under a heading with no text of its own gets the previous section
+
+**Status:** Fixed
+**Stage:** Extraction (`lessons/services/content_generator.py`)
+**Found:** 2026-09-28, in `Solid, Liquid, Gas 2.pdf` (a version of PDF 2 with numbered sections) and PDF 3
+
+### What was wrong
+
+| PDF | Table | Section it got | Should be |
+|---|---|---|---|
+| Solid, Liquid, Gas 2 | "6. SOLID VS. LIQUID VS. GAS" | PARTICLE ARRANGEMENT | its own heading |
+| PDF 3 | "Comparing the Three States" | Gases | its own heading |
+
+Section 6 is only a heading and a table. The table's text is (correctly) taken
+out of the lesson text, so the heading had no text under it and was dropped,
+and the table took the section of the last passage before it.
+
+### Fix
+
+A figure's section now comes from its **position**: the last heading printed
+above it on the page, even a heading with no text of its own. If that heading
+has text under it, the figure joins that text's section ("Shape" sits in
+"Comparing the Three States"). The old "previous passage" rule is only a
+fallback.
+
+**Tests:** `lessons/test_extraction_fixes.py`, `lessons/test_figure_sections.py`.
+
+---
+
+## BUG-014 — The document's title block is read aloud as lesson content
+
+**Status:** Fixed
+**Stage:** Extraction (`lessons/services/instructional_content_classifier.py`)
+**Found:** 2026-09-28, PDF 3
+
+### What was wrong
+
+PDF 3's first concept began "Solid, Liquid, and Gas / Science · Lesson 1 ·
+Grade 4 / Matter is anything that has mass…": the subtitle and the subject /
+lesson / grade line were attached to the first concept and read aloud.
+
+### Fix
+
+- A short line naming a subject, lesson, grade, quarter or week joined by `·`,
+  `|` or a dash is document information (`_is_document_label_line`).
+- On the first page, before the first paragraph, a short uncertain line under
+  the title is the title block's subtitle; a title and subtitle printed as one
+  block keep only the title line (`_mark_title_block`).
+
+**Tests:** `lessons/test_extraction_fixes.py` (`TitleBlockTests`).
+
+---
+
+## BUG-015 — Headings phrased as questions were deleted, with the explanation under them
+
+**Status:** Fixed
+**Stage:** Extraction (`instructional_content_classifier.py`, `content_generator.py`)
+**Found:** 2026-09-28, `Grade8_English_Q1W2_Handout.pdf` and PDF 3
+
+### What was wrong
+
+"What is Point of View?" (large, bold) over "Point of view is the angle or
+perspective from which a story is told…" was classified as a quiz question
+because it ends with "?". That opened an excluded (assessment) section, and the
+definition under it reached no learner. The same happened to "What is Plot?",
+"What is Conflict?" and PDF 3's "What Is Matter?" (the definition of matter).
+A second step, the final accessibility review, also dropped any concept whose
+*title* is a question.
+
+### Fix
+
+A short, emphasised line ending in "?" that is directly followed by an
+explanatory paragraph (no choices, blanks or further questions) is a
+**question-form heading**, not a quiz item (`_mark_question_headings`). It never
+opens an excluded section, it closes one that is open, and the final review
+keeps a concept built from it (its lines are still checked one by one).
+
+**Tests:** `lessons/test_extraction_fixes.py` (`QuestionHeadingTests`).
+
+---
+
+## BUG-016 — A dash lead-in replaced the author's heading
+
+**Status:** Fixed
+**Stage:** Extraction (`content_generator.py`)
+**Found:** 2026-09-28, `Lesson-4_Reproduction-in-Non-Flowering-Plants.pdf`
+
+### What was wrong
+
+Under the heading "Comparing With Flowering Plants", the paragraph "Flowering
+plants rely on pollination — pollen must travel from the anther to the stigma…"
+became a concept titled "Flowering plants rely on pollination" whose text began
+"pollen must travel…": the author's heading was replaced and the sentence cut.
+The rule that adopts a paragraph's own label ("Heading" over "Term: definition")
+did not recognise a sentence lead-in.
+
+### Fix
+
+The label-adoption rule skips a sentence lead-in, and the lead-in rule accepts a
+dash as well as a colon (see BUG-003).
+
+**Tests:** `lessons/test_extraction_fixes.py` (`DashLeadinTests`).
+
+---
+
+## BUG-017 — "vs." and other abbreviations were treated as the end of a sentence
+
+**Status:** Fixed
+**Stage:** Extraction / chunking (`content_generator.py`)
+**Found:** 2026-09-28, `Grade8_English_Q1W2_Handout.pdf`
+
+### What was wrong
+
+"• Character vs. Nature — The character struggles…" was split after "vs.":
+one chunk ended "• Character vs.", the next began "Nature — …", and inside a
+chunk "Character vs.\nTechnology" was read with a pause mid-phrase.
+
+### Fix
+
+A sentence never ends after a known abbreviation (vs., e.g., i.e., Mr., Dr.,
+Fig., …) or a single capital initial (`_split_sentences`). Words that often end
+real sentences ("in", "no") are not on the list.
+
+**Tests:** `lessons/test_extraction_fixes.py` (`AbbreviationTests`).
+
+---
+
+## BUG-018 — "Part 3: …" divisions were dropped, so the concepts under them had no section
+
+**Status:** Fixed
+**Stage:** Extraction (`content_generator.py`)
+**Found:** 2026-09-28, `Grade8_English_Q1W2_Handout.pdf`
+
+### What was wrong
+
+"Part 3: Understanding Point of View (POV)" was dropped as a structural label
+("Part 3"), so "First Person POV", "Second Person POV" and "Third Person POV" had
+no section.
+
+### Fix
+
+"Part N:" / "Section N:" followed by a name becomes the section of what follows
+it ("Understanding Point of View (POV)"). A bare "Part 3", or a module or lesson
+label, is still treated as structure. The part keeps its section even when the
+headings inside it are printed larger than the "Part" label.
+
+**Tests:** `lessons/test_extraction_fixes.py` (`QuestionHeadingTests`).
+
+---
+
+## BUG-019 — Two concepts with the same name in one PDF
+
+**Status:** Fixed
+**Stage:** Extraction (`content_generator.py`, `disambiguate_repeated_titles`)
+**Found:** 2026-09-28, `Solid, Liquid, Gas 2.pdf`
+
+### What was wrong
+
+The PDF has a *SOLID* section and a "Solid" part under *PARTICLE ARRANGEMENT*:
+two concepts called "Solid" (also for Liquid and Gas). A learner met two steps
+with the same name, and the learning path treats same-named concepts as one idea.
+
+### Fix
+
+When a name repeats inside one PDF, the part gets its section: "Solid (Particle
+Arrangement)". A name used once, the pieces of one split passage, and a heading
+other objects name as their section are never renamed.
+
+**Tests:** `lessons/test_extraction_fixes.py` (`RepeatedTitleTests`).
+
+---
+
+## BUG-020 — Bullet lists read as one run-on sentence; "=" read as "equals"
+
+**Status:** Fixed
+**Stage:** Narration text (`content_generator._accessible_narration_text`)
+**Found:** 2026-09-28, `Solid, Liquid, Gas 2.pdf`
+
+### What was wrong
+
+"Characteristics of Solids: / Has a definite shape / Has a definite volume /
+Particles are tightly packed" had line breaks but no full stops, so the voice
+could run it together. "SOLID = keeps its shape and volume" was read "SOLID
+equals keeps…".
+
+### Fix
+
+In the spoken form only (the saved text is unchanged): each list item ends with
+a full stop unless the sentence continues in lower case on the next line;
+bullet and checkbox glyphs are dropped; "=" is read "means", or "equals" between
+numbers.
+
+**Tests:** `lessons/test_extraction_fixes.py` (`SpokenFormTests`).
+
+---
+
+## BUG-021 — A table was silent when it had no narration
+
+**Status:** Fixed
+**Stage:** Extraction / figures (`content_generator.describe_pdf_images`, `image_describer.spoken_table`)
+**Found:** 2026-09-28, `Solid, Liquid, Gas 2.pdf`
+
+### What was wrong
+
+A table's text is taken out of the lesson (so it is not read twice). When the
+vision model did not narrate the table (Ollama down, or narration capped for
+speed), the table had no content at all.
+
+### Fix
+
+Until the model narrates it, a table reads its own rows: "Shape: Solid,
+Definite. Liquid, Not definite. Gas, Not definite." This is recorded as a
+stand-in, so publishing still replaces it with the model's narration. When PDF
+extraction merged or lost a cell (the row no longer lines up with the header),
+the values are read in order without column names rather than under the wrong
+column.
+
+**Tests:** `lessons/test_extraction_fixes.py` (`SpokenTableTests`, `TableStandInPublishTests`), `lessons/tests.py`.
+
+---
+
+## BUG-022 — A figure could be described twice (its narration and the printed paragraph)
+
+**Status:** Fixed
+**Stage:** Figures (`image_describer.py`, `content_generator._use_printed_descriptions`)
+**Found:** 2026-09-28 (code review)
+
+### What was wrong
+
+When a PDF prints a description under a figure, the upload step compares it
+with the model's narration and keeps the printed text once. But:
+
+- figures narrated **later, at publish** (capped at upload, or Ollama down)
+  skipped this check, so the learner heard the model's narration and then the
+  printed paragraph saying the same thing;
+- only the **first** text block under the figure was checked, so a description
+  split into two paragraphs was half removed;
+- the paragraph **above** a figure was never checked.
+
+### Fix
+
+The same check runs at publish (the printed paragraph stays in the lesson and
+the figure only announces itself), a description split over several blocks is
+taken whole, and the paragraph above a figure is checked too. The author's or
+teacher's words are always the ones kept. Every similarity score is logged
+("Printed-passage check: … score=…") so a model change that drifts the scores is
+visible.
+
+**Not verified with the real vision model** — see Notes.
+
+**Tests:** `lessons/test_figure_descriptions.py`.
+
+---
+
+## BUG-023 — "Figure 1 —" was read aloud before a text-only figure description
+
+**Status:** Fixed
+**Stage:** Extraction (`content_generator.py`)
+**Found:** 2026-09-28, `Lesson-4_Reproduction-in-Non-Flowering-Plants.pdf`
+
+### What was wrong
+
+The fern module prints "Figure 1 — Text Description of a Fern's Reproductive
+Structures" followed by a written description, with no picture. The concept's
+text began "Figure 1 — …", pointing a listener at a figure they do not have.
+
+### Fix
+
+The "Figure N —" label is dropped from the spoken text; the author's
+description heading stays, as does the title ("Text Description of a Fern's
+Reproductive Structures" — the author's own wording, deliberately not rewritten).
+
+**Tests:** `lessons/tests.py`.
+
+---
+
+## BUG-024 — The same table in three PDFs became three concepts
+
+**Status:** Fixed
+**Stage:** Grouping (`lessons/services/unit_matching.py`, `semantic_grouping.py`)
+**Found:** 2026-09-29, the three *Solid, Liquid and Gas* PDFs
+
+### What was wrong
+
+"Comparing the Three States" was PDF 1's text section (Shape, Volume, Particle
+arrangement, Flow), PDF 3's table of that title, and PDF 2's table "6. SOLID VS.
+LIQUID VS. GAS" — three concepts, met up to three times. A table is worded
+nothing like prose, so the model scored them only 0.45–0.52 against each other,
+below the 0.6 auto bar.
+
+### Fix
+
+- A section matched to a **single figure or table that carries its heading,
+  word for word, as its title** is placed at the review threshold (0.3) — the
+  same bar an exact label already gets in semantic grouping. Only for a
+  specific heading; a generic one ("Everyday Examples") keeps the 0.6 bar, and
+  two prose sections keep their original behaviour.
+- **Table structure** counts as corroboration: the same header row
+  (Property | Solid | Liquid | Gas) and at least half of the same row names.
+- A unit placed next to a table already grouped with another PDF's table joins
+  them, instead of pulling one table away.
+
+Measured: one concept "Comparing the Three States" holding all three, the same
+in upload orders 1-2-3, 3-2-1 and 2-3-1 (the topic went from 11 to 9 concepts).
+
+**Tests:** `lessons/test_table_grouping.py`.
+
+---
+
+## BUG-025 — A concept was named after its first part, or after whichever table was grouped first
+
+**Status:** Fixed
+**Stage:** Grouping (`learning_resource_linker.py`, `unit_matching.py`)
+**Found:** 2026-09-29
+
+### What was wrong
+
+PDF 1's "Comparing the Three States" concept was called **"Shape"** (its first
+part); after BUG-024's fix it was called "6. SOLID VS. LIQUID VS. GAS" or
+"Comparing the Three States" depending on upload order.
+
+### Fix
+
+A concept that stands for a heading with no text of its own, and a concept
+formed by matching a section across PDFs, are named after that **section
+heading**. A name a teacher locked is never changed.
+
+Note: other concepts are still named after whichever PDF was uploaded first
+("Solid" / "SOLID" / "Solids (Part 1 of 2)"). That name is provisional — the
+content-versions step renames a concept after its Normal text.
+
+**Tests:** `lessons/test_section_joins.py`.
+
+---
+
+## Notes for the whole team (2026-09-29)
+
+### Decisions made in this round
+
+- **Scope:** extraction, grouping and content versions only.
+- **Extra is reserved** for a teammate's feature. It is not served to
+  learners, and its behaviour was not changed — including that nothing checks
+  what Gemma calls Extra (an unrelated text can be stored as Extra). Whoever
+  owns Extra should decide whether the "facts kept" check should apply to it.
+- **No NLI model.** Only an entailment model would catch a contradiction or a
+  missing fact inside one sentence; it was considered and declined (new model,
+  speed).
+- **No Coh-Metrix.** It measures readability in more detail, not meaning, and
+  it is a web tool that MAVIA cannot call.
+- **FKGL is a note, not a rule.** Dale-Chall decides "easier" (measured better
+  on these texts); FKGL and Gemma's confidence are recorded only.
+- **One Gemma call per concept** for classification is kept. One call per
+  candidate was measured (+2 correct, same number of wrong labels stored) and
+  not built.
+- **Teacher work:** failures are handled automatically (the text stays
+  available, a version is generated or the Normal text is used). The only
+  teacher-facing addition is the optional "Write your own explanation" warning
+  (BUG-002).
+
+### Known limits
+
+- A contradiction or a dropped fact inside one sentence can still be stored
+  (no NLI).
+- Jargon rephrasing can pass as Elaborated.
+- Outside terms in a *generated* Elaborated version are not checked.
+- Half of the generated Simplified versions fell back to the Normal text in
+  the test; generation makes about 2.4× more Gemma calls.
+- Concept names at the grouping stage depend on upload order (provisional).
+
+### Not tested yet
+
+- **A full upload with figure narration on.** All real-PDF runs in this round
+  had the vision model off. The printed-description check (BUG-022) and its
+  0.28 similarity threshold have never run with the real model.
+- **Other kinds of PDF:** scanned (image-only), long modules, two-column
+  layouts. Only six short handouts were tested.
+- **A teacher-labelled evaluation.** The classification numbers come from 21
+  pairs mostly labelled by the developer; 30–50 teacher-labelled pairs from
+  other topics are needed before quoting accuracy.
+- The copy of PDF 2 described in BUG-001 (with "Summary: what to remember") was
+  not available; the runs used `Solid, Liquid, Gas 2.pdf`, a different version.
+
+### How the runs were done
+
+Real-PDF checks uploaded the PDFs into a **throwaway SQLite database** (never a
+dev database), confirmed each PDF and ran grouping, in several upload orders.
+The classification evaluation called gemma3:4b on the labelled pairs, batched as
+MAVIA calls it. These scripts are not in the repository.
+
+### Test suite
+
+All 1,184 backend tests pass. New test files: `lessons/test_inline_leadins.py`,
+`lessons/test_extraction_fixes.py`, `lessons/test_section_joins.py`,
+`lessons/test_table_grouping.py`; new tests in several existing files.
+`course/testing.py` has `without_measurements()`, for tests of bundles,
+collisions and generation that mock Gemma over short made-up texts and are not
+about the measured check.
 
 ---

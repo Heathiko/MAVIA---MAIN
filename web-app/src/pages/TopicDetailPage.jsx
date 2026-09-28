@@ -618,6 +618,10 @@ function VersionSlotCard({
   // Written from Normal text that has since changed. Publishing waits until the
   // teacher keeps, edits or regenerates it.
   stale = false,
+  // No generated version passed the quality check, so learners hear the
+  // Normal text at this level. Publishing is not held back; the teacher may
+  // write an explanation of their own.
+  fallback = false,
   busyLabel = "",
   onKeep,
   onRegenerate,
@@ -650,6 +654,25 @@ function VersionSlotCard({
             </button>
           </div>
           {busy && busyLabel && <small className="muted-text">{busyLabel}</small>}
+        </div>
+      )}
+
+      {fallback && !stale && !isEditing && (
+        <div className="version-slot-stale version-slot-fallback" role="status">
+          <strong>Using the Normal text for now</strong>
+          <p>
+            {slotKey === "simplified"
+              ? "No generated Simplified version passed the quality check (easier to read, keeps every fact), "
+              : "No generated Elaborated version passed the quality check (fuller, keeps every fact), "}
+            so learners at this level hear the Normal text. You can write your own explanation instead.
+          </p>
+          {!readOnly && (
+            <div className="version-slot-actions">
+              <button type="button" className="btn btn-primary btn-small" disabled={busy} onClick={onBeginEdit}>
+                Write your own explanation
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -1000,6 +1023,7 @@ function VersionReviewPanel({
                   // objects, not by retyping them here.
                   readOnly={Boolean(entry) && !entry.id}
                   stale={Boolean(entry?.stale)}
+                  fallback={Boolean(entry?.fallback)}
                   busyLabel={busyAction === generateKey ? "Regenerating, this takes a few minutes…" : ""}
                   onKeep={() => onKeepVersion(entry.id)}
                   onRegenerate={() => onRegenerateVersion(versions.representative_id, slotKey.toUpperCase())}
