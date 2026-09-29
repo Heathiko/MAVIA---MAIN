@@ -330,9 +330,6 @@ function ObjectPairsPanel({
         <strong>Object pairs</strong>
       </div>
 
-      <p className="match-suggestion-intro">
-        Review one pair at a time. Accept if both teach the same concept; decline if they do not.
-      </p>
       {!suggestions.length ? (
         <div className="review-queue-empty">No learning-object pairs need review.</div>
       ) : (
@@ -362,12 +359,6 @@ function ObjectPairsPanel({
                     <strong>{Math.round(suggestion.similarity_score * 100)}%</strong>
                     <em>{suggestion.confidence} confidence</em>
                   </div>
-                  {(suggestion.source_extra_ids?.length > 0 || suggestion.candidate_extra_ids?.length > 0) && (
-                    <p className="muted-text">
-                      Accepting puts every object on both sides into one concept. Each keeps its own
-                      text, and you can move any of them back out afterwards.
-                    </p>
-                  )}
                   <div className="match-suggestion-pair">
                     <div className="match-source-card">
                       <div className="match-source-label">
@@ -831,11 +822,6 @@ function VersionReviewPanel({
         <div>
           <span className="connection-eyebrow">Review queue</span>
           <h3 id="version-review-title">Review content versions</h3>
-          <p>
-            Gemma automatically assigns every existing PDF variant to Normal, Simplified, Elaborated,
-            or Extra. You can change a source's role, then generate missing versions individually or all
-            at once.
-          </p>
         </div>
         <div className="version-review-heading-actions">
           {staleVersionCount > 0 && (
@@ -1225,7 +1211,6 @@ function QuestionGenerationTool({
         <div>
           <span className="connection-eyebrow">AI question generator</span>
           <h4>Learning objects</h4>
-          <p>Generate questions from one concept's Normal version, or generate one question bank for every concept.</p>
         </div>
         <button type="button" className="btn btn-primary" disabled={Boolean(generatingKey) || !learningObjects.some((item) => item.canGenerate)} onClick={handleGenerateAll}>
           {generatingKey === "all" ? "Generating all…" : "Generate all questions"}
@@ -1442,7 +1427,6 @@ function ManualQuestionPanel({
           </div>
           <span>{pdfQuestions.length}</span>
         </div>
-        <p className="question-source-prompt">Extracted from uploaded question papers. Generated questions appear under their concept.</p>
         {!pdfQuestions.length ? <div className="review-queue-empty">No questions were extracted from an uploaded PDF.</div> : (
           <div className="saved-question-list is-sidebar">
             {pdfQuestions.map((question) => {
@@ -1816,10 +1800,6 @@ ${question.prompt}`,
         <div>
           <span className="connection-eyebrow">Final review</span>
           <h3 id="publish-panel-title">Content and questions</h3>
-          <p>
-            Check every concept's three versions and the questions generated from it.
-            The learning path is reviewed next, and publishing happens after that.
-          </p>
         </div>
         <span className="connection-source-count">
           {groups.length} concept{groups.length === 1 ? "" : "s"}
@@ -2897,12 +2877,6 @@ function LearningObjectConnections({
               Grouping changed, so this topic was unpublished. Republish when you are ready.
             </p>
           )}
-          <p>
-            Each concept shows one block per PDF: everything that file teaches about it, in the
-            file’s own order. If an object is in the wrong concept, give it a concept of its own
-            or move it into another one. The arrows only change the order inside that file’s
-            block — they never move an object between concepts.
-          </p>
         </div>
         <span className="connection-source-count">
           {confirmedSourceCount} confirmed source{confirmedSourceCount === 1 ? "" : "s"}

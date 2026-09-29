@@ -12,24 +12,34 @@
    races to rules buried in pipeline.css, so the markup now has two wrapper
    columns and this only has to lay out two boxes. Nothing left to lose to.
    -------------------------------------------------------------------------- */
+/* This panel is itself a grid item of the outer .connection-review-layout, so
+   it was being sized by THAT grid while its own children were being placed by
+   rules from pipeline.css. Three passes of grid-column tinkering lost to that
+   every time.
+   Two things make it immune rather than merely louder:
+     - it spans the full outer row, whatever that grid's column count is;
+     - it lays its own children out with FLEX, which ignores stray
+       `grid-column` declarations entirely. There is nothing left to inherit
+       a placement from. */
 .match-suggestion-panel.panel-aside.question-tools-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
-  gap: 2.5rem;
-  align-items: start;
+  grid-column: 1 / -1 !important;
+  width: 100% !important;
+  max-width: none !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: flex-start;
+  gap: 2rem;
   /* pipeline.css forced `overflow-y: auto !important` on this whole panel,
      which is where the unwanted scrollbar came from. The panel is not the
      long thing; the bank inside it is. */
   overflow: visible !important;
 }
 
-/* Placed explicitly, not left to auto-flow, and specific enough to beat
-   anything that reaches these children from pipeline.css. */
 .question-tools-panel > .qt-col--bank {
-  grid-column: 1;
+  flex: 1 1 54%;
 }
 .question-tools-panel > .qt-col--tools {
-  grid-column: 2;
+  flex: 1 1 46%;
 }
 
 /* Each column is its own panel with its own surface, so the two jobs read as
@@ -66,12 +76,12 @@
 
 @media (max-width: 1100px) {
   .match-suggestion-panel.panel-aside.question-tools-panel {
-    grid-template-columns: minmax(0, 1fr);
+    flex-direction: column !important;
     gap: 1.5rem;
   }
   .question-tools-panel > .qt-col--bank,
   .question-tools-panel > .qt-col--tools {
-    grid-column: 1;
+    flex: 1 1 auto;
   }
 }
 
@@ -119,15 +129,66 @@
    palette, which is also what makes it findable for a teacher who navigates
    by region before they can read a label.
    -------------------------------------------------------------------------- */
-.mv-side,
-.workspace-sidebar,
-.pipeline-sidebar,
-.lesson-sidebar {
+/* `.card.lesson-pdf-sidebar` rather than the class alone: the sidebar also
+   carries `.card`, which paints it white, and a single class cannot outrank
+   two. Earlier guesses at this name (.workspace-sidebar, .pipeline-sidebar)
+   matched nothing at all, which is why it stayed pale through two passes. */
+.card.lesson-pdf-sidebar,
+.mv-side {
   background: var(--mv-dark);
   color: #ffffff;
   border: none;
   border-radius: var(--mv-radius-lg);
   box-shadow: none;
+}
+
+.card.lesson-pdf-sidebar strong,
+.card.lesson-pdf-sidebar h1,
+.card.lesson-pdf-sidebar h2,
+.card.lesson-pdf-sidebar h3,
+.card.lesson-pdf-sidebar h4 {
+  color: #ffffff;
+}
+
+.card.lesson-pdf-sidebar small,
+.card.lesson-pdf-sidebar p,
+.card.lesson-pdf-sidebar span {
+  color: #aab4c4;
+}
+
+.card.lesson-pdf-sidebar a {
+  color: #dbe3ee;
+}
+
+/* The one selected file is the only saturated thing in a dark column, so it
+   needs no outline to be found. */
+.card.lesson-pdf-sidebar .is-active,
+.card.lesson-pdf-sidebar [aria-current="true"],
+.card.lesson-pdf-sidebar [aria-selected="true"] {
+  background: var(--mv-brand-600);
+  color: #ffffff;
+  border-color: transparent;
+}
+
+.card.lesson-pdf-sidebar .is-active strong,
+.card.lesson-pdf-sidebar .is-active small,
+.card.lesson-pdf-sidebar [aria-current="true"] strong,
+.card.lesson-pdf-sidebar [aria-current="true"] small {
+  color: #ffffff;
+}
+
+/* Buttons and rows inside it lose their pale card backgrounds. */
+.card.lesson-pdf-sidebar .lesson-item,
+.card.lesson-pdf-sidebar button:not(.btn-primary):not(.btn-danger) {
+  background: transparent;
+  border-color: transparent;
+  color: #dbe3ee;
+}
+
+.card.lesson-pdf-sidebar .lesson-item:hover,
+.card.lesson-pdf-sidebar button:not(.btn-primary):not(.btn-danger):hover {
+  background: var(--mv-dark-soft);
+  color: #ffffff;
 }
 
 .mv-side h1,
