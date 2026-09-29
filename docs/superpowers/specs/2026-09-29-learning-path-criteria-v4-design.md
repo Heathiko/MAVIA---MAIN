@@ -62,7 +62,7 @@ concepts_for_topic (unchanged)
   -> evidence per ordered pair (A, B):
         R1 definition dependency
         R2 section containment
-        R3 sentence reference distance
+        R3 passage reference distance
   -> vetoes: same name, contrast only, parallel siblings
   -> decision: accepted | pending | none      (rule precedence, no voting)
   -> refresh_prerequisites: store rows, keep teacher decisions (unchanged)
@@ -86,8 +86,13 @@ B's prerequisite if A is used in B's definition", with the first sentence taken 
 Talukdar & Cohen 2012 use the same signal (a title mentioned in the other page's first sentence).
 
 **Rule.** B's **defining sentences** are, for each member of B, the first sentence of that member's
-content, counted only when either that sentence's `definition_subject` equals `name(B)` or the
-member's own title resolves to `name(B)`.
+content, counted only when that sentence's `definition_subject` equals `name(B)`, compared after
+singularising each word. The sentence must actually open "B is / are / means / refers to / has…".
+
+*Amended 2026-09-29 after measurement:* an earlier draft also counted the first sentence of any
+member whose title resolved to `name(B)`. On gold topic 62, that made "Matter usually exists as a
+solid, a liquid or a gas" count as Matter's definition. It produced Solid→Matter, which then
+conflicted with containment and knocked Matter→Solid back to pending.
 R1 holds for A→B when:
 - `name(A)` is mentioned in a defining sentence of B, **and**
 - `name(B)` is not mentioned in any defining sentence of A.
@@ -107,23 +112,28 @@ dependencies".
 `name(A)`. This is the existing `contained_in`. Only the *containment* part of the section structure
 is used. Wang's subchapter-number distance is positional, so it is deliberately left out.
 
-### R3: Sentence reference distance
+### R3: Passage reference distance
 
-**Source:** Pan et al. 2017, Feature 3. Pan introduce it as a plain-text generalisation of RefD
-(Liang et al. 2015), which in its original form needs Wikipedia links.
+**Source:** Pan et al. 2017, Feature 2 (*Video Reference Distance*), which Pan introduce as a
+generalisation of RefD (Liang et al. 2015) to course material that has no Wikipedia links.
 
-**Definitions.** Take every sentence of every concept's text in the topic. Let `r(s, X) = 1` when
-sentence `s` mentions `name(X)`. Then:
+**Adaptation, stated for the thesis.** Pan's unit is a course video, weighted by the term frequency
+of `a` in it. In MAVIA the unit is a **learning object** (one passage), and a concept's units are
+its grouped members: grouping has already decided which passages teach the concept. So
+`f(a, V) = 1` when passage `V` is a member of `a`, and 0 otherwise. `r(V, b) = 1` when `V`'s text
+mentions `name(b)`, or its head word, in at least one non-contrastive clause.
 
 ```
-Srw(a, b) = Σ_s r(s,a)·r(s,b) / Σ_s r(s,a)     # share of a's sentences that also mention b
-Srd(a, b) = Srw(b, a) − Srw(a, b)             # > 0: b's sentences lean on a -> a before b
+Prw(a, b) = Σ_{V ∈ members(a)} r(V, b) / |members(a)|   # share of a's passages naming b
+Prd(a, b) = Prw(b, a) − Prw(a, b)                     # > 0: b's passages name a -> a before b
 ```
 
-**Rule.** R3 holds for A→B when:
-- both names exist,
-- they co-occur in at least one sentence, **and**
-- `Srd(A, B) > θ`.
+**Rule.** R3 holds for A→B when both names exist and `Prd(A, B) > θ`.
+
+*Amended 2026-09-29 after measurement:* the first draft used Pan's Feature 3, *Sentence* Reference
+Distance. That scored 0.000 on every Comparing and Changing pair of gold topic 152, because a
+multi-word concept ("comparing the three states") is almost never said in a sentence. It is,
+however, what its own passages are about.
 
 **θ.** It is chosen from Liang et al.'s recommended range for RefD, **0.02–0.1**, by grid search on
 gold topics 62 and 79 only, then validated unchanged on topics 152 and 308. The chosen value and its
@@ -163,7 +173,7 @@ For each ordered pair after the vetoes:
 | Nothing holds | none | — |
 
 - **R3 never overrides R1 or R2.** When R3 points against an accepted R1/R2 link, the link stays
-  accepted, and the opposing Srd value is recorded in its evidence. This follows the precision
+  accepted, and the opposing Prd value is recorded in its evidence. This follows the precision
   findings: structural and definitional evidence is the high-precision kind (Pan's is-a pattern
   baseline: precision 67–80%, recall 15–27%).
 - **R3-only links stay pending.** The teacher confirms direction from text statistics, which is the
@@ -177,9 +187,8 @@ For each ordered pair after the vetoes:
   "rule": "definition | containment | reference | conflict",
   "definition": {"sentence": "<the defining sentence of the dependent>"},
   "containment": {"heading": "<heading naming the prerequisite>"},
-  "reference": {"srd": 0.0, "srw_forward": 0.0, "srw_backward": 0.0,
-                "co_sentences": 0, "theta": 0.0},
-  "opposing_reference": {"srd": 0.0}
+  "reference": {"prd": 0.0, "prw_forward": 0.0, "prw_backward": 0.0, "theta": 0.0},
+  "opposing_reference": {"prd": 0.0}
 }
 ```
 
@@ -189,8 +198,8 @@ Only the keys that apply are present. `cross_section` is still computed and stor
 
 | File | Change |
 |---|---|
-| `learning_path/services/criteria.py` | Rewrite. Keep `concept_names`, `concept_text`, `head_words`, `contained_in`, `only_contrastive_mentions`, `presented_in_parallel`, `named_sections`, `section_headings`, `crosses_sections`. Remove `key_terms`, `reference_details`, `reference_matrix`, `_phrase_hits`, `_windows`, `inbound_outbound_ratios`, `temporal_order`, `semantic_reference`, `inbound_outbound`, `cast_votes`, `decide`, `names_the_target`, and the constants `REF_MAX_DF_RATIO`, `REF_MARGIN`, `PHRASE_COSINE`, `MIN_IOL_MARGIN`, `WINDOW_SIZE`, `MAX_WINDOWS_PER_CONCEPT`, `MIN_OUTBOUND`, `MAX_IOL`. Add `defining_sentences(concept, name)`, `definition_dependency(a, b, names)`, `sentence_reference(concepts, names)` (returns Srw/Srd per pair), and constant `SRD_THRESHOLD`. `decide_pairs(concepts, runtime_instance=None)` keeps its signature. `runtime_instance` becomes unused and is kept for callers. |
-| `learning_path/services/text_signals.py` | Add a sentence splitter shared by R1 and R3, if the existing `_SENTENCE_SPLIT` is not enough. |
+| `learning_path/services/criteria.py` | Rewrite. Keep `concept_names`, `concept_text`, `head_words`, `contained_in`, `only_contrastive_mentions`, `presented_in_parallel`, `named_sections`, `section_headings`, `crosses_sections`. Remove `key_terms`, `reference_details`, `reference_matrix`, `_phrase_hits`, `_windows`, `inbound_outbound_ratios`, `temporal_order`, `semantic_reference`, `inbound_outbound`, `cast_votes`, `decide`, `names_the_target`, and the constants `REF_MAX_DF_RATIO`, `REF_MARGIN`, `PHRASE_COSINE`, `MIN_IOL_MARGIN`, `WINDOW_SIZE`, `MAX_WINDOWS_PER_CONCEPT`, `MIN_OUTBOUND`, `MAX_IOL`. Add `defining_sentences(concept, name)`, `definition_dependency(a, b, names, heads)`, `passage_reference(concepts, names, heads)` (returns Prw/Prd per ordered pair), and constant `PRD_THRESHOLD`. `decide_pairs(concepts, runtime_instance=None)` keeps its signature. `runtime_instance` becomes unused and is kept for callers. |
+| `learning_path/services/text_signals.py` | Add `first_sentence(text)`, used by R1. |
 | `learning_path/services/publishing.py` | Read `decision["evidence"]` instead of `decision["votes"]` (two lines). Nothing else changes. |
 | `learning_path/services/gold.py` | Report accepted and pending recall and forbidden-accepted per rule type. |
 | `learning_path/management/commands/evaluate_gold_paths.py` | `--grid` sweeps θ over 0.02–0.1. |
@@ -206,7 +215,7 @@ models, migrations, views, frontend, and all of `adaptive/`.
 | Claim used here | Source |
 |---|---|
 | RefD formula, positive θ, recommended 0.02–0.1, no position used, `r` may be "mentions in books" | Liang, Wu, Huang & Giles 2015, *Measuring Prerequisite Relations Among Concepts*, EMNLP, §2–4.3 |
-| Srw/Srd definitions. RefD "not applicable in plain text". Ablation: Apd −2.4, Cld −7.4 F1. Is-a pattern baseline P 67–80%, R 15–27% | Pan, Li, Li & Tang 2017, *Prerequisite Relation Learning for Concepts in MOOCs*, ACL, §3.2–4.4 |
+| Video Reference Distance (Feature 2) and Sentence Reference Distance (Feature 3) definitions. RefD "not applicable in plain text". Ablation: Apd −2.4, Cld −7.4 F1. Is-a pattern baseline P 67–80%, R 15–27% | Pan, Li, Li & Tang 2017, *Prerequisite Relation Learning for Concepts in MOOCs*, ACL, §3.2–4.4 |
 | Definition supportive relation. Textbook structure (TOC) as evidence. Complexity-level features beat relatedness features | Wang et al. 2016, *Using Prerequisites to Extract Concept Maps from Textbooks*, CIKM, §3.2, §4.3 |
 | First-sentence title mention as a feature | Talukdar & Cohen 2012, *Crowdsourced Comprehension*, BEA, §2.1 |
 | Cosine windows give false positives for direction, so the expert decides direction. DAG axioms (asymmetry, irreflexivity, transitivity) | Aytekin & Saygın 2024, *ACE*, JEDM, §3–4 |
@@ -236,8 +245,8 @@ Run through `evaluate_gold_paths` and `test_gold_paths.py` with the real concept
 **Acceptance criteria:**
 1. **0 forbidden links accepted** on topics 62, 79, 152 and 308.
 2. **Expected order matches** on all four topics.
-3. **Accepted + pending recall of required edges is at least v3's accepted recall**: 62 ≥ 10/10,
-   79 ≥ 4/8, 152 ≥ 9/10. These required edges must stay reachable by the teacher.
+3. **Accepted + pending recall of required edges** is at least 62 ≥ 9/10, 79 ≥ 3/8, 152 ≥ 8/10
+   (the measured v4 baseline, Section 10.1). Accepted recall is reported, not gated.
 4. **Topic 308:**
    - accepted precision ≥ 0.8;
    - no accepted link from a figure description or an example-type concept to the concept that
@@ -245,16 +254,44 @@ Run through `evaluate_gold_paths` and `test_gold_paths.py` with the real concept
    - Matter→Solid, Matter→Liquid and Matter→Gas all accepted.
 5. **θ** is chosen on 62 and 79 only. The report shows 152 and 308 at that θ unchanged.
 
-If criterion 3 fails because R1 and R2 are too sparse, the fallback is decided with the user
-**before** any tuning. It is not tuned silently.
+If a criterion fails, the fallback is decided with the user **before** any tuning. It is not
+tuned silently.
+
+### 10.1 Pre-implementation measurement (2026-09-29, throwaway script, no code changed)
+
+Strict R1, R2, passage-level R3 and the decision table, run on the gold fixtures:
+
+| Topic | Required accepted | Reachable (accepted + pending) | Forbidden accepted or pending | Extra pending |
+|---|---|---|---|---|
+| 62 | 3/10 | 9/10 | 0 | matter→comparing, matter→changing (true by transitivity) |
+| 79 | 3/8 | 3/8 | 0 | fertilization, seed, fruit → reproduction (reversed, child→parent) |
+| 152 | 3/10 | 8/10 | 0 | matter→changing |
+
+Results were identical for θ ∈ {0.02, 0.05, 0.1}.
+
+**Unreachable, and why:**
+- **Comparing→Changing** (62, 152): no naming, definition or structural evidence in the text. v3
+  accepted it only through incidental words ("explain", "four", "outline").
+- **Seed→Fruit** (79): the two are siblings, and neither concept's definition names the other.
+- **Gas→Changing** (152): the split Changing concepts never name gas.
+- **Topic 79's known gaps:** no stemming ("fertilized" vs "fertilization"), and the linking terms
+  (pollen, anther, stigma) are not concept names.
+
+**Consequence, accepted by the user on 2026-09-29:** only containment links are accepted
+automatically on these topics. Every other link is a teacher suggestion, and the order falls back
+to document order wherever links are silent. This trades automatic coverage for precision: no
+wrong link is accepted, and the only wrong suggestions are the three reversed ones on topic 79.
+Accepting R3 on its own was rejected, because it would accept those reversed links and push
+Reproduction after its own parts.
 
 ## 11. Risks
 
 - **Sparse evidence.** Short lessons may have few definitional sentences, which lowers accepted
   recall. Mitigation: R3 still proposes those links as pending, and the path falls back to document
   order.
-- **Srd on parent/child pairs.** A parent's introduction lists its children ("matter exists as
-  solid, liquid and gas"), so Srd can point child→parent. Mitigation: R2 and R1 take precedence
+- **Prd on parent/child pairs.** A parent's introduction lists its children ("matter exists as
+  solid, liquid and gas"), so Prd points child→parent (measured: Matter/Solid −1.0 on topic 62;
+  Fertilization/Seed/Fruit → Reproduction on topic 79). Mitigation: R2 and R1 take precedence
   (Section 6).
 - **Word forms.** Mentions handle only plurals, so "fertilized" does not match "fertilization"
   (topic 79's known gaps). This is recorded, not fixed here.
