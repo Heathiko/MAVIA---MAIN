@@ -26,7 +26,7 @@ def _fingerprint(learning_object):
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def _prompt(learning_object):
+def _prompt(learning_object, feedback=""):
     source_word_count = len(learning_object.content.split())
     simplified_limit = max(12, source_word_count + 3)
     elaborated_limit = max(20, source_word_count * 2)
@@ -55,7 +55,7 @@ SOURCE TITLE:
 
 SOURCE CONTENT:
 {learning_object.content.strip()}
-"""
+{feedback}"""
 
 
 # Gemma sometimes closes a JSON string with a typographic right quote instead
@@ -116,36 +116,140 @@ def _parse_response(raw_text, source_word_count=None):
 
 
 VARIANT_REQUEST_ATTEMPTS = 3
+# Recorded as the generator of a level that kept the Normal text because no
+# attempt passed the checks (see _request_variants).
+NORMAL_FALLBACK_GENERATOR = "normal-text-fallback"
+# Unfamiliar words a version may use that its source never does.
+MAX_OUTSIDE_TERMS = 1
 
 
 class _UnreachableModelError(VariantGenerationError):
     pass
 
 
+def check_generated_version(slot, source_text, version_text):
+    """What is wrong with one generated version, as feedback for Gemma ([] = passes).
+
+    BUG-002: nothing checked a generated version. Measured on the Solid,
+    Liquid and Gas topic, 4 of 17 Simplified versions were harder than their
+    source, 3 of 15 Elaborated ones were no fuller and dropped facts, and
+    several brought in terms the lesson never teaches. The generator is told
+    to add no new facts, so Elaborated here means *fuller*, not *adds
+    content*: that is what is checked. Outside terms are checked for
+    Simplified only (see below); in an Elaborated version they remain a gap.
+
+    Without the sentence encoder nothing is checked, as before.
+    """
+    from .content_measures import MeasurementUnavailable, measure_versions, outside_terms
+
+    try:
+        measures = measure_versions(source_text, version_text)
+    except MeasurementUnavailable:
+        return []
+    problems = []
+    if not measures["facts_kept"]:
+        problems.append("it leaves out facts that the SOURCE states")
+    if slot == "SIMPLIFIED" and not measures["easier"]:
+        problems.append("it is not easier to read than the SOURCE; use shorter, everyday words")
+    if slot == "ELABORATED" and len(version_text.split()) <= len(source_text.split()):
+        problems.append("it is not fuller than the SOURCE; explain the same facts more fully")
+    # Only for Simplified: a simplification should use familiar words. Tried on
+    # Elaborated and measured unusable -- gemma3:4b's elaborations use 4 to 28
+    # ordinary academic words each ("within", "movement", "consequently")
+    # that are off the Dale-Chall list, so nearly every one failed, and a word
+    # list cannot tell those from "intermolecular" or "kinetic energy".
+    if slot == "SIMPLIFIED":
+        terms = outside_terms(source_text, version_text)
+        if len(terms) > MAX_OUTSIDE_TERMS:
+            problems.append("it uses words the SOURCE does not use: " + ", ".join(terms[:6]))
+    return problems
+
+
+def _feedback(failures):
+    lines = [f"- {slot.lower()}: " + "; ".join(problems) for slot, problems in failures.items()]
+    return (
+        "\nYOUR PREVIOUS ANSWER WAS REJECTED because:\n" + "\n".join(lines)
+        + "\nWrite both versions again, fixing these problems.\n"
+    )
+
+
+class CheckedVariants(dict):
+    """``{slot: text}`` as before, plus ``fallback``: ``{slot: problems}`` for
+    levels that kept the Normal text because no attempt passed the check."""
+
+    def __init__(self, texts, fallback=None):
+        super().__init__(texts)
+        self.fallback = fallback or {}
+
+
+def _fallback_slots(variants):
+    return getattr(variants, "fallback", {}) or {}
+
+
 def _request_variants(learning_object, model):
-    # Retry only replies Gemma produced but that failed parsing or grounding
-    # checks; an unreachable or timed-out Ollama would just fail again.
+    """``CheckedVariants``: ``{slot: text}``, with ``.fallback`` naming the levels
+    that kept the Normal text.
+
+    Each version is checked (``check_generated_version``). A failing one is
+    written again, with Gemma told why; a version that passes is kept from
+    whichever attempt produced it. A level no attempt got right keeps the
+    Normal text (``fallback``): the learner hears the teacher's own wording at
+    that level rather than a version that is harder than it should be or
+    leaves facts out, and publishing is not held back for a teacher to fix it.
+
+    Replies that fail parsing are retried as before; an unreachable or timed
+    out Ollama is not, it would just fail again. If no attempt produced a
+    usable reply at all, the error is raised as before.
+    """
+    accepted, failures, feedback = {}, {}, ""
+    produced_any = False
     for attempt in range(1, VARIANT_REQUEST_ATTEMPTS + 1):
         try:
-            return _request_variants_once(learning_object, model)
+            variants = _request_variants_once(learning_object, model, feedback)
         except _UnreachableModelError:
             raise
         except VariantGenerationError as exc:
-            if attempt == VARIANT_REQUEST_ATTEMPTS:
+            if attempt == VARIANT_REQUEST_ATTEMPTS and not produced_any:
                 raise
             logger.warning(
                 'Retrying variants for "%s" (attempt %s of %s): %s',
                 learning_object.title, attempt + 1, VARIANT_REQUEST_ATTEMPTS, exc,
             )
+            continue
+        produced_any = True
+        failures = {}
+        for slot, text in variants.items():
+            if slot in accepted:
+                continue
+            problems = check_generated_version(slot, learning_object.content, text)
+            if problems:
+                failures[slot] = problems
+            else:
+                accepted[slot] = text
+        if not failures:
+            break
+        logger.info(
+            'Generated versions for "%s" failed the check (attempt %s of %s): %s',
+            learning_object.title, attempt, VARIANT_REQUEST_ATTEMPTS, failures,
+        )
+        feedback = _feedback(failures)
+    fallback = {slot: problems for slot, problems in failures.items() if slot not in accepted}
+    for slot in fallback:
+        logger.warning(
+            'No generated %s version of "%s" passed the check; the Normal text is used: %s',
+            slot, learning_object.title, fallback[slot],
+        )
+    texts = {**accepted, **{slot: learning_object.content.strip() for slot in fallback}}
+    return CheckedVariants(texts, fallback)
 
 
-def _request_variants_once(learning_object, model):
+def _request_variants_once(learning_object, model, feedback=""):
     try:
         response = requests.post(
             f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/generate",
             json={
                 "model": model,
-                "prompt": _prompt(learning_object),
+                "prompt": _prompt(learning_object, feedback),
                 "stream": False,
                 "keep_alive": settings.OLLAMA_KEEP_ALIVE,
                 "format": {
@@ -261,7 +365,9 @@ def generate_standalone_variants(outline_node):
                         "narration": narration,
                         "audio_url": "",
                         "source_fingerprint": fingerprint,
-                        "generator_model": model,
+                        "generator_model": (
+                            NORMAL_FALLBACK_GENERATOR if variant in _fallback_slots(outcome) else model
+                        ),
                         "generated_at": timezone.now(),
                     },
                 )
@@ -386,7 +492,11 @@ def fill_missing_slots(learning_object, target_slots=None, *, replace_stale=Fals
                     "narration": variants[slot],
                     "audio_url": "",
                     "source_fingerprint": fingerprint,
-                    "generator_model": model,
+                    # A level no attempt got right keeps the Normal text, and
+                    # says so, so Content versions shows why it reads the same.
+                    "generator_model": (
+                        NORMAL_FALLBACK_GENERATOR if slot in _fallback_slots(variants) else model
+                    ),
                     "generated_at": timezone.now(),
                     "origin": LessonVariant.Origin.GENERATED,
                     "source_learning_object": None,

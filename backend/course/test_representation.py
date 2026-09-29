@@ -12,6 +12,7 @@ from lessons.models import (
     OutlineNode,
 )
 
+from .testing import without_measurements
 from .models import CourseModule, LessonNode, LessonVariant
 from .services import LessonPackageService, _build_chunk
 from .version_assignment import (
@@ -39,6 +40,7 @@ MIDDLING = "A solid keeps its shape. The particles are packed closely. It will n
 )
 class RepresentationTests(TestCase):
     def setUp(self):
+        without_measurements(self)
         classifier_patcher = patch("course.version_assignment.classify_group_versions")
         self.classify_group_versions = classifier_patcher.start()
         self.addCleanup(classifier_patcher.stop)

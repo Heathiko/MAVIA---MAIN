@@ -451,18 +451,182 @@ def label_corroboration_enabled() -> bool:
 def _specific_normalized_label(title: str) -> str:
     # Local imports avoid making the content extraction and linking modules part
     # of semantic model startup. Both helpers are established lessons-app rules.
-    from .content_generator import is_structural_metadata_label
+    from .content_generator import is_section_named_figure_title, is_structural_metadata_label
     from .learning_resource_linker import normalize_learning_object_title
 
     label = _singular_label(normalize_learning_object_title(title))
     if (
         not label
         or is_structural_metadata_label(title)
+        # Extraction wrote "Solids - figure", not the author: two figures that
+        # merely sit in same-named sections have no label to agree on.
+        or is_section_named_figure_title(title)
         or label in _GENERIC_SINGULAR_LABELS
         or _GENERIC_NUMBERED_LABEL.fullmatch(label)
     ):
         return ""
     return label
+
+
+# A caption this short ("Diagram.", "A flower.") could sit under any figure.
+_MIN_CORROBORATING_CAPTION_WORDS = 4
+
+
+def figure_caption(content):
+    """The author's caption of a figure ("Figure 1. <caption>"), or ``""``.
+
+    Only the text after "Figure N." counts, and any AI description appended to
+    it ("This figure shows ...") is cut off by the extraction helper.
+    """
+    from .content_generator import _image_caption_title
+
+    return _image_caption_title(content or "") or ""
+
+
+def recorded_caption(item):
+    """The printed caption of a figure learning object, or ``""``.
+
+    Read from what extraction recorded for this image: once a figure is
+    narrated, its text is the model's description and no longer carries the
+    caption. Older uploads, never narrated, kept the caption as their text.
+    """
+    material = getattr(item, "material", None)
+    url = getattr(item, "image_url", "") or ""
+    if material is not None and url:
+        for record in (material.generated_json or {}).get("image_descriptions") or []:
+            if record.get("image_url") == url and (record.get("caption") or "").strip():
+                return record["caption"]
+    return getattr(item, "content", "") or ""
+
+
+def _normalized_caption(content):
+    caption = figure_caption(content)
+    words = re.sub(r"[^\w\s]", " ", caption.casefold()).split()
+    return " ".join(words) if len(words) >= _MIN_CORROBORATING_CAPTION_WORDS else ""
+
+
+# Text printed inside a figure (its labels) identifies the figure only when
+# there is enough of it: "Solid, Liquid, Gas" labels half the figures of a
+# states-of-matter topic, "Evaporation, Condensation, Precipitation, Runoff"
+# names one diagram.
+_MIN_CORROBORATING_FIGURE_TEXT_WORDS = 4
+# Extraction of the same labels can differ by a stray word or a split label.
+_MIN_FIGURE_TEXT_OVERLAP = 0.8
+
+
+def recorded_visible_text(item):
+    """The text printed inside a figure learning object, or ``""``."""
+    material = getattr(item, "material", None)
+    url = getattr(item, "image_url", "") or ""
+    if material is None or not url:
+        return ""
+    for record in (material.generated_json or {}).get("image_descriptions") or []:
+        if record.get("image_url") == url:
+            return record.get("visible_text") or ""
+    return ""
+
+
+def _figure_text_words(text):
+    words = set(re.sub(r"[^\w\s]", " ", (text or "").casefold()).split())
+    return words if len(words) >= _MIN_CORROBORATING_FIGURE_TEXT_WORDS else set()
+
+
+# Share of the smaller table's row names the other table must also have.
+_MIN_SHARED_TABLE_ROWS = 0.5
+
+
+def _table_shape(text):
+    """``(header, row names)`` of a table's printed text ("a | b | c" lines), or None."""
+    rows = [
+        [" ".join(re.sub(r"[^\w\s]", " ", cell.casefold()).split()) for cell in line.split("|")]
+        for line in (text or "").splitlines()
+        if "|" in line
+    ]
+    if len(rows) < 3 or len(rows[0]) < 3:
+        return None
+    return tuple(rows[0]), {row[0] for row in rows[1:] if row[0]}
+
+
+def _rows_match(name, other):
+    # Extraction can merge a cell into its row name ("particle movement vibrate").
+    return name == other or name.startswith(other + " ") or other.startswith(name + " ")
+
+
+def _tables_agree(source, figures):
+    """True when every figure of the destination is the same table as ``source``.
+
+    The same header row and most of the same row names: PDF 2's "6. SOLID VS.
+    LIQUID VS. GAS" and PDF 3's "Comparing the Three States" both read
+    Property | Solid | Liquid | Gas, with Shape, Volume, Particle movement
+    and Example among their rows, and their wording differs so much (0.52)
+    that nothing else connected them.
+    """
+    shape = _table_shape(recorded_visible_text(source)) if source is not None else None
+    if not shape or not figures:
+        return False
+    for item in figures:
+        other = _table_shape(recorded_visible_text(item))
+        if not other or other[0] != shape[0]:
+            return False
+        smaller, larger = sorted((shape[1], other[1]), key=len)
+        if not smaller:
+            return False
+        shared = sum(any(_rows_match(name, row) for row in larger) for name in smaller)
+        if shared / len(smaller) < _MIN_SHARED_TABLE_ROWS:
+            return False
+    return True
+
+
+def _table_corroborated_decision(*, source, content, kind, reachable_groups, members, config, started_at):
+    """A table joins the concept that already holds the same table.
+
+    Like an exact label, the same table structure is evidence of its own, so
+    the review threshold is the bar, and a concept holding text as well as
+    the table can be reached. The score is taken against that concept's
+    figures only: prose beside a table would otherwise set the score.
+    """
+    if kind != IMAGE_KIND or source is None or not _table_shape(recorded_visible_text(source)):
+        return None
+    for group_id in sorted(reachable_groups):
+        figures = [item for item in members[group_id] if item.kind == IMAGE_KIND]
+        if not figures or not _tables_agree(source, figures):
+            continue
+        ranked = rank_groups(content, figures, {group_id: figures}, thresholds={**config, "top_k": 1})
+        if not ranked:
+            continue
+        match = ranked[0]
+        evidence = dict(match["evidence"])
+        if not evidence["all_members_checked"] or evidence["score"] < config["review_threshold"]:
+            continue
+        evidence.update(
+            method="table_structure_sbert_cross_encoder",
+            table_structure_corroborated=True,
+            auto_eligible=True,
+            review_threshold=config["review_threshold"],
+            elapsed_ms=round((perf_counter() - started_at) * 1000, 1),
+        )
+        return {**match, "evidence": evidence, "confidence": "high"}
+    return None
+
+
+def _figure_texts_agree(source, figures):
+    """True when every figure of the destination carries the same printed labels."""
+    words = _figure_text_words(recorded_visible_text(source)) if source is not None else set()
+    if not words or not figures:
+        return False
+    for item in figures:
+        other = _figure_text_words(recorded_visible_text(item))
+        if not other or len(words & other) / len(words | other) < _MIN_FIGURE_TEXT_OVERLAP:
+            return False
+    return True
+
+
+def _captions_agree(caption_text, figures):
+    """True when every figure of the destination carries this exact caption."""
+    caption = _normalized_caption(caption_text)
+    return bool(caption) and bool(figures) and all(
+        _normalized_caption(recorded_caption(item)) == caption for item in figures
+    )
 
 
 def _label_corroborated_decision(
@@ -542,12 +706,21 @@ def _label_corroborated_decision(
     if any(item.represented_by_id is not None for item in destination_members):
         return None
 
+    # Score against the members that teach the same way. A concept's score is
+    # its weakest member's, so the prose beside a figure would otherwise set
+    # the figure's score and sink a match that belongs: measured on topic 212,
+    # one diagram scored 0.62 against the concept's other diagrams and 0.37
+    # once its four text members were counted too.
+    comparable_members = [item for item in destination_members if item.kind == kind]
+    if not comparable_members:
+        return None
+
     # Explicitly score the exact-label destination group. It may not have
     # survived the ordinary cosine top-k shortlist.
     ranked = rank_groups(
         content,
         twins,
-        {destination_group_id: destination_members},
+        {destination_group_id: comparable_members},
         thresholds={**config, "top_k": 1},
     )
     if not ranked:
@@ -591,6 +764,13 @@ def semantic_decision(
     it fits somewhere else; it never changes group membership itself.
     """
     from lessons.models import LearningObject, LearningObjectMatchSuggestion
+    from .content_generator import is_recap_section
+
+    # A summary restates several concepts, so it is never a version of one
+    # concept in another PDF (it scored close to *Solids* and *Gases* because
+    # it repeats them). It stays its own step.
+    if is_recap_section(title, section_title):
+        return None
     current_group_id = None
     if source_object_id:
         source = LearningObject.objects.filter(pk=source_object_id).first()
@@ -612,12 +792,27 @@ def semantic_decision(
     # and its examples), so a group is no longer disqualified for already
     # holding one of this material's objects. It must still teach the same
     # kind of content and come from confirmed files.
-    eligible_groups = {
+    usable_groups = {
         group_id for group_id, rows in members.items()
         if any(item.material_id != material.id for item in rows)
-        and all(item.kind == kind
-                and (item.material.generated_json or {}).get("learning_objects_confirmed")
+        and all((item.material.generated_json or {}).get("learning_objects_confirmed")
                 for item in rows)
+        # Nothing is paired into a summary's concept either.
+        and not any(is_recap_section(item.title, item.section_title) for item in rows)
+    }
+    eligible_groups = {
+        group_id for group_id in usable_groups
+        if all(item.kind == kind for item in members[group_id])
+    }
+    # ``unit_matching`` places a section, its diagram and its examples into one
+    # concept, so a concept that holds both kinds is expected -- and it answers
+    # the rule above for no kind at all: text is refused for the figure inside
+    # it, a figure for the text. That sealed it against every later PDF. An
+    # exact label may reach in; ordinary scoring still may not, because two
+    # AI-written figure descriptions score high on shared stock phrasing alone.
+    label_reachable_groups = {
+        group_id for group_id in usable_groups - eligible_groups
+        if any(item.kind == kind for item in members[group_id])
     }
     rejected_ids = set()
     if source_object_id:
@@ -627,8 +822,13 @@ def semantic_decision(
             status=LearningObjectMatchSuggestion.Status.REJECTED,
         ).values_list("source_learning_object_id", "candidate_learning_object_id"):
             rejected_ids.add(right if left == source_object_id else left)
-    eligible_groups -= {group_id for group_id, rows in members.items() if any(row.id in rejected_ids for row in rows)}
+    refused = {group_id for group_id, rows in members.items() if any(row.id in rejected_ids for row in rows)}
+    eligible_groups -= refused
     eligible_groups.discard(current_group_id)
+    # A pair the teacher rejected, and the concept this object is already in,
+    # stay out of reach of the label path too.
+    label_reachable_groups -= refused
+    label_reachable_groups.discard(current_group_id)
     candidates = [row for row in all_objects if row.group_id in eligible_groups and row.id != source_object_id]
     ranked = rank_groups(content, candidates, members, thresholds=config)
     normal_decision = None
@@ -672,12 +872,52 @@ def semantic_decision(
         content=content,
         kind=kind,
         all_objects=all_objects,
-        eligible_groups=eligible_groups,
+        eligible_groups=eligible_groups | label_reachable_groups,
+        members=members,
+        config=config,
+        started_at=start,
+    ) or _table_corroborated_decision(
+        source=source if source_object_id else None,
+        content=content,
+        kind=kind,
+        reachable_groups=eligible_groups | label_reachable_groups,
         members=members,
         config=config,
         started_at=start,
     )
-    if (
+    destination_figures = (
+        [
+            item for item in members[normal_decision["candidate"].group_id]
+            if item.kind == IMAGE_KIND
+        ]
+        if normal_decision
+        else []
+    )
+    image_can_corroborate = (
+        kind == IMAGE_KIND
+        and corroborated is None
+        and normal_decision
+        and normal_decision["confidence"] == "high"
+    )
+    caption_corroborated = image_can_corroborate and _captions_agree(
+        recorded_caption(source) if source_object_id and source else content,
+        destination_figures,
+    )
+    # The labels printed inside the picture are the author's too, so the same
+    # labels in both PDFs corroborate the match the way a caption does.
+    figure_text_corroborated = (
+        image_can_corroborate
+        and not caption_corroborated
+        and _figure_texts_agree(source if source_object_id else None, destination_figures)
+    )
+    if caption_corroborated:
+        # The author's own caption, word for word in both PDFs, is the label a
+        # generic "Figure 1" title cannot be. Stock phrasing is an AI-written
+        # description's problem; a caption is the author's, and specific.
+        normal_decision["evidence"].update(caption_corroborated=True)
+    elif figure_text_corroborated:
+        normal_decision["evidence"].update(figure_text_corroborated=True)
+    elif (
         kind == IMAGE_KIND
         and corroborated is None
         and normal_decision

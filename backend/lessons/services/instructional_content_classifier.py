@@ -282,6 +282,8 @@ def find_captioned_figure_regions(page, page_dict: dict | None = None) -> list[d
     text_blocks = []
     visual_rects = []
 
+    image_rects = []
+    drawing_rects = []
     for block in page_dict.get("blocks", []):
         bbox = block.get("bbox")
         if not bbox:
@@ -292,37 +294,58 @@ def find_captioned_figure_regions(page, page_dict: dict | None = None) -> list[d
             if text:
                 text_blocks.append({"text": text, "rect": rect})
         elif block.get("type") == 1:
-            visual_rects.append(rect)
+            image_rects.append(rect)
 
     get_drawings = getattr(page, "get_drawings", None)
     if callable(get_drawings):
         try:
-            visual_rects.extend(fitz.Rect(item["rect"]) for item in get_drawings() if item.get("rect"))
+            drawing_rects.extend(fitz.Rect(item["rect"]) for item in get_drawings() if item.get("rect"))
         except (RuntimeError, TypeError, ValueError):
             pass
 
-    usable_visuals = []
-    for rect in visual_rects:
-        area = max(rect.width, 0) * max(rect.height, 0)
-        if area <= 0 or area / page_area >= 0.75:
-            continue
-        usable_visuals.append(rect)
+    def usable(rects):
+        kept = []
+        for rect in rects:
+            area = max(rect.width, 0) * max(rect.height, 0)
+            if area <= 0 or area / page_area >= 0.75:
+                continue
+            kept.append(rect)
+        return kept
+
+    usable_images = usable(image_rects)
+    usable_drawings = usable(drawing_rects)
 
     regions = []
     captions = [
         item
         for item in text_blocks
-        if re.match(r"^\s*(?:figure|fig\.)\s*\d+\s*[.:]", item["text"], flags=re.IGNORECASE)
+        # "Figure 2:", "Figure 5A:", "Fig. 3B." -- modules letter related figures.
+        if re.match(r"^\s*(?:figure|fig\.?)\s*\d+[A-Za-z]?\s*[.:]", item["text"], flags=re.IGNORECASE)
+        and len(item["text"].split()) <= 20
     ]
-    for caption in captions:
-        caption_rect = caption["rect"]
-        nearby_visuals = [
+
+    def above_in_same_column(rects, caption_rect):
+        # A figure sits directly above its caption, in the same column. On a
+        # two-column page the text beside a figure, and a banner or frame
+        # higher up, are not part of it; counting them grew one crop over
+        # most of a page.
+        return [
             rect
-            for rect in usable_visuals
+            for rect in rects
             if rect.y0 < caption_rect.y0
             and rect.y1 <= caption_rect.y0 + 4
             and caption_rect.y0 - rect.y1 <= page_rect.height * 0.35
+            and min(rect.x1, caption_rect.x1) - max(rect.x0, caption_rect.x0) > 0
         ]
+
+    for caption in captions:
+        caption_rect = caption["rect"]
+        # A picture beats a drawn shape: page furniture -- banners, boxes,
+        # rules -- is drawn too, and is only the figure when nothing else is.
+        nearby_visuals = (
+            above_in_same_column(usable_images, caption_rect)
+            or above_in_same_column(usable_drawings, caption_rect)
+        )
         if not nearby_visuals:
             continue
 
@@ -355,12 +378,16 @@ def find_captioned_figure_regions(page, page_dict: dict | None = None) -> list[d
             min(page_rect.y1, crop_bbox.y1 + 5),
         )
 
+        # Labels printed on the figure belong to it. Only text lying inside
+        # the figure itself counts, and the crop never grows to take in more:
+        # growing to each block it touched then took in the next, until the
+        # "figure" was the whole page.
+        figure_area = fitz.Rect(visual_bbox.x0 - 4, visual_bbox.y0 - 4, visual_bbox.x1 + 4, visual_bbox.y1 + 4)
         contained_items = []
         for item in text_blocks:
             center = (item["rect"].x0 + item["rect"].x1) / 2, (item["rect"].y0 + item["rect"].y1) / 2
-            if crop_bbox.contains(fitz.Point(*center)):
+            if figure_area.contains(fitz.Point(*center)):
                 contained_items.append(item)
-                crop_bbox.include_rect(item["rect"])
         crop_bbox = fitz.Rect(
             max(page_rect.x0, crop_bbox.x0 - 4),
             max(page_rect.y0, crop_bbox.y0 - 4),
@@ -405,8 +432,18 @@ def extract_pdf_text_blocks(file_path: str) -> list[dict]:
                 bold_found = False
                 font_sizes = []
                 colors = []
+                # Words set upside down on the page (a line's writing direction
+                # points left). Printed answer keys are often turned over so a
+                # learner cannot read them by accident; lesson text never is.
+                upright_words = inverted_words = 0
                 for line in block.get("lines", []):
                     spans = line.get("spans", [])
+                    line_words = sum(len((span.get("text") or "").split()) for span in spans)
+                    direction = line.get("dir") or (1.0, 0.0)
+                    if float(direction[0]) < -0.9:
+                        inverted_words += line_words
+                    else:
+                        upright_words += line_words
                     line_text_segments = []
                     for span in spans:
                         span_text = span.get("text") or ""
@@ -462,6 +499,7 @@ def extract_pdf_text_blocks(file_path: str) -> list[dict]:
                         "page_width": float(page_rect.width) if page_rect is not None else None,
                         "page_height": float(page_rect.height) if page_rect is not None else None,
                         "is_figure_text": is_figure_text,
+                        "is_inverted": inverted_words > upright_words,
                     }
                 )
                 block_id += 1
@@ -522,6 +560,130 @@ def _is_overlapping_extraction_duplicate(block: dict, earlier_blocks: list[dict]
     return False
 
 
+# "Science · Lesson 1 · Grade 4", "Grade 8 English | Quarter 1, Week 2": a
+# title-page line naming where the lesson sits, not something it teaches.
+_NUMBERED_DOCUMENT_LABEL = re.compile(
+    r"\b(?:grade|quarter|week|module|lesson|unit|chapter|semester|term)\s*\d+\b",
+    re.IGNORECASE,
+)
+_LABEL_SEPARATOR = re.compile(r"[·|•]|\s[–—-]\s")
+
+
+def _is_document_label_line(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    return bool(
+        normalized
+        and len(normalized.split()) <= 12
+        and not re.search(r"[.!?]$", normalized)
+        and _NUMBERED_DOCUMENT_LABEL.search(normalized)
+        and _LABEL_SEPARATOR.search(normalized)
+    )
+
+
+_MAX_QUESTION_HEADING_WORDS = 10
+_MIN_ANSWERING_PARAGRAPH_WORDS = 8
+
+
+def _mark_question_headings(classified: list[dict]) -> list[dict]:
+    """A heading phrased as a question is a heading, not a quiz item.
+
+    "What is Point of View?" printed large and bold, with "Point of view is
+    the angle or perspective from which a story is told ..." under it, was
+    classified as an assessment because it ends with "?". That opened an
+    excluded section, and the paragraph defining point of view reached no
+    learner. A quiz question is followed by choices, blanks or more questions;
+    a question heading by the paragraph that answers it.
+    """
+    for index, block in enumerate(classified):
+        text = re.sub(r"\s+", " ", block.get("text") or "").strip()
+        if (
+            block.get("category") != "assessment"
+            or not text.endswith("?")
+            or len(text.split()) > _MAX_QUESTION_HEADING_WORDS
+            or int(block.get("line_count") or 1) != 1
+            or re.match(r"^\s*(?:\d+[.)]|[A-Da-d][.)]|q\d*\s*[:.]|question\b)", text, re.IGNORECASE)
+        ):
+            continue
+        following = next(
+            (item for item in classified[index + 1:] if (item.get("text") or "").strip()),
+            None,
+        )
+        if following is None or following.get("category") != "lesson_content":
+            continue
+        following_text = re.sub(r"\s+", " ", following.get("text") or "").strip()
+        font_size = float(block.get("font_size") or 0.0)
+        following_size = float(following.get("font_size") or 0.0)
+        emphasized = bool(block.get("is_bold")) or bool(
+            font_size and following_size and font_size > following_size + 0.5
+        )
+        if (
+            emphasized
+            and len(following_text.split()) >= _MIN_ANSWERING_PARAGRAPH_WORDS
+            and "?" not in following_text
+            and not re.search(r"_{3,}", following_text)
+        ):
+            block.update(
+                category="lesson_content",
+                reason="Question-form heading answered by the paragraph under it.",
+                include_in_narration=True,
+                question_heading=True,
+            )
+    return classified
+
+
+def _mark_title_block(classified: list[dict]) -> list[dict]:
+    """Keep a document's title block out of its first concept.
+
+    The top of a first page is the title, then a subtitle ("Solid, Liquid, and
+    Gas") and labels, then the lesson. Those short lines are uncertain on
+    their own, and the builder attached them to the first concept, so the
+    learner heard the subtitle before the lesson began. A short line is part
+    of the title block when it follows another short heading-like line and
+    no paragraph has started yet.
+    """
+    pages = [block.get("page") for block in classified if block.get("page") is not None]
+    if not pages:
+        return classified
+    first_page = min(pages)
+    seen_title = False
+    for block in classified:
+        if block.get("page") != first_page:
+            break
+        text = re.sub(r"\s+", " ", block.get("text") or "").strip()
+        if not text:
+            continue
+        is_short_line = len(text.split()) <= 8 and not re.search(r"[.!?]$", text)
+        if not is_short_line:
+            if block.get("category") in {"lesson_content", "needs_review"}:
+                break  # the first paragraph: the title block is over
+            continue
+        if seen_title and block.get("category") == "needs_review":
+            block.update(
+                category="document_metadata",
+                reason="Subtitle in the document's title block, above the first paragraph.",
+                include_in_narration=False,
+            )
+        elif not seen_title:
+            # Title and subtitle printed as one block ("States of Matter" over
+            # "Solid, Liquid, and Gas"): the first line names the lesson, the
+            # rest is the subtitle.
+            lines = [line.strip() for line in (block.get("text") or "").splitlines() if line.strip()]
+            if len(lines) >= 2:
+                block["text"] = lines[0]
+                block["title_block_lines"] = lines[1:]
+                block["line_count"] = 1
+                if block.get("category") == "needs_review":
+                    # Alone, the first line is the lesson's heading; it was
+                    # only uncertain while the subtitle was attached to it.
+                    block.update(
+                        category="lesson_content",
+                        reason="Document title, its subtitle set aside.",
+                        include_in_narration=True,
+                    )
+        seen_title = True
+    return classified
+
+
 def _deterministic_category(block: dict) -> tuple[str, str, float] | None:
     text = block.get("text", "").strip()
     lowered = text.lower()
@@ -570,6 +732,8 @@ def _deterministic_category(block: dict) -> tuple[str, str, float] | None:
         return "concept_metadata", "Vocabulary-section introduction, not a concept explanation.", 0.96
     if lowered.startswith(("module ", "grade ", "lesson ", "course ", "author:", "date:", "filename:")) and len(text) < 120:
         return "document_metadata", "Administrative document label.", 0.86
+    if _is_document_label_line(text):
+        return "document_metadata", "Subject, lesson or grade label.", 0.9
     if _is_symbolic_relationship(text):
         return "lesson_content", "Compact symbolic relationship retained as instructional content.", 0.9
     if re.match(r"^\s*[•●▪\-*]\s*\S", text):
@@ -641,7 +805,14 @@ def classify_instructional_blocks(blocks: list[dict], batch_size: int = 20) -> l
                 0.65 if is_instructional else 0.4,
             )
 
-    return [classified_by_id[block["block_id"]] for block in blocks if block["block_id"] in classified_by_id]
+    classified = _mark_question_headings(_mark_title_block(
+        [classified_by_id[block["block_id"]] for block in blocks if block["block_id"] in classified_by_id]
+    ))
+    # One block at a time cannot see that a line sits on a credits page or an
+    # upside-down answer key; the page-level pass can.
+    from .page_roles import apply_page_roles
+
+    return apply_page_roles(blocks, classified)
 
 
 def detect_instructional_document_role(classified_blocks: list[dict]) -> str:

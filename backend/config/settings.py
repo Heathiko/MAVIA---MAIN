@@ -3,6 +3,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import dj_database_url
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -73,17 +74,50 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-        # course's variant generation fans Ollama calls across a thread pool
-        # (ADAPTIVE_VARIANT_CONCURRENCY) with writes still serialized to this
-        # thread; a longer SQLite lock timeout avoids spurious "database is
-        # locked" errors under that pattern.
-        "OPTIONS": {"timeout": 20},
+# Set DATABASE_URL to run on PostgreSQL, e.g.
+#   postgres://postgres:postgres@localhost:5432/mavia_db
+# Left unset, this falls back to the original SQLite file so a checkout without
+# a local PostgreSQL server still runs.
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+if DATABASE_URL:
+    DATABASES = {
+        "default": dj_database_url.parse(
+            DATABASE_URL,
+            # Reuse connections instead of reconnecting per request; course's
+            # variant generation opens one per worker thread.
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+            # course's variant generation fans Ollama calls across a thread pool
+            # (ADAPTIVE_VARIANT_CONCURRENCY) with writes still serialized to this
+            # thread; a longer SQLite lock timeout avoids spurious "database is
+            # locked" errors under that pattern.
+            #
+            # The timeout alone is not enough. Django's default DEFERRED
+            # transaction reads first and asks for the write lock only on its
+            # first write; when two connections do that at once SQLite fails one
+            # of them immediately, without waiting. Measured 2026-09-27: an upload
+            # failed with "database is locked" while a page load wrote version
+            # selections. IMMEDIATE takes the write lock at BEGIN, so a second
+            # writer queues for the timeout instead. WAL lets page loads read
+            # while an upload writes.
+            #
+            # These apply to the SQLite fallback only; PostgreSQL above needs
+            # none of them.
+            "OPTIONS": {
+                "timeout": 20,
+                "transaction_mode": "IMMEDIATE",
+                "init_command": "PRAGMA journal_mode=WAL;",
+            },
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -120,6 +154,29 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://localhost:\d+$",
     r"^http://127\.0\.0\.1:\d+$",
+]
+
+# CORS says which origins the *browser* may read a response from. This says
+# which origins Django will accept an unsafe request from, and the two are
+# separate checks -- passing CORS does not get you past CSRF.
+#
+# It matters here because DRF's SessionAuthentication enforces CSRF whenever a
+# session cookie identifies an active user (rest_framework/authentication.py:
+# "Unauthenticated, CSRF validation not required"). The web app is served from
+# :5173 and the API from :8000, so the Origin never matches the API's own host.
+# Nothing goes wrong until someone opens Django admin in the same browser --
+# that sets a session cookie, and from then on every write from the web app
+# fails with "CSRF Failed: Origin checking failed", *including registration*,
+# which is otherwise AllowAny. Seen 2026-09-22 straight after a
+# `createsuperuser` and an admin login; it looks like a broken sign-up form and
+# is not.
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CSRF_TRUSTED_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
 ]
 
 REST_FRAMEWORK = {
@@ -247,6 +304,35 @@ QUESTION_LLM_MODEL = os.getenv("QUESTION_LLM_MODEL", "llama3.2:3b")
 QUESTION_LLM_KEEP_ALIVE = os.getenv("QUESTION_LLM_KEEP_ALIVE", "30m")
 QUESTION_OVERGENERATION_FACTOR = float(
     os.getenv("QUESTION_OVERGENERATION_FACTOR", "1.0")
+)
+
+# Corrective-RAG grounding gate for generated questions
+# (question_generation/services/grounding.py). Every draft is checked against
+# the topic's own PDF text before it can become a final question.
+QUESTION_VALIDATION_ENABLED = os.getenv(
+    "QUESTION_VALIDATION_ENABLED", "True"
+).lower() in {"1", "true", "yes"}
+# Passages retrieved per draft. Three is enough to carry the one sentence a
+# question turns on plus its neighbours; more mostly dilutes the judge prompt.
+QUESTION_VALIDATION_TOP_K = int(os.getenv("QUESTION_VALIDATION_TOP_K", "3"))
+# Content words a draft may use that appear nowhere in the topic's materials.
+# Zero is the honest default for a lesson written for young learners: the
+# question should speak the lesson's own vocabulary. Raise it if a curriculum
+# legitimately expects outside terminology.
+QUESTION_VALIDATION_MAX_NOVEL_TERMS = int(
+    os.getenv("QUESTION_VALIDATION_MAX_NOVEL_TERMS", "0")
+)
+# Corrective passes after the first. Each one is a full set of LLM calls, so
+# this trades run time for bank completeness; the loop stops early once the
+# quota is met.
+QUESTION_VALIDATION_MAX_RETRIES = int(
+    os.getenv("QUESTION_VALIDATION_MAX_RETRIES", "1")
+)
+# The judging model. Deliberately separate from QUESTION_LLM_MODEL so the
+# judge can be a different (or larger) model than the generator.
+QUESTION_JUDGE_MODEL = os.getenv("QUESTION_JUDGE_MODEL", QUESTION_LLM_MODEL)
+QUESTION_JUDGE_TIMEOUT = int(
+    os.getenv("QUESTION_JUDGE_TIMEOUT", str(OLLAMA_TIMEOUT))
 )
 
 # Quiet the dev server's per-request access log; application diagnostics use

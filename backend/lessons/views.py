@@ -17,7 +17,9 @@ from course.models import LessonVariant
 from course.bulk_version_generation import classify_all_source_versions
 from course.services import sync_course_outline
 from course.variant_generator import (
+    NORMAL_FALLBACK_GENERATOR,
     _fingerprint as version_fingerprint,
+    fill_missing_bundle_slots,
     fill_missing_slots,
     generate_standalone_variants,
 )
@@ -37,6 +39,7 @@ from .services.concept_bundles import (
     bundles_for_group,
     material_order,
 )
+from .services.concept_titles import display_titles
 
 from .models import (
     CourseGroup,
@@ -116,9 +119,12 @@ logger = logging.getLogger(__name__)
 def _active_topic_run(outline_node, *, stale_after=timedelta(minutes=30)):
     """Return a live topic run and close runs that stopped reporting progress."""
     cutoff = timezone.now() - stale_after
+    # A run with a finish time has ended, whatever its status says: a worker
+    # that died mid-failure could save the time but not the status.
     for run in GenerationRun.objects.filter(
         outline_node=outline_node,
         status="running",
+        finished_at__isnull=True,
     ).order_by("-id"):
         latest_event = run.events.order_by("-created_at").first()
         last_activity = latest_event.created_at if latest_event else run.started_at
@@ -167,11 +173,22 @@ def _run_topic_publish_in_background(run_id, course_id, node_id, set_confirmed):
         run.status = "finished"
     except Exception as exc:  # a failed publish must not leave the run "running" forever
         logger.exception("Publish run %s failed", run_id)
-        record("publish_failed", str(exc))
+        # Status first: recording the event writes too, and when the failure
+        # was the database itself ("database is locked") that write fails as
+        # well -- which used to skip this line and save the run as "running".
         run.status = "failed"
+        _record_failure(record, "publish_failed", exc, run_id)
     finally:
         run.finished_at = timezone.now()
         run.save(update_fields=["status", "finished_at"])
+
+
+def _record_failure(record, event_type, exc, run_id):
+    """Record why a run failed, without letting that write fail the run's close."""
+    try:
+        record(event_type, str(exc))
+    except Exception:
+        logger.exception("Could not record the failure of run %s", run_id)
 
 
 def _run_all_versions_in_background(run_id, node_id):
@@ -193,8 +210,9 @@ def _run_all_versions_in_background(run_id, node_id):
         run.status = "finished"
     except Exception as exc:
         logger.exception("Bulk version run %s failed", run_id)
-        record("versions_bulk_failed", str(exc))
+        # Status first; see _run_topic_publish_in_background.
         run.status = "failed"
+        _record_failure(record, "versions_bulk_failed", exc, run_id)
     finally:
         run.finished_at = timezone.now()
         run.save(update_fields=["status", "finished_at"])
@@ -301,6 +319,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         }
 
         groups = []
+        # (group, members) per concept shown, for titles built once at the end:
+        # a concept's title depends on whether a sibling shares its name.
+        titled = []
         for group in group_queryset:
             learning_objects = [
                 item
@@ -309,6 +330,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             ]
             if not learning_objects:
                 continue
+            titled.append((group, learning_objects))
             version_state = assign_group_versions(group)
             group_bundles = bundles_for_group(group)
             # Shown per PDF. Built from the same rows as the flat list -- only
@@ -448,6 +470,15 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                             }
                             for row in rows
                         ],
+                        # No generated version passed the quality check, so this
+                        # level holds the Normal text (BUG-002). Publishing is
+                        # not held back; the teacher is told, and may write an
+                        # explanation of their own, which clears the warning.
+                        "fallback": any(
+                            row.generator_model == NORMAL_FALLBACK_GENERATOR
+                            and row.assigned_by != LessonVariant.AssignedBy.TEACHER
+                            for row in rows
+                        ),
                         # Written from different text than the object has now.
                         # Publishing refuses these until a teacher checks them.
                         "stale": any(
@@ -507,6 +538,22 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     ).data,
                 }
             )
+        title_entries = [
+            (
+                group,
+                members,
+                min(
+                    (order_index.get(item.material_id, len(order_index)), item.order, item.id)
+                    for item in members
+                ),
+            )
+            for group, members in titled
+        ]
+        titles = display_titles(title_entries)
+        for entry in groups:
+            # Display only: "label" stays the stored name every edit uses.
+            entry["display_title"] = titles.get(entry["id"], entry["label"])
+
         payload = {
             "grouping_warnings": [
                 material.generated_json["grouping_warning"]
@@ -546,14 +593,6 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             "question_count": len(all_questions),
             "suggestion_count": len(payload["match_suggestions"]),
         }
-        logger.info(
-            "Learning-resource payload: node=%s duration_ms=%.1f groups=%s questions=%s suggestions=%s",
-            node.id,
-            elapsed_ms,
-            len(groups),
-            len(all_questions),
-            len(payload["match_suggestions"]),
-        )
         return payload
 
     def _refresh_relationship_snapshots(self, materials, *, recompute=True):
@@ -1647,12 +1686,29 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             learning_object = LearningObject.objects.get(
                 pk=version_state["representative_id"],
             )
-        result = fill_missing_slots(
-            learning_object,
-            target_slots=[requested_slot] if requested_slot else None,
-            # The teacher's "Regenerate" on an out-of-date version.
-            replace_stale=bool(request.data.get("replace_stale")),
-        )
+        replace_stale = bool(request.data.get("replace_stale"))
+        target_slots = [requested_slot] if requested_slot else None
+        if learning_object.group_id:
+            # A concept's Normal version can be several objects of one PDF -- a
+            # comparison section written as Shape, Volume, Particle arrangement
+            # and Flow. The screen shows a slot as written only once every one
+            # of them has a version, so generating for the representative alone
+            # wrote one row of four and left the slot unfillable: the next press
+            # found that object already done and wrote nothing. The bulk path
+            # has always used the bundle-aware generator; this button now does
+            # too, which also stops it writing over a role a PDF supplies.
+            result = fill_missing_bundle_slots(
+                learning_object.group,
+                target_slots=target_slots,
+                replace_stale=replace_stale,
+            )
+        else:
+            result = fill_missing_slots(
+                learning_object,
+                target_slots=target_slots,
+                # The teacher's "Regenerate" on an out-of-date version.
+                replace_stale=replace_stale,
+            )
         payload = self._learning_resources_payload(node, request)
         payload["version_generation"] = {
             "learning_object_id": learning_object.id,
@@ -2355,10 +2411,14 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        image_result = populate_missing_image_descriptions(material)
         self._set_learning_objects_confirmed(material, True)
         response = self._serialize_course_detail(course, request)
-        response.data["image_description_generation"] = image_result
+        response.data["image_description_generation"] = {
+            "generated_count": 0,
+            "generated_learning_object_ids": [],
+            "errors": [],
+            "deferred": True,
+        }
         return response
 
     @action(

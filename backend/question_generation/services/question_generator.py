@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 QUESTION_GENERATOR_VERSION = 2
 QUESTION_TEMPERATURE = 0.7
 QUESTION_NUM_PREDICT = 2048
+# How many parseable-but-unusable replies to accept before giving up on a
+# call. See the comment in generate_questions: the third attempt almost never
+# rescues one, and each is a full LLM round trip.
+MAX_UNUSABLE_REPLIES = 2
 _warm_lock = threading.Lock()
 _warm_model = ""
 _warm_until = 0.0
@@ -40,9 +44,26 @@ def _mark_question_model_warm():
 # that ordinary prompt drift stays inside the intended bucket, so the pipeline
 # no longer regenerates to correct it.
 
+# The grounding rule, shared by both thinking orders. Worded after
+# course/variant_generator.py, which has carried the same prohibition since
+# the version generator was written and does not drift off-source the way
+# this one did. Stated as a prohibition, not an invitation: "answerable from
+# the content" told the model what a good question looks like and left it
+# free to use anything it knew.
+_GROUNDING_RULE = (
+    "Use ONLY the facts stated in the content below. Do not add facts, "
+    "terms, examples, numbers, causes or categories the content does not "
+    "state, even if you know them to be true. If the content does not "
+    "settle something, do not ask about it.\n"
+    "Every choice must use words and ideas from the content. A wrong choice "
+    "must be wrong because the content says otherwise, not because it names "
+    "something the lesson never mentions.\n"
+)
+
 PROMPT_TEMPLATES = {
     "LOT": (
         "You are a quiz maker. Given the content below, generate {count} questions.\n"
+        + _GROUNDING_RULE +
         "Each question must be answerable DIRECTLY from the content. Ask the learner to "
         "recall a stated fact, show they understand what a concept means, or use a stated "
         "rule in a straightforward case.\n"
@@ -58,11 +79,13 @@ PROMPT_TEMPLATES = {
     ),
     "HOT": (
         "You are a quiz maker. Given the content below, generate {count} questions.\n"
-        "Each question must require reasoning BEYOND recall or direct application. Ask the "
-        "learner to break an idea into parts, compare or differentiate two concepts, work "
-        "out a cause-and-effect relationship, or judge and justify which option is more "
-        "appropriate and why.\n"
-        "Do NOT ask for a fact that is stated word-for-word in the content.\n"
+        + _GROUNDING_RULE +
+        "Each question must require reasoning BEYOND recall or direct application. Build "
+        "it by asking the learner to combine two or more facts the content states: "
+        "compare two things it describes, work out a cause and effect it implies, or "
+        "judge which of two stated options fits a situation.\n"
+        "The answer must follow from the stated facts. Do not ask about a cause, "
+        "comparison or consequence the content gives you no facts for.\n"
         "The question must still have ONE defensible correct answer.\n\n"
         "{examples}\n\n"
         "{format_request}\n\n"
@@ -95,7 +118,11 @@ FEW_SHOT_EXAMPLES = {
 FORMAT_INSTRUCTIONS = {
     "MCQ": (
         "Each question must have exactly 4 choices (A, B, C, D). "
-        "Only one choice is correct. Distractors should be plausible."
+        "Only one choice is correct. Each wrong choice must name a specific "
+        "misconception a learner could hold about THIS content -- something "
+        "the content shows to be wrong. Do not invent an option the lesson "
+        "never mentions: an unfamiliar word is not a distractor, it is a "
+        "giveaway."
     ),
     "TF": (
         "Each question must be a clear statement that is either True or False. "
@@ -163,37 +190,88 @@ def _ollama_metrics(data):
     }
 
 
+def _multiple_choice_shape():
+    """One whole multiple-choice item: a stem, four named options, a letter."""
+    text = {"type": "string"}
+    return {
+        "type": "object",
+        "properties": {
+            "question": text,
+            "format": {"type": "string", "enum": ["MCQ"]},
+            "choices": {
+                "type": "object",
+                "properties": {k: text for k in ("A", "B", "C", "D")},
+                "required": ["A", "B", "C", "D"],
+            },
+            # Constrained at decode time so an out-of-range answer cannot be
+            # emitted. It does not stop a *wrong* letter -- "D" is legal even
+            # when D says "plasma" -- which is what _validate_question and the
+            # CRAG gate are for.
+            "correct_answer": {"type": "string", "enum": ["A", "B", "C", "D"]},
+            "explanation": text,
+        },
+        # The explanation is required so the model has to state why its answer
+        # follows from the content. A model that cannot write one usually could
+        # not ground the question either.
+        "required": ["question", "format", "choices", "correct_answer", "explanation"],
+    }
+
+
+def _true_false_shape():
+    """One whole true/false item. It has no ``choices`` field at all.
+
+    Deliberately absent rather than optional: a field the model is never
+    offered is one it cannot fill with null.
+    """
+    text = {"type": "string"}
+    return {
+        "type": "object",
+        "properties": {
+            "question": text,
+            "format": {"type": "string", "enum": ["TF"]},
+            "correct_answer": {"type": "string", "enum": ["True", "False"]},
+            "explanation": text,
+        },
+        "required": ["question", "format", "correct_answer", "explanation"],
+    }
+
+
 def build_response_schema(format_split):
     """JSON schema handed to Ollama so the response cannot be malformed.
 
-    Constraining the shape at decode time is what makes a single call able to
-    return a mix of multiple-choice and true/false questions: the parser no
-    longer has to gamble on the model closing its JSON correctly.
+    Ollama compiles this into a grammar that constrains decoding token by
+    token, so the shape is not checked after the fact -- it cannot be written
+    wrong in the first place. That is what lets one call return a mix of
+    multiple-choice and true/false questions.
 
-    ``choices`` is deliberately optional -- a true/false item has none, and
-    requiring it would make every one of them violate the schema.
+    Every item must match one *whole* shape, via ``anyOf``. A single merged
+    shape had to leave ``choices`` optional, because a true/false item has
+    none -- and optional told the model it could skip the options. It skipped
+    them every time: measured on concept 532, an MCQ-only call returned three
+    questions and none survived validation, each with ``choices: null``. HOT
+    was the worst hit, being multiple-choice only, so every HOT call produced
+    nothing usable and its questions arrived only as LOT-call output the Bloom
+    classifier happened to relabel.
+
+    Only the requested formats are offered. The model reaches for true/false
+    when left free -- asked for two multiple-choice and one true/false, it
+    returned three true/false -- and a true/false question a learner can guess
+    right half the time is weak evidence of mastery. Pinning the shapes keeps
+    the mix the distribution asked for.
+
+    ``anyOf`` support depends on the model's grammar conversion. Verified on
+    llama3.2:3b; re-test before trusting it on another model.
     """
-    formats = [fmt for fmt in SUPPORTED_FORMATS if format_split.get(fmt)]
-    letter = {"type": "string"}
+    shapes = {"MCQ": _multiple_choice_shape, "TF": _true_false_shape}
+    offered = [
+        shapes[fmt]() for fmt in SUPPORTED_FORMATS if format_split.get(fmt)
+    ] or [shapes[fmt]() for fmt in SUPPORTED_FORMATS]
     return {
         "type": "object",
         "properties": {
             "questions": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question": {"type": "string"},
-                        "format": {"type": "string", "enum": formats or list(SUPPORTED_FORMATS)},
-                        "choices": {
-                            "type": "object",
-                            "properties": {k: letter for k in ("A", "B", "C", "D")},
-                        },
-                        "correct_answer": {"type": "string"},
-                        "explanation": {"type": "string"},
-                    },
-                    "required": ["question", "format", "correct_answer"],
-                },
+                "items": {"anyOf": offered},
             },
         },
         "required": ["questions"],
@@ -210,9 +288,16 @@ def _format_request(format_split):
     return "Formats: " + ", ".join(parts) + " question(s), in that mix."
 
 
-def _build_prompt(content, thinking_order, format_split):
+def _build_prompt(content, thinking_order, format_split, correction=""):
+    """The generation prompt, optionally carrying a corrective retry's feedback.
+
+    ``correction`` is written by the grounding gate (services/grounding.py)
+    when a previous attempt produced questions the source does not support. It
+    goes *after* the content and before the output contract, so the model reads
+    the material first and the specific mistakes to avoid last.
+    """
     formats = [fmt for fmt in SUPPORTED_FORMATS if format_split.get(fmt)]
-    return PROMPT_TEMPLATES[thinking_order].format(
+    prompt = PROMPT_TEMPLATES[thinking_order].format(
         count=sum(format_split.values()),
         content=content,
         format_request=_format_request(format_split),
@@ -220,36 +305,80 @@ def _build_prompt(content, thinking_order, format_split):
         question_schema=", ".join(QUESTION_SCHEMA[fmt] for fmt in formats),
         examples=FEW_SHOT_EXAMPLES[thinking_order],
     )
+    if correction:
+        marker = "\n\nRespond ONLY with valid JSON"
+        head, sep, tail = prompt.partition(marker)
+        return f"{head}\n\n{correction}{sep}{tail}" if sep else f"{prompt}\n\n{correction}"
+    return prompt
+
+
+# A true/false item is a statement the learner judges, so an open question is
+# not one: "True" answers nothing about "what is the shape of the particles?".
+#
+# Two markers, because neither alone is enough. A trailing question mark is the
+# reliable one -- measured on topic 276, Q108 read "In the arrangement that
+# shows particles close together but able to move, what is the shape of the
+# particles?", whose interrogative sits mid-sentence behind a subordinate
+# clause, so nothing about its first word gives it away. The opener list then
+# catches a stem the model wrote without punctuation.
+#
+# Containing a wh-word is deliberately not a marker: "Water takes the shape of
+# whatever container holds it" is a perfectly good statement.
+_OPEN_QUESTION_OPENERS = (
+    "what", "which", "how", "why", "who", "whom", "where", "when",
+)
 
 
 def _validate_question(q, format_type):
-    """Structural validation — reject hallucinated answers before they enter
-    the bank (e.g. an MCQ whose correct_answer is 'A, B, C and D').
-    Normalizes correct_answer in place when it can be recovered."""
-    if "question" not in q or "correct_answer" not in q:
+    """Reject a question that is structurally unusable, whatever it says.
+
+    Correctness is not decidable here -- that needs the source text, and is
+    what services/grounding.py does. This checks only what the question
+    itself settles, and normalises ``correct_answer`` in place when it can.
+    """
+    question_text = str(q.get("question") or "").strip()
+    if not question_text or "correct_answer" not in q:
         return False
 
     answer = str(q["correct_answer"]).strip()
+    if not answer:
+        return False
 
     if format_type == "MCQ":
         choices = q.get("choices")
         if not isinstance(choices, dict) or not choices:
             return False
+
+        texts = [str(text).strip() for text in choices.values()]
+        # A blank option is unreadable aloud, and a repeated one means the
+        # learner either cannot be wrong or cannot be right.
+        if any(not text for text in texts):
+            return False
+        if len({text.casefold() for text in texts}) != len(texts):
+            return False
+        if len(texts) < 2:
+            return False
+
         if answer in choices:
             q["correct_answer"] = answer
             return True
-        # LLM sometimes answers with the choice text instead of the letter
+        # The model often answers with the choice text instead of the letter.
         for letter, text in choices.items():
-            if str(text).strip().lower() == answer.lower():
+            if str(text).strip().casefold() == answer.casefold():
                 q["correct_answer"] = letter
                 return True
         return False
 
     # TF
-    if answer.lower() in ("true", "false"):
-        q["correct_answer"] = answer.capitalize()
-        return True
-    return False
+    if answer.lower() not in ("true", "false"):
+        return False
+    if question_text.rstrip().endswith("?"):
+        return False
+    first_word = question_text.split()[0].strip("\"'([{").casefold()
+    if first_word in _OPEN_QUESTION_OPENERS:
+        return False
+    q["correct_answer"] = answer.capitalize()
+    return True
 
 
 def _extract_question_objects(text):
@@ -436,6 +565,7 @@ def generate_questions(
     format_split,
     max_retries=3,
     on_metrics=None,
+    correction="",
 ):
     """
     Generate one thinking order's questions in a single LLM call.
@@ -449,13 +579,23 @@ def generate_questions(
         thinking_order: "LOT" or "HOT" — which prompt to steer with
         format_split:   {"MCQ": 2, "TF": 1} — how many of each kind to ask for
         max_retries:    retry on JSON parse failures
+        correction:     grounding feedback from a rejected previous attempt,
+                        appended to the prompt (see services/grounding.py)
 
     Returns:
         list of question dicts, each labelled with the format it actually is
     """
-    prompt = _build_prompt(content, thinking_order, format_split)
+    prompt = _build_prompt(content, thinking_order, format_split, correction)
     schema = build_response_schema(format_split)
 
+    # A reply that parses but yields nothing usable gets one more try, not the
+    # full budget. Measured on topic 276: 74 calls exhausted all three
+    # attempts with zero JSON parse failures -- the model had written
+    # something structurally unusable every time, and a third round of the
+    # same prompt at the same temperature almost never rescues that. Malformed
+    # JSON keeps the full budget below: that is a transport failure, not the
+    # model being unable to write the question.
+    unusable_replies = 0
     for attempt in range(max_retries):
         try:
             raw_text = _ollama_generate(prompt, schema=schema, on_metrics=on_metrics)
@@ -476,6 +616,10 @@ def generate_questions(
 
             if validated:
                 return validated
+
+            unusable_replies += 1
+            if unusable_replies >= MAX_UNUSABLE_REPLIES:
+                break
 
         except (json.JSONDecodeError, ValueError) as e:
             print(f"  Attempt {attempt + 1}/{max_retries} failed: {e}")

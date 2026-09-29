@@ -157,6 +157,25 @@ class SemanticIntegrationTests(TestCase):
     def decision(self):
         return _match_decision(self.material, self.source.title, self.source.content, "text", 0, source_object_id=self.source.id)
 
+    @patch.dict(os.environ, {"SEMANTIC_GROUPING_MODE": "auto"})
+    def test_unconfirmed_material_does_not_initialize_semantic_models(self):
+        self.material.generated_json = {"learning_objects_confirmed": False}
+        self.material.save(update_fields=["generated_json"])
+        pending = LearningObjectMatchSuggestion.objects.create(
+            outline_node=self.topic,
+            source_learning_object=self.source,
+            candidate_learning_object=self.candidate,
+            confidence="medium",
+            status="pending",
+        )
+
+        with patch.object(semantic, "runtime") as runtime, patch.object(semantic, "policy") as policy:
+            refresh_learning_object_match_suggestions(self.material)
+
+        runtime.assert_not_called()
+        policy.assert_not_called()
+        self.assertFalse(LearningObjectMatchSuggestion.objects.filter(pk=pending.pk).exists())
+
     @patch.dict(os.environ, {"SEMANTIC_GROUPING_MODE": "review", "SEMANTIC_GROUPING_CALIBRATION": ""})
     def test_review_mode_never_auto_groups(self):
         with patch.object(semantic, "runtime", return_value=FakeRuntime()):

@@ -58,7 +58,7 @@ def refresh_prerequisites(node, concepts=None, runtime_instance=None):
             if pair in decided_pairs:
                 # The teacher's call stands; refresh only the explanation.
                 row = existing[pair]
-                row.evidence = decision["votes"]
+                row.evidence = decision["evidence"]
                 row.cross_section = decision["cross_section"]
                 row.save(update_fields=["evidence", "cross_section", "updated_at"])
                 continue
@@ -69,7 +69,7 @@ def refresh_prerequisites(node, concepts=None, runtime_instance=None):
                 status=decision["verdict"],
                 source=ConceptPrerequisite.Source.DERIVED,
                 cross_section=decision["cross_section"],
-                evidence=decision["votes"],
+                evidence=decision["evidence"],
             )
 
     counts = {"accepted": 0, "pending": 0, "teacher_decided": len(decided_pairs)}

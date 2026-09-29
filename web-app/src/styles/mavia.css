@@ -169,11 +169,12 @@
   color: #fff;
 }
 .mv-brand__dot {
-  width: 10px;
-  height: 10px;
+  display: block;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
   border-radius: 50%;
-  background: var(--mv-brand-400);
-  box-shadow: 0 0 0 4px rgba(95, 160, 224, 0.28);
+  object-fit: cover;
 }
 .mv-nav__links {
   display: flex;

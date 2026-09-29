@@ -12,6 +12,7 @@ from lessons.models import (
     OutlineNode,
 )
 
+from .testing import without_measurements
 from .models import LessonVariant
 from .version_assignment import (
     assign_group_versions,
@@ -34,6 +35,7 @@ MIDDLING = "A solid keeps its shape. The particles are packed closely. It will n
 
 class VersionAssignmentTests(TestCase):
     def setUp(self):
+        without_measurements(self)
         self.course = CourseGroup.objects.create(title="Grade 1 Science")
         self.node = OutlineNode.objects.create(
             course=self.course, title="Matter", order=0, depth=0
@@ -156,21 +158,157 @@ class VersionAssignmentTests(TestCase):
         self.assertEqual(refreshed["representative_id"], first.id)
         classify.assert_called_once()
 
-    @patch("course.version_assignment.classify_group_versions")
-    def test_llm_classification_is_applied_when_readability_disagrees(self, classify):
+    # Changed 2026-09-29: Gemma decides; measurements of the two texts check the
+    # label (content_measures). Measurements are patched here so these tests
+    # check the decision code; MeasuredCheckTests below uses the real encoder.
+
+    def _row(self, slot, confidence=0.9, problems=()):
+        return {
+            "slot": slot, "confidence": confidence, "reason": "Model reason.",
+            "evidence": {"simplifications": [], "additions": [], "problems": list(problems)},
+        }
+
+    def _measures(self, facts_kept=True, adds_content=False, easier=True):
+        return patch(
+            "course.content_measures.measure_versions",
+            return_value={
+                "facts_kept": facts_kept, "adds_content": adds_content, "easier": easier,
+                "mean_coverage": 0.8, "novel_sentences": int(adds_content), "dale_chall_change": -1.0,
+            },
+        )
+
+    def _assign(self, classify, row, **measures):
         first = self._object(self._material("PDF one", 0), SHORT)
         second = self._object(self._material("PDF two", 5), LONG)
         classify.return_value = {
             first.id: {"slot": "ORIGINAL", "confidence": 0.93, "reason": "Balanced."},
-            second.id: {"slot": "SIMPLIFIED", "confidence": 0.99, "reason": "Model guess."}
+            second.id: row,
         }
+        with self._measures(**measures):
+            return second, assign_group_versions(self.group, use_llm=True)
 
-        result = assign_group_versions(self.group, use_llm=True)
+    @patch("course.version_assignment.classify_group_versions")
+    def test_a_simplified_label_the_measurements_support_is_stored(self, classify):
+        second, result = self._assign(classify, self._row("SIMPLIFIED"), adds_content=False, easier=True)
 
-        self.assertEqual(result["needs_confirmation"], [])
-        self.assertEqual(result["assigned"][0]["slot"], "SIMPLIFIED")
-        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
         self.assertEqual(result["bundle_roles"], {second.material_id: "SIMPLIFIED"})
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_simplified_that_keeps_the_facts_and_adds_content_is_stored_as_elaborated(self, classify):
+        """The observed failure, corrected by the overlap rule: Gemma called PDF 2's
+        Solid section Simplified although it adds characteristics and examples."""
+        second, result = self._assign(classify, self._row("SIMPLIFIED"), adds_content=True, easier=False)
+
+        self.assertEqual(result["bundle_roles"], {second.material_id: "ELABORATED"})
+        assigned = result["assigned"][0]
+        self.assertEqual(assigned["llm_slot"], "SIMPLIFIED")
+        self.assertIn("relabelled_simplified_as_elaborated", assigned["review_concerns"])
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_simplified_that_adds_content_but_drops_facts_is_not_stored(self, classify):
+        second, result = self._assign(classify, self._row("SIMPLIFIED"), facts_kept=False, adds_content=True)
+
+        self.assertEqual(result["bundle_roles"], {})
+        self.assertIn("facts_not_kept", result["kept_as_own_step"][0]["review_issues"])
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_a_reported_problem_is_never_corrected_into_a_role(self, classify):
+        second, result = self._assign(
+            classify, self._row("SIMPLIFIED", problems=["contradicts the original"]), adds_content=True,
+        )
+
+        self.assertEqual(result["bundle_roles"], {})
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_nothing_is_ever_corrected_into_simplified(self, classify):
+        second, result = self._assign(classify, self._row("ELABORATED"), adds_content=False, easier=True)
+
+        self.assertEqual(result["bundle_roles"], {})
+        self.assertEqual(result["kept_as_own_step"][0]["review_issues"], ["elaborated_but_adds_nothing"])
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_simplified_that_is_not_easier_is_not_stored(self, classify):
+        second, result = self._assign(classify, self._row("SIMPLIFIED"), easier=False)
+
+        self.assertEqual(result["bundle_roles"], {})
+        self.assertEqual(result["kept_as_own_step"][0]["review_issues"], ["simplified_but_not_easier"])
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_an_elaborated_label_the_measurements_support_is_stored(self, classify):
+        second, result = self._assign(classify, self._row("ELABORATED"), adds_content=True, easier=False)
+
+        self.assertEqual(result["bundle_roles"], {second.material_id: "ELABORATED"})
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_elaborated_that_adds_nothing_is_not_stored(self, classify):
+        second, result = self._assign(classify, self._row("ELABORATED"), adds_content=False)
+
+        self.assertEqual(result["bundle_roles"], {})
+        self.assertEqual(result["kept_as_own_step"][0]["review_issues"], ["elaborated_but_adds_nothing"])
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_a_text_that_does_not_keep_the_facts_is_not_stored(self, classify):
+        second, result = self._assign(classify, self._row("ELABORATED"), facts_kept=False, adds_content=True)
+
+        self.assertEqual(result["bundle_roles"], {})
+        self.assertIn("facts_not_kept", result["kept_as_own_step"][0]["review_issues"])
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_a_problem_gemma_reports_is_not_stored(self, classify):
+        second, result = self._assign(
+            classify, self._row("SIMPLIFIED", problems=["says solids change shape"]),
+        )
+
+        self.assertEqual(result["bundle_roles"], {})
+        self.assertIn("gemma_reports_a_problem", result["kept_as_own_step"][0]["review_issues"])
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_extra_is_left_as_it_was(self, classify):
+        second, result = self._assign(
+            classify, self._row("EXTRA", problems=["drops the volume fact"]), facts_kept=False,
+        )
+
+        self.assertEqual(result["bundle_roles"], {second.material_id: "EXTRA"})
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_fkgl_and_low_confidence_are_concerns_not_decisions(self, classify):
+        # LONG is clearly longer and harder than SHORT by FKGL, and 0.3 is low:
+        # neither stops a label the measurements support.
+        second, result = self._assign(classify, self._row("SIMPLIFIED", confidence=0.3))
+
+        self.assertEqual(result["bundle_roles"], {second.material_id: "SIMPLIFIED"})
+        concerns = result["assigned"][0]["review_concerns"]
+        self.assertIn("fkgl_points_the_other_way", concerns)
+        self.assertIn("low_self_reported_confidence", concerns)
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_without_the_encoder_the_label_is_kept_with_a_concern(self, classify):
+        from .content_measures import MeasurementUnavailable
+
+        first = self._object(self._material("PDF one", 0), SHORT)
+        second = self._object(self._material("PDF two", 5), LONG)
+        classify.return_value = {
+            first.id: {"slot": "ORIGINAL", "confidence": 0.93, "reason": "Balanced."},
+            second.id: self._row("ELABORATED"),
+        }
+        with patch("course.content_measures.measure_versions", side_effect=MeasurementUnavailable("no model")):
+            result = assign_group_versions(self.group, use_llm=True)
+
+        self.assertEqual(result["bundle_roles"], {second.material_id: "ELABORATED"})
+        self.assertIn("measurements_unavailable", result["assigned"][0]["review_concerns"])
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_a_caught_role_stays_caught_on_the_next_run(self, classify):
+        second, _first_run = self._assign(classify, self._row("ELABORATED"), adds_content=False)
+        self.group.refresh_from_db()
+
+        with self._measures(adds_content=False):
+            again = assign_group_versions(self.group, use_llm=True)
+
+        self.assertEqual(again["bundle_roles"], {})
+        self.assertEqual(again["needs_confirmation"], [])
+        self.assertEqual(len(again["kept_as_own_step"]), 1)
+        self.assertEqual(classify.call_count, 1)
 
     @patch("course.version_assignment.classify_group_versions")
     def test_grouped_original_is_selected_by_llm_not_upload_order(self, classify):
@@ -507,6 +645,7 @@ class BundleRoleTests(TestCase):
     """
 
     def setUp(self):
+        without_measurements(self)
         self.course = CourseGroup.objects.create(title="Science")
         self.topic = OutlineNode.objects.create(course=self.course, title="States")
         confirmed = {"learning_objects_confirmed": True}
@@ -586,6 +725,7 @@ class ReadDoesNotDecideRolesTests(TestCase):
     """
 
     def setUp(self):
+        without_measurements(self)
         self.course = CourseGroup.objects.create(title="Grade 1 Science")
         self.node = OutlineNode.objects.create(
             course=self.course, title="Matter", order=0, depth=0
@@ -660,3 +800,61 @@ class ReadDoesNotDecideRolesTests(TestCase):
             self.group.version_selection["bundle_roles"],
             {str(second.material_id): "SIMPLIFIED"},
         )
+
+
+class MeasuredCheckTests(TestCase):
+    """The measurements themselves, with the real encoder grouping uses.
+
+    These show what the measurements see in each case. They verify this code,
+    not how accurately Gemma classifies.
+    """
+
+    NORMAL = "Solids have a fixed shape and volume."
+
+    def measure(self, candidate, normal=None):
+        from .content_measures import measure_versions
+
+        return measure_versions(normal or self.NORMAL, candidate)
+
+    def test_a_simplification_keeps_the_facts_adds_nothing_and_is_easier(self):
+        result = self.measure("A solid keeps its shape and takes up a fixed amount of space.")
+
+        self.assertTrue(result["facts_kept"])
+        self.assertFalse(result["adds_content"])
+        self.assertTrue(result["easier"])
+
+    def test_an_elaboration_adds_content(self):
+        result = self.measure(
+            "Solids have a fixed shape and volume. Their particles remain close together and "
+            "vibrate around fixed positions. A stone, for example, keeps its shape when moved "
+            "between containers."
+        )
+
+        self.assertTrue(result["facts_kept"])
+        self.assertTrue(result["adds_content"])
+
+    def test_an_unrelated_text_does_not_keep_the_facts(self):
+        result = self.measure("Plants make their own food from sunlight in a process called photosynthesis.")
+
+        self.assertFalse(result["facts_kept"])
+
+    def test_short_but_unfamiliar_words_are_not_easier(self):
+        """FKGL read this as easy; Dale-Chall counts the unfamiliar words."""
+        result = self.measure(
+            "Solids resist deformation: intermolecular forces lock particles into a lattice.",
+            normal="A solid keeps its shape because its particles are held tightly in place and can only vibrate.",
+        )
+
+        self.assertFalse(result["easier"])
+
+    def test_dale_chall_scores_familiar_words_lower(self):
+        from .content_measures import dale_chall
+
+        self.assertLess(dale_chall("The water is cold."), dale_chall("Intermolecular deformation persists."))
+
+
+class DaleChallWordFormTests(TestCase):
+    def test_plurals_and_past_tense_of_familiar_words_are_familiar(self):
+        from .content_measures import dale_chall
+
+        self.assertEqual(dale_chall("The cold stones melted."), dale_chall("The cold stone melt."))

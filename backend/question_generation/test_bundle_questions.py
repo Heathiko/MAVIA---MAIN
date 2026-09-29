@@ -15,7 +15,10 @@ from lessons.models import (
     LearningObjectGroup,
     OutlineNode,
 )
-from question_generation.services.pipeline import concept_source_text
+from question_generation.services.pipeline import (
+    _is_concept_source,
+    concept_source_text,
+)
 
 
 class BundleQuestionSourceTests(TestCase):
@@ -54,6 +57,77 @@ class BundleQuestionSourceTests(TestCase):
 
         after = question_bank_fingerprint(concept_source_text(self.lead), QUESTION_DISTRIBUTION)
         self.assertNotEqual(before, after)
+
+    def test_every_telling_of_the_concept_reaches_the_prompt(self):
+        """A second PDF's telling is text the learner hears on remediation,
+        so questions must be written from it too."""
+        other = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="B",
+            generated_json={"learning_objects_confirmed": True})
+        LearningObject.objects.create(
+            material=other, group=self.group, title="Solids", order=0,
+            represented_by=self.lead,
+            content="Solid particles vibrate in place.")
+        text = concept_source_text(self.lead)
+        self.assertIn("A solid keeps its shape.", text)
+        self.assertIn("Ice cubes and a rock.", text)
+        self.assertIn("Solid particles vibrate in place.", text)
+
+    def test_a_single_telling_concept_is_unchanged(self):
+        """10 of topic 276's 19 concepts come from one PDF. They must read
+        exactly as before, with no blank lines and nothing duplicated."""
+        self.assertEqual(
+            concept_source_text(self.lead),
+            "A solid keeps its shape.\nIce cubes and a rock.",
+        )
+
+    def test_a_blank_sibling_does_not_become_a_second_concept_source(self):
+        """A whitespace-only object is not a telling of anything.
+
+        version_bundles() dropped blank-content objects (_eligible_bundles);
+        bundles_for_group() does not. Without the same filter, such an object
+        passes the membership test, reads the whole concept as its own source
+        and generates a second, identical bank -- double the LLM and gate
+        spend, invisible to the per-node dedup.
+        """
+        blank = LearningObject.objects.create(
+            material=self.material, group=self.group, title="Blank",
+            order=5, content="   ")
+        self.assertEqual(concept_source_text(blank), "   ")
+
+    def test_an_unclassified_bundle_is_reported_in_the_log(self):
+        """A bundle with no stored role still feeds the prompt, and may later
+        be classified EXTRA -- text no learner hears. The run trace has to
+        show it, because nothing downstream will."""
+        other = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="B",
+            generated_json={"learning_objects_confirmed": True})
+        LearningObject.objects.create(
+            material=other, group=self.group, title="Solids", order=0,
+            represented_by=self.lead, content="Solid particles vibrate.")
+        with self.assertLogs("question_generation.services.pipeline", "INFO") as logged:
+            concept_source_text(self.lead)
+        self.assertTrue(
+            any("no assigned version role" in line for line in logged.output),
+            logged.output,
+        )
+
+    def test_an_extra_bundle_is_not_offered_to_the_generator(self):
+        """EXTRA is excluded from what a learner is served (published.py
+        _versions, course/services.py _build_chunk), so it is not something
+        to write questions about either."""
+        extra = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="C",
+            generated_json={"learning_objects_confirmed": True})
+        LearningObject.objects.create(
+            material=extra, group=self.group, title="Aside", order=0,
+            represented_by=self.lead, content="An unrelated aside.")
+        self.group.version_selection = {
+            "normal_material_id": self.material.id,
+            "bundle_roles": {str(extra.id): "EXTRA"},
+        }
+        self.group.save(update_fields=["version_selection"])
+        self.assertNotIn("An unrelated aside.", concept_source_text(self.lead))
 
 
 class BundleGenerationScopeTests(TestCase):
@@ -108,3 +182,56 @@ class BundleGenerationScopeTests(TestCase):
             any("Everyday examples" in line for line in logs.output),
             logs.output,
         )
+
+
+class WastedGenerationTests(TestCase):
+    """A bank that finalize_node_questions will delete is not worth generating.
+
+    Measured on topic 276: 42 objects generated a bank and 22 of them were
+    deleted moments later, because a concept owns exactly one bank and it
+    belongs to the Normal bundle's lead. That was 52% of a 117-minute run.
+    """
+
+    def setUp(self):
+        self.course = CourseGroup.objects.create(title="Science")
+        self.topic = OutlineNode.objects.create(course=self.course, title="States")
+        self.normal = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="A",
+            generated_json={"learning_objects_confirmed": True})
+        self.other = LearningMaterial.objects.create(
+            course=self.course, outline_node=self.topic, title="B",
+            generated_json={"learning_objects_confirmed": True})
+        self.group = LearningObjectGroup.objects.create(
+            outline_node=self.topic, label="Solid",
+            version_selection={"normal_material_id": self.normal.id})
+        self.lead = LearningObject.objects.create(
+            material=self.normal, group=self.group, title="Solid", order=0,
+            content="A solid keeps its shape.")
+        self.telling = LearningObject.objects.create(
+            material=self.other, group=self.group, title="Solids", order=0,
+            represented_by=self.lead, content="Solid particles vibrate.")
+
+    def test_the_normal_bundles_lead_generates(self):
+        self.assertTrue(_is_concept_source(self.lead))
+
+    def test_another_pdfs_telling_does_not_generate(self):
+        """Its bank is deleted by finalize_node_questions the moment the
+        lead finalizes, so making it is pure cost."""
+        self.assertFalse(_is_concept_source(self.telling))
+
+    def test_a_concept_with_no_normal_bundle_still_generates(self):
+        """Nothing owns the concept, so refusing every member would leave it
+        with no questions at all."""
+        orphan_group = LearningObjectGroup.objects.create(
+            outline_node=self.topic, label="Orphan",
+            version_selection={"normal_material_id": 999999})
+        orphan = LearningObject.objects.create(
+            material=self.other, group=orphan_group, title="Orphan", order=9,
+            content="Text with no Normal bundle.")
+        self.assertTrue(_is_concept_source(orphan))
+
+    def test_an_ungrouped_object_still_generates(self):
+        loose = LearningObject.objects.create(
+            material=self.normal, group=None, title="Loose", order=5,
+            content="On its own.")
+        self.assertTrue(_is_concept_source(loose))

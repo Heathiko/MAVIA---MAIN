@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *.sqlite3
 db.sqlite3
+# SQLite's WAL journal files (settings.py turns WAL on)
+*.sqlite3-wal
+*.sqlite3-shm
 .env
 .env.*
 !.env.example
@@ -36,6 +39,26 @@ Thumbs.db
 *.p12
 *.key
 *.mobileprovision
+
+# Personal AI-briefing notes (not shared with the team)
+AI_CONTEXT.md
+
+# Trained Bloom's classifier weights (~483 MB; regenerate from the training notebook)
+backend/question_generation/classifier/trained_model/
+
+# Local pre-change database snapshots
+backend/db.sqlite3.pre-*
+
+# Thesis manuscript drafts (kept out of the shared repo)
+MAVIA MANUSCRIPT.docx
+MAVIA CHAPTER 3.docx
+MAVIA MANUSCRIPT*
+
+# Editor and office lock files
+~$*
+
+# Scratch output, never part of the project
+tmp/
 
 # Scratch folder for building the defense deck; not part of the app.
 .deckbuild/

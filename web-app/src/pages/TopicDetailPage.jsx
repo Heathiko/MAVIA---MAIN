@@ -21,7 +21,6 @@ import {
   generateAllObjectVersions,
   fetchGenerationRunEvents,
   publishTopic,
-  regenerateImageNarrations,
   rejectLearningObjectMatchSuggestion,
   assignVersionSlot,
   editVersionText,
@@ -70,6 +69,13 @@ function isQuestionMaterial(material) {
   const generatedJson = material?.generated_json || {};
   return generatedJson.document_role === "assessment"
     || (!(material?.learning_objects?.length) && Boolean(material?.questions?.length));
+}
+
+// "Facts and Information" -> "is-facts-and-information", matching the
+// modifier classes in pipeline.css for the four-tier Bloom category pill.
+function categoryPillClass(category) {
+  const slug = String(category || "").trim().toLowerCase().replace(/\s+/g, "-");
+  return slug ? `is-${slug}` : "";
 }
 
 function renderInlineFormatting(text) {
@@ -521,7 +527,7 @@ function ReviewQueuePanel({
           disabled={Boolean(busyAction)}
           onClick={() => onReviewStepChange("publish")}
         >
-          Next step: Publish
+          Next: Final Review
         </button>
       </div>
     </section>
@@ -563,7 +569,7 @@ function QuestionEditForm({ question, groups, busy, onCancel, onSave }) {
       <label>Type<select value={type} onChange={(event) => changeType(event.target.value)}><option value="true_false">True/False</option><option value="multiple_choice">Multiple choice</option></select></label>
       <label>Concept to tie to<select value={conceptGroupId} onChange={(event) => setConceptGroupId(event.target.value)}>
         <option value="">No concept assigned</option>
-        {groups.map((group) => <option value={group.id} key={group.id}>{group.label || group.learning_objects?.[0]?.title || "Untitled concept"}</option>)}
+        {groups.map((group) => <option value={group.id} key={group.id}>{group.display_title || group.label || group.learning_objects?.[0]?.title || "Untitled concept"}</option>)}
       </select></label>
       {type === "multiple_choice" && choices.map((choice, index) => (
         <label key={index}>Choice {String.fromCharCode(65 + index)}<input required={index < 2} value={choice} onChange={(event) => {
@@ -612,6 +618,10 @@ function VersionSlotCard({
   // Written from Normal text that has since changed. Publishing waits until the
   // teacher keeps, edits or regenerates it.
   stale = false,
+  // No generated version passed the quality check, so learners hear the
+  // Normal text at this level. Publishing is not held back; the teacher may
+  // write an explanation of their own.
+  fallback = false,
   busyLabel = "",
   onKeep,
   onRegenerate,
@@ -644,6 +654,25 @@ function VersionSlotCard({
             </button>
           </div>
           {busy && busyLabel && <small className="muted-text">{busyLabel}</small>}
+        </div>
+      )}
+
+      {fallback && !stale && !isEditing && (
+        <div className="version-slot-stale version-slot-fallback" role="status">
+          <strong>Using the Normal text for now</strong>
+          <p>
+            {slotKey === "simplified"
+              ? "No generated Simplified version passed the quality check (easier to read, keeps every fact), "
+              : "No generated Elaborated version passed the quality check (fuller, keeps every fact), "}
+            so learners at this level hear the Normal text. You can write your own explanation instead.
+          </p>
+          {!readOnly && (
+            <div className="version-slot-actions">
+              <button type="button" className="btn btn-primary btn-small" disabled={busy} onClick={onBeginEdit}>
+                Write your own explanation
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -994,6 +1023,7 @@ function VersionReviewPanel({
                   // objects, not by retyping them here.
                   readOnly={Boolean(entry) && !entry.id}
                   stale={Boolean(entry?.stale)}
+                  fallback={Boolean(entry?.fallback)}
                   busyLabel={busyAction === generateKey ? "Regenerating, this takes a few minutes…" : ""}
                   onKeep={() => onKeepVersion(entry.id)}
                   onRegenerate={() => onRegenerateVersion(versions.representative_id, slotKey.toUpperCase())}
@@ -1098,7 +1128,7 @@ function QuestionGenerationTool({
       if (!representative) return [];
       return [{
         ...representative,
-        conceptLabel: group.label || representative.title || "Untitled concept",
+        conceptLabel: group.display_title || group.label || representative.title || "Untitled concept",
         // Carried through so each concept can show what was generated from it.
         // Spreading the representative alone dropped these, which is why the
         // board could only ever say "generating" and never "here is the result".
@@ -1112,14 +1142,22 @@ function QuestionGenerationTool({
     [groups],
   );
 
-  async function waitForGeneration(runId) {
+  // `carried` holds the finished runs before this one. Generating every
+  // concept starts a run each, and each one's sequence begins at 1: replacing
+  // the trace with only the run in flight made the log collapse to two lines
+  // and grow back for every concept, over and over. Its own seq is therefore
+  // paired with the run it belongs to, so the accumulated lines stay distinct.
+  async function waitForGeneration(runId, carried = []) {
     let result;
+    const tag = (events) => (events || []).map(
+      (event) => ({ ...event, uid: `${runId}:${event.seq}` }),
+    );
     for (let attempt = 0; attempt < 300; attempt += 1) {
       await new Promise((resolve) => window.setTimeout(resolve, 1000));
       result = await fetchQuestionGenerationTrace(runId);
-      // The endpoint returns the run's whole event list each poll, so this is
-      // a replace rather than an append.
-      setRunEvents(result.events || []);
+      // The endpoint returns this run's whole event list each poll, so its own
+      // lines replace while everything before them is kept.
+      setRunEvents([...carried, ...tag(result.events)]);
       if (["finished", "failed"].includes(result.run.status)) break;
     }
     if (!result || result.run.status === "running") {
@@ -1129,6 +1167,7 @@ function QuestionGenerationTool({
       const failure = [...(result.events || [])].reverse().find((event) => event.event_type === "error");
       throw new Error(failure?.message || "Question generation failed.");
     }
+    return tag(result.events);
   }
 
   async function handleGenerateObject(item) {
@@ -1159,6 +1198,7 @@ function QuestionGenerationTool({
     onError("");
     onMessage("Generating one question bank from the Normal version of each concept.");
     try {
+      let carried = [];
       for (let index = 0; index < eligibleObjects.length; index += 1) {
         const item = eligibleObjects[index];
         setOuterProgress({
@@ -1167,10 +1207,10 @@ function QuestionGenerationTool({
           label: item.conceptLabel,
         });
         const started = await startQuestionGeneration(item.material, item.id);
-        await waitForGeneration(started.run_id);
+        carried = [...carried, ...await waitForGeneration(started.run_id, carried)];
       }
       onResourcesChange(await fetchLearningResources(courseId, topicId));
-      onMessage("One LOTS/HOTS question bank was generated for each concept from its Normal version.");
+      onMessage("");
     } catch (err) {
       onError(err.message);
     } finally {
@@ -1251,8 +1291,20 @@ function QuestionGenerationTool({
                       {produced.map((question) => (
                         <li key={question.id}>
                           <div className="generated-question-row">
-                            {question.thinking_order && (
-                              <span className="question-thinking-pill">{question.thinking_order}</span>
+                            {/* The labels sit on their own line above the
+                                question: sharing a line with it squeezed them
+                                until "Facts and information" wrapped. */}
+                            {(question.thinking_order || question.category) && (
+                              <div className="generated-question-meta">
+                                {question.thinking_order && (
+                                  <span className="question-thinking-pill">{question.thinking_order}</span>
+                                )}
+                                {question.category && (
+                                  <span className={`question-category-pill ${categoryPillClass(question.category)}`}>
+                                    {question.category}
+                                  </span>
+                                )}
+                              </div>
                             )}
                             <strong>{question.prompt}</strong>
                           </div>
@@ -1392,7 +1444,7 @@ function ManualQuestionPanel({
               const link = question.learning_object_links?.[0];
               const group = groups.find((item) => Number(item.id) === Number(link?.learning_object_group_id));
               const material = materialById.get(Number(question.material));
-              const concept = group?.label || group?.learning_objects?.[0]?.title || link?.learning_object_title || "No concept assigned";
+              const concept = group?.display_title || group?.label || group?.learning_objects?.[0]?.title || link?.learning_object_title || "No concept assigned";
               return (
                 <article className="saved-question-card" key={question.id}>
                   <div className="question-review-meta">
@@ -1400,6 +1452,11 @@ function ManualQuestionPanel({
                       {question.source_type === "manual" ? "Manual" : question.source_type === "generated" ? "Generated" : "PDF"}
                     </span>
                     {question.thinking_order && <span className="question-thinking-pill">{question.thinking_order}</span>}
+                    {question.category && (
+                      <span className={`question-category-pill ${categoryPillClass(question.category)}`}>
+                        {question.category}
+                      </span>
+                    )}
                   </div>
                   <strong>{question.prompt}</strong>
                   <small>{concept}{material?.filename || material?.title ? ` · ${material?.filename || material?.title}` : ""}</small>
@@ -1484,7 +1541,7 @@ function ManualQuestionPanel({
             <option value="">Best available match</option>
             {groups.map((group) => (
               <option value={group.id} key={group.id}>
-                {group.label || group.learning_objects?.[0]?.title || "Untitled concept"}
+                {group.display_title || group.label || group.learning_objects?.[0]?.title || "Untitled concept"}
               </option>
             ))}
           </select>
@@ -1609,8 +1666,10 @@ function RunProgress({
   // total, or the bar reads "NaN%" beside a blank count.
   const counted = Number.isFinite(index) && Number.isFinite(total) && total > 0;
   // Indeterminate until the first counter arrives -- a bar pinned at zero
-  // reads as "nothing is happening", which is the opposite of the truth.
-  const percent = counted ? Math.round((index / total) * 100) : null;
+  // reads as "nothing is happening", which is the opposite of the truth. A run
+  // that ends without ever being counted still ended, so it fills rather than
+  // carrying on sweeping under the word "Finished".
+  const percent = counted ? Math.round((index / total) * 100) : running ? null : 100;
   const currentLine = currentOverride || latest?.message || "Starting…";
 
   if (dismissed && !running) return null;
@@ -1674,7 +1733,7 @@ function RunProgress({
         {failures.length > 0 && (
           <ul className="publish-trace-failures">
             {failures.map((event) => (
-              <li key={event.seq}>{event.message}</li>
+              <li key={event.uid || event.seq}>{event.message}</li>
             ))}
           </ul>
         )}
@@ -1683,7 +1742,7 @@ function RunProgress({
           <summary>Full trace ({events.length})</summary>
           <ol>
             {events.map((event) => (
-              <li key={event.seq}>{event.message}</li>
+              <li key={event.uid || event.seq}>{event.message}</li>
             ))}
           </ol>
         </details>
@@ -1784,7 +1843,7 @@ ${question.prompt}`,
                 <header>
                   <div className="connection-group-heading-copy">
                     <span className="connection-group-number" aria-label={`Concept ${groupNumber}`}>{groupNumber}</span>
-                    <h4>{group.label || group.learning_objects[0]?.title || "Untitled concept"}</h4>
+                    <h4>{group.display_title || group.label || group.learning_objects[0]?.title || "Untitled concept"}</h4>
                   </div>
                   <span className={`connection-status ${isConnected ? "is-connected" : "is-single"}`}>
                     {versionSummary(group)}
@@ -2215,7 +2274,7 @@ function LearningObjectConnections({
   // The destinations a "Move to..." menu offers: every other concept of this
   // topic, named the way the cards name them so the two cannot disagree.
   function conceptName(group) {
-    return group.label || group.learning_objects?.[0]?.title || "Untitled concept";
+    return group.display_title || group.label || group.learning_objects?.[0]?.title || "Untitled concept";
   }
 
   function otherConcepts(groupId) {
@@ -2243,6 +2302,7 @@ function LearningObjectConnections({
     const query = searchTerm.trim().toLocaleLowerCase();
     if (!query) return true;
     const searchableText = [
+      group.display_title,
       group.label,
       ...group.learning_objects.flatMap((item) => [
         item.title,
@@ -2333,11 +2393,18 @@ function LearningObjectConnections({
       || busyAction
       || !unclassifiedGroupSignature
     ) return;
-    const runKey = `${topicId}:${unclassifiedGroupSignature}`;
+    // Keyed on the uploaded material, never on which concepts are still
+    // unclassified: a concept the model fails on stays unclassified, which
+    // would shrink that list, change the key and launch the identical run a
+    // second time. The material signature is what a new upload changes and
+    // what a classification run leaves alone, so the run fires once per batch
+    // of new content and a failure reaches the teacher instead of retrying
+    // itself.
+    const runKey = `${topicId}:${materialSignature}`;
     if (automaticClassificationRef.current === runKey) return;
     automaticClassificationRef.current = runKey;
     generateAllVersions();
-  }, [reviewStep, loading, busyAction, topicId, unclassifiedGroupSignature]);
+  }, [reviewStep, loading, busyAction, topicId, materialSignature, unclassifiedGroupSignature]);
 
   function toggleSelection(objectId) {
     if (reviewStep !== "objects") return;
@@ -2550,7 +2617,8 @@ function LearningObjectConnections({
           missingCount,
           // Named so the progress dialog can report the concept rather than an
           // anonymous position in a queue.
-          label: group.label
+          label: group.display_title
+            || group.label
             || group.learning_objects?.[0]?.title
             || "Untitled concept",
         }]
@@ -2916,7 +2984,7 @@ function LearningObjectConnections({
                     <header>
                       <div className="connection-group-heading-copy">
                         <span className="connection-group-number" aria-label={`Concept ${groupNumber}`}>{groupNumber}</span>
-                        <h4>{group.label || group.learning_objects[0]?.title || "Untitled concept"}</h4>
+                        <h4>{group.display_title || group.label || group.learning_objects[0]?.title || "Untitled concept"}</h4>
                       </div>
                       <span className={`connection-status ${isConnected ? "is-connected" : "is-single"}`}>
                         {isConnected
@@ -2951,7 +3019,7 @@ function LearningObjectConnections({
                             <div className="connection-object-list">
                               {bundle.learning_objects.map((item, itemIndex) => {
                                 const isImage = isImageLearningObject(item);
-                                const isMissingImageDescription = isImage && !item.content?.trim();
+                                const isMissingImageDescription = isImage && (item.narration_pending ?? !item.content?.trim());
                                 const moving = busyAction === `move-${item.id}`;
                                 return (
                                   <div className="connection-object-row" key={item.id}>
@@ -2990,7 +3058,7 @@ function LearningObjectConnections({
                                           )}
                                           <span>
                                             {isMissingImageDescription
-                                              ? "No image narration is available. Start Ollama, then confirm again to retry."
+                                              ? "Narration pending: it will be written when you publish this topic."
                                               : "Image narration included."}
                                           </span>
                                         </div>
@@ -3298,6 +3366,7 @@ function LearningObjectConnections({
           busyAction={busyAction}
           onReviewStepChange={onReviewStepChange}
           onResourcesChange={setResources}
+          onCourseChange={onCourseChange}
           onError={onError}
           onMessage={onMessage}
         />
@@ -3318,6 +3387,7 @@ function LearningPathReviewPanel({
   busyAction,
   onReviewStepChange,
   onResourcesChange,
+  onCourseChange,
   onError,
   onMessage,
 }) {
@@ -3416,6 +3486,10 @@ function LearningPathReviewPanel({
         }
         try {
           onResourcesChange(await fetchLearningResources(courseId, topicId));
+          // Whether the topic is published lives on the course, not on the
+          // resources -- so without this the button still read "Publish
+          // course" after a successful publish, until the page was reloaded.
+          onCourseChange(await fetchCourse(courseId));
         } catch {
           // The run is what matters; a stale panel is recoverable by reloading.
         }
@@ -3622,7 +3696,6 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
   const [showAudioWarning, setShowAudioWarning] = useState(false);
   const [showDeleteMaterialConfirm, setShowDeleteMaterialConfirm] = useState(false);
   const [learningObjectToDelete, setLearningObjectToDelete] = useState(null);
-  const imageNarrationRepairAttempts = useRef(new Set());
 
   const generatedJson = material.generated_json || {};
   const isAssessmentDocument = isQuestionMaterial(material);
@@ -3633,9 +3706,8 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
   const canEditLearningObjects = !learningObjectsConfirmed || reviewEditMode;
   const selectedObject = material.learning_objects.find((item) => item.id === selectedId);
   const imagesMissingDescription = material.learning_objects.filter(
-    (item) => isImageLearningObject(item) && !item.content?.trim()
+    (item) => isImageLearningObject(item) && !item.content?.trim(),
   );
-  const missingImageNarrationKey = imagesMissingDescription.map((item) => item.id).join(",");
 
   useEffect(() => {
     if (!material.learning_objects.some((item) => item.id === editingId)) {
@@ -3657,30 +3729,6 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
       setEditingId(null);
     }
   }, [learningObjectsConfirmed]);
-
-  useEffect(() => {
-    if (!learningObjectsConfirmed || !missingImageNarrationKey) return;
-
-    const attemptKey = `${material.id}:${missingImageNarrationKey}`;
-    if (imageNarrationRepairAttempts.current.has(attemptKey)) return;
-    imageNarrationRepairAttempts.current.add(attemptKey);
-
-    setBusyAction("image-narration");
-    regenerateImageNarrations(courseId, material.id)
-      .then((updatedCourse) => {
-        onCourseChange(updatedCourse);
-        const result = updatedCourse.image_description_generation;
-        if (result?.generated_count) {
-          onMessage(
-            `Generated ${result.generated_count} missing picture narration${result.generated_count === 1 ? "" : "s"} with Gemma.`
-          );
-        } else if (result?.errors?.length) {
-          onError(result.errors[0].detail || "Gemma could not generate the picture narration.");
-        }
-      })
-      .catch((err) => onError(err.message))
-      .finally(() => setBusyAction(""));
-  }, [courseId, learningObjectsConfirmed, material.id, missingImageNarrationKey, onCourseChange, onError, onMessage]);
 
   async function saveNewLearningObject(data) {
     setBusyAction("create");
@@ -3880,6 +3928,11 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
         </div>
         <span className={`status-pill status-${material.status}`}>{material.status}</span>
       </div>
+      {figureNarrationNotice(material.figure_narration) && (
+        <p role="status" className="connection-unpublished-note">
+          {figureNarrationNotice(material.figure_narration)}
+        </p>
+      )}
 
       <div className="generated-item-actions" style={{ marginTop: "0.75rem" }}>
         <button
@@ -3972,7 +4025,7 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
               <div className="generated-list learning-object-list">
                 {material.learning_objects.map((item, index) => {
                   const isImage = isImageLearningObject(item);
-                  const isMissingImageDescription = isImage && !item.content?.trim();
+                  const isMissingImageDescription = isImage && (item.narration_pending ?? !item.content?.trim());
                   const sectionTitle = item.section_title?.trim() || "";
                   const previousSectionTitle = material.learning_objects[index - 1]?.section_title?.trim() || "";
                   const startsSection = Boolean(sectionTitle) && sectionTitle !== previousSectionTitle;
@@ -4042,7 +4095,7 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
                                 )}
                                 <span>
                                   {isMissingImageDescription
-                                    ? `Learning object ${index + 1} has no image narration. Confirm again to retry Gemma, or edit it manually.`
+                                    ? `Narration pending for learning object ${index + 1}: it will be written when you publish this topic.`
                                     : "Image narration included."}
                                 </span>
                               </div>
@@ -4281,6 +4334,20 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
   );
 }
 
+// A PDF with many figures narrates only the first few during upload; the
+// rest are narrated when the topic is published. Say so, with the count,
+// while any are still waiting.
+function figureNarrationNotice(status) {
+  if (!status || !status.pending) return "";
+  const pending = `${status.pending} figure${status.pending === 1 ? "" : "s"}`;
+  return `${pending} still need an audio narration. `
+    + "They will be narrated when you publish this topic, which can take a few minutes.";
+}
+
+// Every figure is narrated during upload, about 30 seconds each.
+const UPLOAD_NARRATION_NOTICE = "Processing this PDF. Every figure gets an audio narration (about 30 seconds each), "
+  + "so a PDF with more than 5 figures can take several minutes. Please keep this page open.";
+
 export default function TopicDetailPage() {
   const { courseId, topicId } = useParams();
   const [searchParams] = useSearchParams();
@@ -4446,7 +4513,12 @@ export default function TopicDetailPage() {
       <aside className="card lesson-pdf-sidebar" aria-label="Uploaded PDF navigation">
         <div className="lesson-sidebar-brand-row">
           <Link to="/courses" className="lesson-sidebar-brand" title="Mavia home">
-            <span className="lesson-sidebar-brand-mark" aria-hidden="true">M</span>
+            <img
+              className="lesson-sidebar-brand-mark"
+              src="/android-chrome-192x192.png"
+              alt=""
+              aria-hidden="true"
+            />
             <span className="lesson-sidebar-brand-copy">
               <strong>Mavia</strong>
               <small>Lesson material workspace</small>
@@ -4603,6 +4675,9 @@ export default function TopicDetailPage() {
 
         {error && <div className="error-banner">{error}</div>}
         {message && <div className="success-banner">{message}</div>}
+        {uploading && (
+          <p role="status" className="connection-unpublished-note">{UPLOAD_NARRATION_NOTICE}</p>
+        )}
 
         {!materials.length ? (
           <div className="empty-state">No learning material is stored under this topic yet.</div>

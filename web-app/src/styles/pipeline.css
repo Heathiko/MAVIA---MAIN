@@ -832,15 +832,12 @@ button {
 }
 
 .lesson-sidebar-brand-mark {
-  display: inline-grid;
+  display: block;
   width: 2.35rem;
   height: 2.35rem;
   flex: 0 0 auto;
-  place-items: center;
-  border-radius: 10px;
-  color: #ffffff;
-  background: #1e5fa8;
-  font-weight: 900;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 .lesson-sidebar-brand-copy {
@@ -5422,18 +5419,30 @@ button {
 }
 
 .question-origin-pill,
-.question-thinking-pill {
+.question-thinking-pill,
+.question-category-pill {
   border-radius: 999px;
   padding: 0.24rem 0.55rem;
   font-size: 0.72rem;
   font-weight: 800;
   text-transform: uppercase;
+  /* A label is one line. Wrapped, it reads as two labels. */
+  white-space: nowrap;
 }
 
 .question-origin-pill { background: #e7f4ff; color: #245d91; }
 .question-origin-pill.is-manual { background: #f0e9ff; color: #6545a2; }
 .question-origin-pill.is-generated { background: #e3f8ef; color: #176b52; }
 .question-thinking-pill { background: #fff0c7; color: #835d08; }
+
+/* Four-tier Bloom category — distinct from thinking_order (LOT/HOT): this one
+   classifies what kind of content the question assesses, for teacher review,
+   not what order the adaptive engine serves it in. */
+.question-category-pill { background: #eef1f5; color: #444d5c; }
+.question-category-pill.is-facts-and-information { background: #e7f4ff; color: #245d91; }
+.question-category-pill.is-meaning { background: #f0e9ff; color: #6545a2; }
+.question-category-pill.is-skills { background: #e3f8ef; color: #176b52; }
+.question-category-pill.is-outcome { background: #ffe9e0; color: #a1441d; }
 
 .question-validation-warning {
   margin: 0.75rem 0;
@@ -6191,8 +6200,18 @@ button {
 
 .generated-question-row {
   display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+
+/* The labels keep their own line. Beside the question they were the column
+   that gave way, so a two-word category broke across two lines. */
+.generated-question-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .generated-question-row strong {

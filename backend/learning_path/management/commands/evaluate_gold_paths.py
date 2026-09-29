@@ -1,27 +1,18 @@
-"""Print the gold report for both lessons; ``--grid`` sweeps the criteria constants.
+"""Print the gold report; ``--grid`` sweeps ``PRD_THRESHOLD``.
 
-The grid is how the constants in ``criteria.py`` were chosen: the combination
-with no forbidden edges and the most required edges across both lessons, ties
-going to the listed defaults. Its output is pasted into
-``docs/learning_path_revision_2026-09-17.md``.
+v4 has one constant. The spec fixes its range to Liang et al.'s recommended
+0.02-0.1 and chooses it on topics 62 and 79 only; 152 and 308 are then read at
+that value unchanged (docs/superpowers/specs/2026-09-29-learning-path-criteria-v4-design.md).
 """
 
-import itertools
 import json
 
 from django.core.management.base import BaseCommand
 
 from learning_path.services import criteria
 from learning_path.services.gold import gold_report, load_gold
-from lessons.services.semantic_grouping import runtime
 
-TOPICS = (62, 79)
-GRID = {
-    "REF_MAX_DF_RATIO": (0.2, 0.34, 0.5),
-    "REF_MARGIN": (0.0, 0.05, 0.1, 0.2),
-    "PHRASE_COSINE": (0.7, 0.8, 0.9),
-    "MIN_IOL_MARGIN": (0.1, 0.25),
-}
+GRID = (0.02, 0.05, 0.1)
 
 
 class Command(BaseCommand):
@@ -29,40 +20,33 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--grid", action="store_true")
+        parser.add_argument("--topics", nargs="*", type=int, default=[62, 79])
 
-    def _reports(self, engine):
+    def _reports(self, topics):
         reports = []
-        for topic_id in TOPICS:
+        for topic_id in topics:
             data, concepts = load_gold(topic_id)
-            reports.append(gold_report(data, concepts, criteria.decide_pairs(concepts, engine)))
+            reports.append(gold_report(data, concepts, criteria.decide_pairs(concepts)))
         return reports
 
-    def handle(self, *args, grid=False, **options):
-        engine = runtime()
+    def handle(self, *args, grid=False, topics=(62, 79), **options):
         if not grid:
-            self.stdout.write(json.dumps(self._reports(engine), indent=2))
+            self.stdout.write(json.dumps(self._reports(topics), indent=2))
             return
 
-        names = [name for name in GRID if hasattr(criteria, name)]
-        defaults = {name: getattr(criteria, name) for name in names}
+        default = criteria.PRD_THRESHOLD
         rows = []
         try:
-            for values in itertools.product(*(GRID[name] for name in names)):
-                for name, value in zip(names, values):
-                    setattr(criteria, name, value)
-                reports = self._reports(engine)
+            for value in GRID:
+                criteria.PRD_THRESHOLD = value
+                reports = self._reports(topics)
                 rows.append({
-                    "settings": dict(zip(names, values)),
-                    "required_hits": sum(
-                        len(data["required"]) - len(report["missing_required"])
-                        for data, report in zip((load_gold(t)[0] for t in TOPICS), reports)
-                    ),
+                    "PRD_THRESHOLD": value,
                     "forbidden": sum(len(report["forbidden_accepted"]) for report in reports),
+                    "reachable": {report["topic"]: report["reachable_count"] for report in reports},
+                    "accepted_precision": {report["topic"]: report["accepted_precision"] for report in reports},
                     "orders_match": all(report["order_matches"] for report in reports),
-                    "missing": {report["topic"]: report["missing_required"] for report in reports},
                 })
         finally:
-            for name, value in defaults.items():
-                setattr(criteria, name, value)
-        rows.sort(key=lambda row: (row["forbidden"], -row["required_hits"], not row["orders_match"]))
-        self.stdout.write(json.dumps(rows[:15], indent=2))
+            criteria.PRD_THRESHOLD = default
+        self.stdout.write(json.dumps(rows, indent=2))

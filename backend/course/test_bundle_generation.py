@@ -16,6 +16,7 @@ from lessons.models import (
     OutlineNode,
 )
 
+from .testing import without_measurements
 from .models import LessonVariant
 from .variant_generator import VariantGenerationError, fill_missing_bundle_slots
 from .version_assignment import assign_group_versions
@@ -23,6 +24,7 @@ from .version_assignment import assign_group_versions
 
 class BundleGenerationTests(TestCase):
     def setUp(self):
+        without_measurements(self)
         self.course = CourseGroup.objects.create(title="Science")
         self.topic = OutlineNode.objects.create(course=self.course, title="States")
         confirmed = {"learning_objects_confirmed": True}

@@ -325,23 +325,578 @@ roles written by past page loads.
   choice over duplicating the half-served rule, but if those helpers move,
   `learning_path/services/published.py` moves with them.
 
+### 2026-09-22 — Claude Code — parallel concepts stop borrowing each other's words; a gold fixture that holds the pipeline's own grouping
+
+**Branch / commits:** `jean-jure-latest`, uncommitted on top of `3820565`.
+Nothing staged or committed.
+
+**Tests:** `python manage.py test -v 1` → **845 passing** (837 before, plus 8).
+`test_gold_paths` runs three lessons now and all three are `ok`. The new one was
+confirmed **failing before the fix**, on
+`forbidden_accepted: [["solid","gas"]]`, which is why it exists.
+
+**Live database: untouched.** Every number below was re-derived read-only by
+running `concepts_for_topic` + `criteria.decide_pairs` — which is exactly what
+`publish_learning_path` does, so these *are* the numbers a republish would
+store. I did not republish 152/163: the stored rows are stale, but re-deriving
+answers the question without writing, and publishing is the teacher's action.
+
+**What was wrong, and what I did about it**
+
+The task was that edges are accepted on evidence that is a single ordinary
+English word, with `Solid → Gas` (topic 152) and 20 cross-lesson edges
+(topic 163) as the live consequences. The recorded candidate fix was to stop
+non-technical and rendering vocabulary counting as distinctive.
+
+1. **That candidate direction does not work, and I measured it rather than
+   arguing it.** A filter built to the stated principle — words describing the
+   medium or the prose rather than the science, written deliberately *not* to
+   spare any particular edge — takes **gold topic 62 from 10/10 to 9/10**. It
+   loses `comparing → changing`, which is carried by `["explain", "four",
+   "outline"]` at `ref_forward` 0.0441: no name, no head word, no section
+   containment. That is the *same evidence class* as the four words carrying
+   `Solid → Gas`. Any vocabulary filter honest enough to catch "drawn" and
+   "spaced" also catches "explain" and "outline". The acceptance test and the
+   proposed fix are incompatible, so I did not ship a curated list that spares
+   one edge — that is the lesson-specific word list the 2026-09-17 calibration
+   decided against.
+
+2. **What shipped is structural.** `contained_in` already reads section
+   structure downward (a passage under "Matter" builds on Matter). The sideways
+   reading is that two passages under **one** heading, neither of which is what
+   that heading names, are **coordinate siblings** — Solid, Liquid and Gas under
+   "Matter". Between two siblings an edge now needs a reference that *names* its
+   target (the name, a head word, or section containment) rather than merely
+   sharing vocabulary with it, because parallel passages share vocabulary by
+   construction: the author describes each state the same way, which is what
+   "drawn as evenly spaced dots" and "drawn as widely spaced dots" are.
+   `criteria.presented_in_parallel` / `criteria.names_the_target`. **No constant
+   moved.** This is not the removed sibling rule — that keyed on the words of
+   the topic *title*, this keys on the documents' own headings.
+
+   | | gold 62 | gold 79 | live 152 | live 169 | live 163 |
+   |---|---|---|---|---|---|
+   | Required accepted | 10/10 | 4/8 | 9/10 | 4/8 | — |
+   | New gaps / gaps closed | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | — |
+   | Forbidden | 0 | 0 | **0** (was 1) | 0 | — |
+   | Order matches | yes | yes | yes | yes | — |
+   | Accepted total | — | — | 19 (was 20) | 8 | 39 (was 41) |
+
+3. **Topic 163 is a data-modelling problem, not a criteria problem, and now
+   there is a number for it.** Re-derived with each of its three PDFs as its
+   **own topic**: 41 accepted edges → **22, none crossing lessons**, and all 22
+   are plausible. The coordinate-sibling rule prunes 2 of its edges and none of
+   the 20 that cross lessons — concepts from different PDFs share no heading, so
+   it could not. **Topic 163 should be three topics.** That is a teacher action
+   in the UI; I did not do it.
+
+4. **A third gold fixture, and the reason it is worth more than the fix.** The
+   recorded blind spot was "the fixtures hold older text". That turned out to be
+   only half of it. I first exported topic 152 through the existing
+   `export_gold_concepts`, which writes the **teacher's** grouping with today's
+   text: 7 concepts, 8/10 required, and **0 forbidden edges** — it cannot see
+   `Solid → Gas` at all. The denominator is why: `REF_MAX_DF_RATIO` allows a
+   term in at most `floor(n × 0.34)` concepts, the diagram vocabulary sits in 3
+   concepts either way, so at n=7 the cap is 2 and the words are dropped, at
+   n=14 the cap is 4 and they survive. **The teacher's ideal grouping hides the
+   failure the teacher sees.**
+
+   So the new fixture freezes the shape a publish actually derives.
+   `export_live_concepts` (new command) writes `concepts_for_topic` output and
+   labels each concept with the teacher's concept it belongs to.
+   `gold.py` grew two things the older fixtures could not express: **several
+   concepts may share a key** (the pipeline split what the teacher keeps whole —
+   an edge between two such concepts is a grouping result, not a prerequisite
+   claim, and is not scored), and **a concept may carry no key** (3 of topic
+   152's 14; they still take part in the derivation because they change document
+   frequencies and the order, but nothing is scored against them).
+
+**Changed:**
+
+- `learning_path/services/criteria.py` — `named_sections`,
+  `presented_in_parallel`, `names_the_target`, and the veto in `decide_pairs`.
+- `learning_path/services/gold.py` — shared/absent keys, order collapsed over
+  them, `unkeyed_concepts` in the report. Behaviour on 62 and 79 is unchanged
+  (every key there is unique and non-null).
+- `learning_path/management/commands/export_live_concepts.py` — new.
+- `learning_path/fixtures/gold_map_152.json`, `gold_topic_152.json` — new.
+- `learning_path/test_gold_paths.py` — third lesson.
+- `learning_path/test_criteria.py` — `ParallelPresentationTests` (7).
+- `learning_path/CRITERIA.md`, `docs/learning_path_revision_2026-09-17.md`,
+  `docs/PROJECT_CONTEXT.md` §4/§6/§7.
+
+**Decisions I made:**
+
+- **Abandoned the recorded candidate fix** instead of curating it into a list
+  that keeps 62 at 10/10. Cost if wrong: the rendering vocabulary still counts
+  as distinctive everywhere the two concepts are not siblings, so a lesson that
+  puts its diagrams under different headings could still produce this.
+- **Reconstructed the teacher's concept map for topic 152** from `gold_map_62`
+  (same lesson) plus the merges the revision doc records the teacher applying.
+  Five of the seven member counts match 62 exactly (matter 4, solid 4, liquid 5,
+  gas 4, comparing 6); `changing` has 2 objects today against 3, and `examples`
+  4 against 3, because extraction chunked differently. Cost if wrong: the
+  fixture asserts a grouping the teacher did not actually specify. **Worth a
+  teacher's eye before this is quoted in the manuscript.**
+- **Recorded `comparing → changing` as topic 152's one `known_missing`** rather
+  than treating it as a criteria failure. It is the same-name veto doing its job
+  over two split concepts (318/319). When the teacher joins them the gap closes
+  and the test will fail *on the gap closing* — which is the intended behaviour,
+  and it needs `known_missing` emptied and the fixture re-exported.
+- **Did not republish 152 or 163.** Re-deriving gives identical numbers without
+  writing, and their stored rows are still stale.
+
+**Not done / watch out:**
+
+- **Topic 163 still needs splitting into three topics** — 20 of its 21 wrong
+  edges go away with no code. Nothing in this session fixed 163.
+- **`gold_topic_152.json` is a snapshot of the 2026-09-21 upload.** Re-uploading
+  that lesson changes the live concepts but not the fixture. Re-export with
+  `export_live_concepts` and say in the log that the numbers moved because the
+  fixture moved.
+- **Head words can be ordinary adjectives.** `Small intestine → Spine` is
+  accepted at 0.5 because "small intestine" lends "small" a full name-weight
+  reference. `head_words` checks only that a head word is unambiguous among the
+  concept *names*, not that it is a term. Untouched, now recorded in §7.
+- **"Comparing the Three States" is also split on topic 152** (331 and 403),
+  the same defect as 318/319, and not in the earlier notes.
+- The old `gold_map_*.json` / `gold_topic_*.json` pair for 62 and 79 still comes
+  from `export_gold_concepts`. Both commands are now live and they write
+  **different shapes**; the fixture's `concept_keys` key tells them apart.
+- I did not touch `backend/course/tests.py` (the user's uncommitted work) or
+  `frontend/`.
+
+### 2026-09-22 — Claude Code — merge `mavia-latest`: the adaptive engine is real now, and three docs said otherwise
+
+**Branch / commits:** `jean-jure-latest`, `3963207` (criteria work) then
+`23eb3df` (merge of `origin/mavia-latest` @ `6eea641`). Clean merge, **no
+conflicts** — `mavia-latest` had already merged this branch's base (`3820565`)
+at `e4e74f1`, so only three of their commits were new.
+
+**Tests:** `python manage.py test -v 1` on the merged tree → **889 passing** (845 ours before the merge; their adaptive suites added, `adaptive_portal`'s 260 lines and `user/test_email_verification.py` removed with them). All three `test_gold_paths` lessons still `ok`, so the criteria work survived the merge intact.
+
+**Live database: untouched by me.** But note that the merge brings **six new
+`adaptive` migrations** (through `0006_decision_log_and_concept_mastery`), so
+`backend/db.sqlite3` is behind the models until someone runs `migrate`. I did
+not run it. Backups are beside it.
+
+**What the merge actually brings**
+
+The user asked whether our dead adaptive code could now be deleted. **It
+cannot, because it is no longer dead — and the part that genuinely was dead has
+already been deleted by the groupmate.** Specifically:
+
+- **`adaptive/` is now the implementation, not a stub.** `services.py`
+  271 → 882 lines, `models.py` 73 → 249, `views.py` → 403, plus
+  `PATH_MODE.md` and three new test modules (`test_path_mode.py` 738,
+  `test_mobile_traversal.py` 376, `test_decision_log.py` 174).
+- **BKT is real.** `adaptive/services.py::_bkt_update`, reading
+  `adaptive_config.AdaptiveConfig` for `p_guess` / `p_slip` / `starting_mastery`.
+  `adaptive_config` had a docstring saying "when that engine is ported into
+  mavia, its scorer should read `AdaptiveConfig.load()`" — it now does, so that
+  app stopped being speculative too.
+- **`adaptive_portal/` is gone**, all 13 files. That was the old flat
+  PDF-order walker and it was the genuinely dead one.
+- **DQN is still not wired into serving.** The RL work is in `notebook/mavia_rl/`
+  (env, agent, train, evaluate, validate); nothing under `backend/` imports it.
+  Checked, not assumed.
+- `frontend/` is renamed to **`web-app/`**. A `frontend/` directory survives on
+  disk holding only `node_modules/` and is no longer tracked.
+
+**Changed (docs only — I wrote no code this half of the session):**
+
+Four stale statements, each of which the merge turned from true into
+false, and each of which would have misled the next agent:
+
+1. `learning_path/CRITERIA.md` §"Not done yet" — said the student apps
+   "still walk learning objects in PDF order and have not been switched to it",
+   naming `adaptive_portal/services.py`, which no longer exists.
+2. `learning_path/HANDOFF.md` §6 — same claim, same dead module. Both now say
+   the path contract *is* read, and point at `adaptive/PATH_MODE.md`. This one
+   matters beyond tidiness: `HANDOFF.md` documents the published payload, and
+   the adaptive engine now depends on it, so changes to it are no longer free.
+3. `docs/PROJECT_CONTEXT.md` §2 item 7 — said "BKT + DQN ... **do not exist in
+   the codebase yet**. Do not assume they are there." Half of that is now
+   backwards. Rewritten to say what path mode does, that BKT is implemented and
+   tunable, and that DQN specifically is still notebook-only.
+4. `docs/PROJECT_CONTEXT.md` §"Tech stack" and §"Running things" — **found while
+   checking the other three, not in the original list.** Every frontend path was
+   `frontend/`, and `npm run build` in a directory that now has no
+   `package.json`. Also described an `index.css` mirror that no longer exists;
+   `web-app/src/main.jsx` imports `styles/mavia.css` and `styles/pipeline.css`.
+
+**Decisions I made:**
+
+- **Merged rather than rebased**, keeping the criteria commit separate from the
+  merge. Cost if wrong: an extra merge commit in the history.
+- **Did not run `migrate`.** The live database is the teacher's working copy and
+  the six new adaptive migrations are the groupmate's; running them is a state
+  change nobody asked for. Cost if wrong: anyone starting the server hits
+  "Your models have changes that are not yet reflected in a migration" or a
+  missing-table error until they migrate.
+- **Fixed a fourth stale doc** beyond the three asked for, because it was the
+  same defect from the same merge and would have sent the next agent to a
+  directory with no `package.json`.
+- **Did not delete the leftover `frontend/` directory.** It is untracked and
+  holds only `node_modules/`; deleting several hundred MB the user did not ask
+  about is their call, and it is recorded in §"Tech stack".
+
+**Not done / watch out:**
+
+- **`backend/db.sqlite3` needs `python manage.py migrate`** before the server
+  runs against the merged models. Not done deliberately (above).
+- **`backend/course/tests.py` still holds the user's uncommitted work** and was
+  never staged, before or after the merge.
+- The merged tree has a `web-app/` and a stale `frontend/node_modules/`; the
+  latter can be deleted whenever convenient.
+- I reviewed the adaptive code only far enough to check the four doc claims
+  (BKT present, `AdaptiveConfig` read, `adaptive_portal` gone, DQN not wired).
+  **I did not review the groupmate's adaptive work for correctness**, and this
+  entry should not be read as saying it is sound.
+
+---
+
+### 2026-09-22 — Claude Code — removed BloomClassifier's rule fallback; rewrote thesis Theoretical Background to match implementation
+
+**Branch / commits:** `jean-jure-latest`, uncommitted (working tree changes, not committed).
+
+**Tests:** None run for the classifier change — no test file exercises `BloomClassifier` or `bloom_classifier.py` at all (confirmed by grep across `backend/`), so there was nothing to run and nothing to break. `PIPELINE.md` doc example updated to match.
+
+**Changed:**
+
+1. **`question_generation/services/bloom_classifier.py`**: deleted `_classify_rules` (the third-tier keyword-cue fallback) and the `"rules"` backend branch in `__init__`/`classify`. The user asked for the reasoning first, and I said the rule tier was already broken — its loop returns `"understand"` after checking only the first (`create`) cue group instead of falling through the other five, so in practice it never distinguished more than two of the six Bloom levels. The user agreed to drop it rather than fix it, on the grounds that a hand-picked keyword list can't cover the space of ways a question can ask for recall vs. analysis, whereas the SVM tier is at least data-driven. `BloomClassifier` is now a two-tier RoBERTa → SVM cascade; `_load_svm` now raises naturally if the SVM artifact is also missing, instead of silently degrading further.
+2. **This is a direct user override of a prior standing note in agent memory** ("classifier is authoritative for difficulty labels; do not modify bloom_classifier.py" — see `mavia-architecture-ownership` memory, dated 2026-07-19, tied to the RoBERTa weights being shared out-of-band with the groupmate). I surfaced the conflict before editing; the user confirmed it's theirs to change and did not flag a need to coordinate with the groupmate first. Memory updated to reflect the new state.
+3. **`MAVIA MANUSCRIPT.docx`** (thesis, not code — root of `C:\MAVIA`): rewrote the Chapter 1 "Theoretical Background" section (previously generic BKT/RL/Bloom/prerequisite theory not grounded in the actual backend) to describe what the codebase actually does: BKT's fixed global constants in `adaptive/services.py` (`P_GUESS=0.20`, `P_SLIP=0.10`, `P_LEARN=0.15`, `STARTING_MASTERY=0.30`) instead of the illustrative numbers the draft had invented; the RL/DQN section reframed around the MDP state/action space the deterministic threshold engine already implements today, with the DQN described as the trained component the design calls for (tied to the existing cold-start/simulated-pretraining language already in the manuscript's Limitations — deliberately *not* mentioning the project's development-completion percentage, per the user's explicit instruction); the Bloom section rewritten to match the two-tier cascade above; the Prerequisite section rewritten around the actual RefD/key-term/three-criterion-vote/Kahn's-algorithm implementation in `learning_path/services/criteria.py` and `publishing.py`, replacing a generic "directed graph" description. A backup of the pre-edit manuscript was left in this session's scratchpad only (not in the repo).
+
+**Live database:** untouched.
+
+**Decisions I made:**
+
+- Dropped the rule-fallback tier entirely rather than fixing its indentation bug, per the user's explicit direction after I explained the tradeoff. Cost if wrong: if the SVM artifact (`bloom_svm_pipeline.joblib`) is ever missing alongside the RoBERTa checkpoint, question classification now hard-fails instead of degrading to a keyword guess — which the user judged an acceptable (even preferable) failure mode over a silently near-broken fallback.
+- Did not touch `RoBERTa` weights, the SVM artifact, or any other part of the generation pipeline — scoped strictly to the fallback-cascade logic the user asked about.
+- Wrote the manuscript changes directly into the `.docx` via python-docx XML manipulation (clone-and-retext existing paragraphs) rather than handing back prose for the user to paste in themselves, since they'd asked for the section "output... below" in an earlier turn and then asked me to apply further edits directly. Validated the result against the pre-edit file with the docx skill's `validate.py` (paragraph-count delta and structural checks passed) before overwriting.
+
+**Not done / watch out:**
+
+- **The groupmate has not been notified** that `bloom_classifier.py` changed, despite the prior memory note tying that file to a shared-weights arrangement with her. The user said this was fine to proceed on, but did not say they'd already told her.
+- **No test coverage was added** for the two-tier cascade — there was none before either, but this is now a good time to add a test that `_classify_svm`'s exception (not `_classify_rules`, which no longer exists) actually propagates instead of being silently swallowed somewhere upstream in `pipeline.py`.
+- **The manuscript edit is uncommitted and untracked by git** (`MAVIA MANUSCRIPT.docx` shows as `??` in `git status`) — it was never under version control before this session either, so nothing changed about that, but there is no repo history to diff against if the user wants to see exactly what changed beyond the scratchpad backup.
+
+---
+
+### 2026-09-23 — Claude Code — dropped the unused GeneratedQuestion.difficulty field; corrected the thesis's RL/DQN and Bloom sections against the real path-mode engine
+
+**Branch / commits:** `jean-jure-latest`, uncommitted.
+
+**Tests:** `python manage.py test -v 1` from `backend/` → **892 tests, all passing** after the field removal and every call-site fix below (ran the full suite, not just the touched apps, since the field crossed four apps).
+
+**Changed:**
+
+1. **Removed `GeneratedQuestion.difficulty` and `BLOOM_TO_DIFFICULTY` entirely**, at the user's direction, prompted by two things surfacing together: (a) their thesis coordinator said difficulty is not soundly derivable from Bloom's level, and (b) I'd already confirmed in the prior session's entry that the adaptive engine never reads `difficulty` — so keeping a field that contradicts the coordinator's stated position, for no functional reason, was a liability rather than dead weight. New migration `question_generation/migrations/0007_remove_unused_difficulty_field.py`. Fixed every call site this broke, which turned out to span four apps, not just `question_generation`:
+   - `question_generation/services/bloom_classifier.py` — `classify()` no longer returns `"difficulty"`; `_normalize_level`'s membership check switched from `BLOOM_TO_DIFFICULTY` to `BLOOM_TO_CATEGORY` (same six keys).
+   - `question_generation/services/pipeline.py`, `serializers.py`, `views.py` — stopped setting/serializing/returning `difficulty`.
+   - `lessons/services/question_workflow.py` — two call sites (`enriched_question_values`, `sync_question_to_adaptive`, and the `mirror_generated_questions` `Question.objects.create(...)` call) were reading `classification["difficulty"]` / `generated.difficulty`, which would have raised `KeyError`/`AttributeError` the moment either path ran. **`lessons.Question.difficulty` itself was left in place** — it's a separately-migrated field (`lessons/migrations/0014`), out of the scope the user gave me, and it's still read by `learning_resource_linker.py` and serialized in `lessons/serializers.py`. It will now always be blank for new questions since nothing populates it anymore; I did not chase that further.
+   - `learning_path/services/published.py` — `_questions()` was putting `question.difficulty` into the payload the adaptive engine reads at runtime; this was the one that actually crashed tests (`AttributeError` in `resolve_learning_start`), not just a serialization nicety.
+   - Test fixtures across `lessons/test_generated_question_safety.py`, `adaptive/test_mobile_traversal.py`, `adaptive/test_path_mode.py`, `learning_path/tests.py` were constructing `GeneratedQuestion` rows with a `difficulty=` kwarg; stripped.
+   - `question_generation/PIPELINE.md` — fixed the two doc blocks that directly quoted the now-deleted table, and added a note flagging that the rest of that doc (Steps 10–12, describing `intended_difficulty`/`difficulty_match`/`_difficulty_shortfall`) was **already stale against `pipeline.py`'s actual current shape before this session** — it documents an older pipeline structure I did not attempt to reconcile; a real audit of that doc is a separate task.
+2. **Corrected a second, unrelated inaccuracy in the manuscript that surfaced from the user's own questions**, not from anything I'd have caught otherwise: the RL/DQN section (written last session) described the adaptive engine's state as including "position within the four-tier question sequence" and "the active difficulty level." Neither is true of the current engine. I had read `adaptive/services.py` earlier in the *same* conversation and gotten a `TIER_BUCKETS`/`_step_down_difficulty`-based legacy engine from it; by this session the file — 882 lines, unchanged in git history since 2026-09-17 — visibly contains a different, path-mode engine instead (`_ordered_step_questions`, `AdaptiveEngine.evaluate_path`, `VARIANT_ORDER = ["normal", "simplified", "elaborated"]`), and grep confirms `category` and `difficulty` are never read by it at all. I don't know whether I misread the file the first time or read a genuinely different version of it; either way, **I should have re-verified before writing more manuscript text off an earlier read**, and didn't, until the user asked. Rewrote the RL/DQN section's state/action description and worked example around the real mechanics (mastery + path position + content variant; escalate variant on a miss → reroute to nearest prerequisite → reroute to an alternate chunk, in that order, per `AdaptiveEngine._reroute`), and rewrote the Bloom section to stop implying the four-tier category feeds sequencing — it doesn't; LOT/HOT does, via `_ordered_step_questions`' sort. Both now state plainly that the four-tier scheme is a content-organization classification (satisfies the thesis's Objective 2, consumed by the Course Builder's item-bank view) while LOT/HOT is the sequencing axis (consumed by generation-time quota balancing and by the adaptive engine at runtime) — separate purposes, not two labels racing to do the same job.
+3. Confirmed via grep that **`TIER_BUCKETS` on `GeneratedQuestion` is now dead** — referenced nowhere except a comment in `adaptive/services.py` pointing at it as what the legacy engine used to use. Left it alone; out of scope for what was asked, flagged below.
+
+**Live database:** untouched (migration not yet run against it — `db.sqlite3` still has the old schema until `manage.py migrate` runs).
+
+**Decisions I made:**
+
+- Fixed every downstream break the field removal caused rather than stopping at `question_generation`, because leaving `lessons/services/question_workflow.py` or `learning_path/services/published.py` broken would have failed silently until someone hit the exact code path (confirmed by the fact that the full test suite, not just `question_generation`'s own tests, was what caught the `published.py` one).
+- Left `lessons.Question.difficulty` in the schema rather than also removing it, since the user scoped the request to `GeneratedQuestion`/the classifier specifically, and removing it would touch `learning_resource_linker.py`, `serializers.py`, and its own migration — a bigger, separate decision.
+- Did not run `python manage.py migrate` against the live `db.sqlite3` — same standing policy as the prior session's entry (it's the teacher's working copy; migrating is the user's call, not mine to make silently).
+
+**Not done / watch out:**
+
+- **`python manage.py migrate` still needs to run** before this branch's code and the live database schema agree — `GeneratedQuestion.difficulty` still exists in the database until then.
+- **`lessons.Question.difficulty` is now permanently blank for every new question** — it still exists in the schema and is still read in a couple of places, but nothing populates it anymore. Worth a follow-up decision on whether to remove it too, or repurpose it.
+- **`question_generation/PIPELINE.md` needs a real audit**, not the two spot-fixes made here — it describes `intended_difficulty`/`difficulty_match`/`_difficulty_shortfall` machinery that doesn't match `pipeline.py`'s current functions, and that mismatch predates this session.
+- **`GeneratedQuestion.TIER_BUCKETS` is dead code** (confirmed by grep, not removed — out of scope for what was asked).
+- **The manuscript's RL/DQN section is now grounded in `adaptive/services.py` as of this session's read.** Given that I've now been burned once by trusting an earlier read of this exact file without re-verifying, whoever touches this section next should re-grep it fresh rather than trusting this entry or the manuscript text as ground truth.
+
+### 2026-09-26 — Claude Code — a corrective-RAG grounding gate on question generation; pipeline flowchart corrected
+
+**Branch / commits:** mavia-latest, uncommitted
+**Tests:** `python manage.py test question_generation` — 87 tests, OK (30 new in
+`test_grounding.py`). Also ran the gate live against the published topic 276.
+**Changed:**
+- **New** `question_generation/services/grounding.py` — three-stage validation of
+  every draft question against the topic's own PDF text: lexical grounding,
+  MiniLM vector retrieval over chunked raw `extracted_text`, then an
+  LLM-as-judge entailment check. Failures are deleted and their reasons fed
+  back into a bounded corrective regeneration pass.
+- `services/pipeline.py` — gate phase between drafting and finalization;
+  index built once per run; `ungrounded`/`unverified` added to run stats.
+- `services/question_generator.py` — `generate_questions(..., correction=...)`
+  threads rejection feedback into the prompt.
+- `config/settings.py` + `.env.example` — six `QUESTION_VALIDATION_*` /
+  `QUESTION_JUDGE_*` settings. No migration needed: `GenerationEvent.event_type`
+  is already `CharField(64)` from the pending `0008`.
+- `docs/MAVIA_PIPELINE_FLOWCHART.svg` — stage 8 rewritten for the gate, and
+  four stale claims corrected (see below).
+
+**Why this exists (measured, not assumed):** on the published topic 276, 61 of
+76 final questions used content words absent from all three PDFs, and Q107/Q109
+marked **"plasma"** correct where the source says "gas" and "solid". The source
+text was already in the prompt both times. This is why the gate checks whether
+the model *used* its context, not whether it *had* it — retrieval alone would
+not have caught any of it.
+
+**Live database:** backed up to `db.sqlite3.pre-grounding-gate.20260926`.
+Topic 276's question bank was regenerated through the gate (no learner
+responses existed, so nothing of a student's was lost).
+
+**Decisions I made:**
+- **Retrieval is scoped to the topic's materials, not a global PDF index.** The
+  user's plan said "a local raw PDF index"; a global one would let the judge
+  validate a question about particle arrangement against a passage on melting.
+  Flagged before building, built scoped.
+- **The lexical stage is kept as a non-bypassable first gate** rather than
+  relying on the judge alone. Measured reason below.
+- **Default `QUESTION_JUDGE_MODEL` is `llama3.2:3b`, not the larger model.**
+
+**Watch out — the bigger judge is the worse judge.** With the lexical stage
+bypassed, `llama3.2:3b` correctly rejected both "plasma" questions;
+`gemma3:4b` passed both as "supported". Re-measure before changing
+`QUESTION_JUDGE_MODEL`; a weak judge is worse than an obvious gap because it
+looks like verification. `gemma2:9b` (which the user's plan named) is not
+pulled on this machine.
+
+**Also watch out — killing a background run does not kill its Python child.**
+Stopping the first regeneration left PID 24460 alive and writing to
+`db.sqlite3` while a second run started, which silently corrupted a
+before/after comparison (76 rows became 72 mid-measurement). Kill by PID and
+verify with `Get-CimInstance Win32_Process` before trusting any DB numbers.
+
+**Flowchart corrections beyond stage 8** (all verified against code, all were
+stale): the question model is `llama3.2:3b` not `gemma3:4b`; `/api/generate` is
+called **streaming** with a JSON schema, not non-streaming; prompts are keyed by
+**thinking order**, not difficulty (the `difficulty` field was removed in
+migration 0007); there is no "strict re-prompt on pass 2" and no multi-round
+"quota rebalancing" — both were replaced by overgeneration inside a single call;
+and the adaptive step now notes that the published path serves **one LOT + one
+HOT per step**, which the diagram did not say.
+
+**Two defects the live run found in the gate itself** (both fixed, both were
+mine, and neither would have shown without running it on real material):
+1. *Exact word matching rejected grounded questions.* The lesson says
+   "depicts"; a question said "depicted"; the vocabulary had no way to see they
+   are one word. Fixed by matching inflection **variants** rather than one
+   canonical stem — no single stem works, since stripping "-ing" gives "mov",
+   which no rule turns "move" into, so both forms are emitted and allowed to
+   meet. Verified it does not blunt the gate: "plasma", "temperature",
+   "pressure" and "intermolecular" each still yield only themselves.
+2. *Scanning every MCQ option punished good distractors.* A wrong option is
+   wrong on purpose, and wrong often means vocabulary the lesson never uses.
+   The gate rejected "What is the arrangement of particles in a solid?" —
+   stem and key both straight from the source — because one distractor said
+   "none". The lexical stage now scans **the stem and the option marked
+   correct only**. This loses nothing: "plasma" was the *correct answer* on
+   Q107 and Q109 and sat in Q114's stem, so all four original defects are
+   still caught. Lexical rejection on the published bank fell 61/76 → 49/76.
+
+**Not done:**
+- The `EXTRA` bundle problem from this session's audit is untouched: lo557/558/559
+  are extracted, grouped and described but unreachable by any learner.
+- `LessonDetailView` still returns `correct_answer` to students (76 of 93 legacy
+  rows on topic 276 have one). Raised as an open thread below.
+- The judge is not calibrated. There is no labelled set of supported/unsupported
+  questions, so its accuracy is anecdotal — two questions, one model comparison.
+
+
+### 2026-09-27 — Claude Code — generation-time grounding: the bank goes 18 -> 41 with nothing ungrounded
+
+**Branch:** `question-revisions` (11 commits). **`mavia-latest` was rewound to
+`f9c8937`** at the user's request and holds none of this work. Nothing pushed.
+
+**Tests:** `python manage.py test question_generation` — 130, OK. Verified in a
+clean `git worktree`, not only the working tree (see the Critical below).
+
+**What this session did.** The previous entry added a corrective-RAG gate after
+generation. This one fixed *generation*, because the user's call was right: the
+gate should stay strict and the generator should meet it, not the reverse.
+Five changes, each measured on topic 276:
+
+1. **Questions are written from every telling of a concept**, not the Normal
+   bundle alone (`concept_source_text`). Solid 32 -> 220 words. A learner on a
+   remediation rung was being asked about text they were never read.
+2. **The prompt forbids outside knowledge.** It had no prohibition at all, and
+   the HOT template actively said "do NOT ask for a fact stated word-for-word",
+   which pushed the model off-source with nowhere to go but its own knowledge.
+3. **`_validate_question` actually validates** — it accepted any answer letter
+   present in the choices, which is how `D) plasma` shipped.
+4. **Each format gets its own whole schema shape via `anyOf`.** This was the
+   big one. One merged shape had to leave `choices` optional, and Ollama
+   compiles the schema into a decoding grammar, so optional meant the model
+   skipped the options *every time*. HOT was MCQ-only, so every HOT call
+   produced nothing usable and the HOT bucket was filled by accident from LOT
+   output the Bloom classifier relabelled.
+5. **Stopped generating banks that are deleted on arrival.** 22 of 42 objects
+   generated a bank that `finalize_node_questions` deletes moments later.
+
+**Measured, topic 276:**
+
+| | gate only | + generator fixes | + anyOf |
+|---|---|---|---|
+| questions | 27 | 18 | **41** |
+| HOT | 5 | 5 | **12** |
+| ungrounded | 0 | 0 | **0** |
+| gate rejections | 228 | 40 | 100 |
+| runtime | 117 min | 44 min | 66 min |
+
+(The 27 -> 18 dip is not a regression: the 27 included banks attached to
+non-lead objects that survived only by finishing last.)
+
+**Live database:** topic 276's bank regenerated several times. Backups:
+`db.sqlite3.pre-grounding-gate.20260926` (76 questions, no gate),
+`db.sqlite3.baseline-strict-gate-old-generator.20260927` (27),
+`db.sqlite3.pre-anyof.20260927` (18). No learner responses existed at any point.
+
+**Decisions made on the user's behalf:**
+- Retrieval is scoped to the topic's materials, not a global PDF index. A
+  global one would let the judge validate a question against a passage the
+  learner never hears.
+- The lexical stage scans the stem and the *marked answer only*, not the
+  distractors. A wrong option is wrong on purpose and often uses unfamiliar
+  words; scanning them rejected questions whose stem and key were both
+  straight from the source.
+- Only the requested formats are offered in the schema. Left free the model
+  reaches for true/false — asked for two MCQ and one TF it returned three TF.
+
+**Watch out:**
+- **`anyOf` support depends on the model's grammar conversion.** Verified on
+  `llama3.2:3b` only. Re-test before switching `QUESTION_LLM_MODEL`, which the
+  user is considering (`gemma3:4b`, to run one model across MAVIA). Note also
+  that `gemma3:4b` was measured as a *worse* judge than `llama3.2:3b` — it
+  passed both "plasma" questions that llama rejected.
+- **Killing a background run does not kill its Python child.** Stopping one
+  regeneration left a process writing to `db.sqlite3` while a second started,
+  silently corrupting a measurement. Kill by PID and verify with
+  `Get-CimInstance Win32_Process`.
+- A whole-branch review found that `grounding.py` had never been committed
+  while `pipeline.py` imported it — the branch did not run on a fresh
+  checkout, and every green test result had been measured against a working
+  tree that differed from `HEAD`. Fixed; verify in a worktree, not the tree
+  you are editing.
+
+**Uncommitted and not mine:** PostgreSQL work in `backend/config/settings.py`,
+the web-app changes, and both IEEE manuscript `.docx` files. A broad `git add`
+had staged all of it at one point; it was unstaged before committing. Check
+`git status` before the next commit.
+
+**Not done:** the user ended the session mid-decision on the True/False-in-MCQ
+defect below.
+
+
 ---
 
 ## Open threads
+
+- **True/false questions wearing an MCQ costume.** 2 of 14 MCQs in topic 276's
+  bank are propositions padded to four options: Q621 "A book and a balloon both
+  occupy space but have different shapes." with `{A: True, B: False, C: "It
+  doesn't matter", D: "This statement is irrelevant"}`, and Q616 padded with
+  `liquid`/`gas`. Cause: with `anyOf` the model commits to the MCQ branch while
+  decoding, and that shape requires A-D, so a model that wanted a proposition
+  must invent two options. Both are HOT, the bucket changed from MCQ-only to a
+  mixed split. **Decision left open:** reject them, or convert them to real TF
+  items (better for a thin bank, but means rewriting model output). Note the
+  detection rule — "options offer True and False as the answer frame" — is
+  structural and holds across science lessons, but would wrongly reject a
+  legitimate programming MCQ like "what does `print(3 > 2)` output?". Say so in
+  the comment rather than claim it is universal. — raised by Claude Code,
+  2026-09-27
+- **The gate now rejects more than it accepts:** 100 rejections against 76
+  drafts on the last run, and MCQ is hit far harder than TF (14 MCQ vs 27 TF
+  survive, though generation produces ~55% MCQ). Plausibly because the lexical
+  stage scans the marked answer, and an MCQ's answer is a phrase where a TF's
+  is just "True". Unmeasured — the rejections are in `GenerationEvent` with
+  their stage and reason, so it is directly answerable. — raised by Claude
+  Code, 2026-09-27
+- **Five concepts still have no questions** (Melting, Freezing, Condensation,
+  "Matter usually exists...", the changes-of-state figure). They are the short
+  ones, but a reliability harness got 6/6 from Melting in isolation, so the
+  questions are generated and then rejected by the gate. Path mode advances to
+  the next step *with* a question, so an empty concept is never taught. —
+  raised by Claude Code, 2026-09-27
+- **The four-category spread is very uneven** — Skills 24, Facts 9, Meaning 7,
+  Outcome 1 — because `category` is a fixed lookup on `bloom_level`
+  (`BLOOM_TO_CATEGORY`), not a prediction. Worth stating that way in the
+  manuscript: a panel asking "how is category predicted?" has a sharp question
+  and the answer is "it isn't". — raised by Claude Code, 2026-09-27
+- **Students are served the answer key.** `adaptive.views.LessonDetailView`
+  (permission `IsStudent`) returns `lessons.Question.correct_answer` via
+  `lessons/services/lesson_package.py::_lesson_questions`. On topic 276 that is
+  76 of 93 rows with a populated answer, sent to any enrolled learner's device.
+  Path mode is careful about this (`adaptive.services.student_safe_step`); this
+  endpoint is not. — raised by Claude Code, 2026-09-26
+- **Three learning objects are unreachable by any learner.** lo557/558/559
+  (material 48's *Everyday Examples* telling) sit in group 574's `EXTRA` bundle.
+  `_versions` skips `EXTRA`, `represented_by` disqualifies them as alternates,
+  and they are the only 3 of topic 276's 45 objects with no audio in any
+  playlist. Decide what `EXTRA` is for, or stop generating it. — raised by
+  Claude Code, 2026-09-26
+- **The question judge is uncalibrated.** `QUESTION_JUDGE_MODEL` decides what
+  reaches a learner, and its accuracy rests on two questions and one model
+  comparison (`llama3.2:3b` caught the "plasma" answers, `gemma3:4b` did not).
+  A labelled set of supported/unsupported questions is wanted before the
+  lexical stage's tolerance (`QUESTION_VALIDATION_MAX_NOVEL_TERMS`) is relaxed
+  from 0. — raised by Claude Code, 2026-09-26
+- **A bundle with no assigned version role still feeds the prompt.** The EXTRA
+  exclusion in `concept_source_text` only fires once a role is stored, and
+  nothing orders the versions step before question generation. A teacher who
+  generates before opening the versions screen, then publishes, can serve a
+  question written from a bundle later marked EXTRA. The run trace names them;
+  regenerating on a role change was not implemented. Zero unclassified bundles
+  on topic 276 today. — raised by Claude Code, 2026-09-27
+
+- **Students are served the answer key.** `adaptive.views.LessonDetailView`
+  (permission `IsStudent`) returns `lessons.Question.correct_answer` via
+  `lessons/services/lesson_package.py::_lesson_questions`. On topic 276 that is
+  76 of 93 rows with a populated answer, sent to any enrolled learner's device.
+  Path mode is careful about this (`adaptive.services.student_safe_step`); this
+  endpoint is not. — raised by Claude Code, 2026-09-26
+- **Three learning objects are unreachable by any learner.** lo557/558/559
+  (material 48's *Everyday Examples* telling) sit in group 574's `EXTRA` bundle.
+  `_versions` skips `EXTRA`, `represented_by` disqualifies them as alternates,
+  and they are the only 3 of topic 276's 45 objects with no audio in any
+  playlist. Decide what `EXTRA` is for, or stop generating it. — raised by
+  Claude Code, 2026-09-26
+- **The question judge is uncalibrated.** `QUESTION_JUDGE_MODEL` decides what
+  reaches a learner, and its accuracy rests on two questions and one model
+  comparison (`llama3.2:3b` caught the "plasma" answers, `gemma3:4b` did not).
+  A labelled set of supported/unsupported questions is wanted before the
+  lexical stage's tolerance (`QUESTION_VALIDATION_MAX_NOVEL_TERMS`) is relaxed
+  from 0. — raised by Claude Code, 2026-09-26
 
 - **Regenerate figure descriptions** with the new RTCF prompt (needs Ollama's
   vision model). Clears the model's chatter from lesson text and from one
   concept's name. A before/after measurement (length, preamble, overlap with
   the lesson) would turn the prompt rewrite into a measured claim for the
   manuscript; not yet run. — raised by Claude Code, 2026-09-21
-- **Publish both topics** once TTS is reachable, then compare the derived paths
-  with the gold standard and append the result to
-  `docs/learning_path_revision_2026-09-17.md`. As of 2026-09-21 both topics are
-  content-complete and the TTS retry is in, so nothing known is blocking a
-  publish — but no publish has actually succeeded yet, and `LearningPathStep`
-  is still empty, so the derived path has never once been compared with the
-  gold standard. That comparison is the real open item. — raised by Claude
-  Code, 2026-09-21
+- **Split topic 163 into three topics**, one per organ system, in the UI. It is
+  three lessons in one topic, and every criterion assumes a topic *is* a lesson.
+  Measured 2026-09-22: 41 accepted edges → 22, and all 20 cross-lesson edges
+  disappear, with no code. This is the single largest remaining wrong-edge
+  source and nothing in the criteria can reach it. — raised by Claude Code,
+  2026-09-22
+- **Have the teacher check `gold_map_152.json`.** Its concept map was
+  reconstructed from `gold_map_62` (same lesson) plus the merges the revision
+  doc records, not stated by the teacher for today's objects. Five of seven
+  member counts match 62 exactly; `changing` and `examples` differ because
+  extraction chunked differently. It is now an acceptance test, so it should be
+  confirmed before the manuscript quotes it. — raised by Claude Code, 2026-09-22
+- **Join topic 152's split concepts** (318/319 "Changing From One State to
+  Another", and 331/403 "Comparing the Three States") with **Move into another
+  concept…**. Joining 318/319 closes `comparing → changing`, topic 152's last
+  missing required edge. When it closes, empty `known_missing` in
+  `gold_map_152.json` and re-export the fixture, or `test_gold_paths` fails on
+  the gap closing — which is what that assertion is for. — raised by Claude
+  Code, 2026-09-22
 - **Empty-group cleanup on material delete** — proposed, awaiting the user's
   go-ahead. Less urgent than it looked: the re-upload refilled all 31, so none
   are empty now. The underlying bug stands, and group 326 did inherit a stale
@@ -350,4 +905,14 @@ roles written by past page loads.
 - **A third lesson** is what the learning-path criteria actually need; they are
   currently fitted to the same two lessons the gold standard came from. Re-run
   `python manage.py evaluate_gold_paths` when one exists. — raised by Claude
-  Code, 2026-09-21
+  Code, 2026-09-21. *Partly addressed 2026-09-22*: `test_gold_paths` now runs a
+  third fixture, but it is the **same lesson** as topic 62 in the shape the
+  pipeline derives today, so it tests a different failure mode, not a different
+  lesson. A genuinely unseen lesson is still wanted. Note also that
+  `evaluate_gold_paths` still sweeps only topics 62 and 79.
+- **Head words can be ordinary adjectives.** `Small intestine → Spine` is
+  accepted at `ref_forward` 0.5 because "small intestine" lends "small" a full
+  name-weight reference to anything saying "small". `head_words` only checks
+  that a head word is unambiguous among the concept *names*, not that it is a
+  term at all. Cheap to fix, not measured, not attempted. — raised by Claude
+  Code, 2026-09-22

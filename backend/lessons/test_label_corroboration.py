@@ -453,3 +453,13 @@ class LabelCorroborationTests(TestCase):
         other_twin = self.object(third_material, other_group, "Solid", "another solid definition")
         decision = self.decision({self.twin.content: .40, other_twin.content: .45})
         self.assertFalse(decision["evidence"].get("label_corroborated", False))
+
+
+class GeneratedFigureTitleTests(TestCase):
+    def test_a_section_named_figure_title_is_not_an_author_label(self):
+        # Extraction names an uncaptioned figure after its section. Two PDFs
+        # with a "Solids" section must not have their figures auto-grouped on
+        # that name alone.
+        for title in ("Solids - figure", "Solids - figure 2", "Changing From One State to Another - table"):
+            self.assertEqual(semantic._specific_normalized_label(title), "", title)
+        self.assertEqual(semantic._specific_normalized_label("Solids"), "solid")
