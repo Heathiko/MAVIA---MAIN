@@ -11,6 +11,7 @@ import EmptyState from "@/components/EmptyState";
 import { Course, Lesson, fetchCourse, fetchLessons } from "@/data/library";
 import { useNarration } from "@/hooks/useNarration";
 import { useListPicker } from "@/nav/useListPicker";
+import { useGuideBusy } from "@/guide/GuideActivity";
 import { colors, gradients, radii, shadow, spacing } from "@/theme";
 
 export default function CourseDetailScreen() {
@@ -50,13 +51,14 @@ export default function CourseDetailScreen() {
   // The same four-at-a-time reading as the course list, so the two steps of
   // "which course, then which lesson" feel like one flow with one set of keys.
   const narration = useNarration();
+  const guideBusy = useGuideBusy();
   useListPicker<Lesson>({
     items: lessons,
     labelOf: (lesson) => lesson.title,
     question: `Which lesson in ${title}?`,
     narration,
     onPick: openLesson,
-    enabled: !loading && lessons.length > 0,
+    enabled: !loading && lessons.length > 0 && !guideBusy,
   });
 
   return (

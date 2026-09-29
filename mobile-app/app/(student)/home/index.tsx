@@ -17,6 +17,7 @@ import EmptyState from "@/components/EmptyState";
 import { useResponsive } from "@/hooks/useResponsive";
 import { useNarration } from "@/hooks/useNarration";
 import { useListPicker } from "@/nav/useListPicker";
+import { useGuideBusy } from "@/guide/GuideActivity";
 import { Course, fetchContinueLearning, fetchCourses } from "@/data/library";
 import { colors, radii, spacing } from "@/theme";
 
@@ -67,7 +68,10 @@ export default function CourseListScreen() {
   // Searching is a sighted path, so typing a query turns the reading off
   // rather than having it re-read on every keystroke.
   const narration = useNarration();
-  const pickerReady = !loading && filtered.length > 0 && query.trim() === "";
+  // Silent while the guide or a practice drill is speaking: one voice, and
+  // the guide owns it (see GuideActivity).
+  const guideBusy = useGuideBusy();
+  const pickerReady = !loading && filtered.length > 0 && query.trim() === "" && !guideBusy;
   useListPicker<Course>({
     items: filtered,
     labelOf: (course) => course.title,

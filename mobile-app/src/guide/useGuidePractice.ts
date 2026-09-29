@@ -31,6 +31,13 @@ export type PracticeInput =
   | { kind: "command"; command: "repeat" | "back" | "next" }
   | { kind: "letter"; letter: AnswerLetter };
 
+// Roughly how long a prompt takes to read, used only as a floor for the
+// watchdog below -- the same ~11 chars/sec useNarration estimates with, plus
+// room so the watchdog never fires while the voice is still going.
+function promptTimeoutMs(text: string): number {
+  return Math.min(Math.max((text.length / 11) * 1000, 3000), 30000) + 2000;
+}
+
 function matches(expected: ExpectedInput, got: PracticeInput): boolean {
   if (expected.kind !== got.kind) return false;
   if (expected.kind === "letter" && got.kind === "letter") return expected.letter === got.letter;
@@ -137,13 +144,18 @@ export function useGuidePractice(narration: Narrator): Practice {
         return;
       }
 
-      narrationRef.current.speak(drill.prompt, {
-        onDone: () => {
-          if (run !== runRef.current) return;
-          waitingRef.current = true;
-          armNudge(run, index);
-        },
-      });
+      const beginWaiting = () => {
+        if (run !== runRef.current || waitingRef.current) return;
+        waitingRef.current = true;
+        armNudge(run, index);
+      };
+      narrationRef.current.speak(drill.prompt, { onDone: beginWaiting });
+      // Watchdog. onDone is not guaranteed -- a platform can drop it, and
+      // anything else calling speak() cancels it outright -- and a drill that
+      // never starts waiting can never be answered or nudged. Start listening
+      // regardless once the prompt has had time to be read.
+      clearTimer();
+      timerRef.current = setTimeout(beginWaiting, promptTimeoutMs(drill.prompt));
     },
     [armNudge, clearTimer, finish]
   );
@@ -175,9 +187,16 @@ export function useGuidePractice(narration: Narrator): Practice {
   const feed = useCallback(
     (input: PracticeInput) => {
       if (!runningRef.current) return false;
-      // Swallow anything arriving while a prompt is still being read, so a
-      // stray press does not act on the app behind the practice.
-      if (!waitingRef.current) return true;
+      // Only a run that is actually waiting for an answer consumes input.
+      //
+      // This used to swallow everything while running, on the reasoning that a
+      // stray press should not reach the app behind the practice. That was
+      // wrong in the one case that mattered: if a prompt's onDone never fired
+      // -- which happens when anything else calls speak() and cancels it --
+      // the run stayed forever "running but not waiting" and ate every key the
+      // learner pressed, the back key included. A dead back key is far worse
+      // than a stray press, so input now falls through to the app instead.
+      if (!waitingRef.current) return false;
 
       const drill = DRILLS[stepRef.current];
       if (!drill) return true;

@@ -8,6 +8,7 @@ import { useNarration } from "@/hooks/useNarration";
 import { hasHeardGuide, useGuideOnFirstLaunch } from "@/guide/useGuide";
 import { GuideMenu } from "@/guide/GuideMenu";
 import { useGuidePractice } from "@/guide/useGuidePractice";
+import { GuideActivityProvider } from "@/guide/GuideActivity";
 import { useBrailleKeypad } from "@/input/useBrailleKeypad";
 import { useVoiceCommands } from "@/voice/useVoiceCommands";
 import { SwipeToCourses } from "@/nav/SwipeToCourses";
@@ -54,12 +55,19 @@ export default function StudentLayout() {
   // paragraphs twice. Never heard it: play the whole thing. Heard it: offer
   // the four sections and read only the one asked for.
   const openGuide = useCallback(() => {
-    setMenuOpen(false);
+    // Minus twice runs the practice again. A learner who wants to rehearse
+    // the moves rather than hear them described has no other way back to it
+    // once the first run is done -- and it is the part worth rehearsing.
+    if (menuOpen) {
+      setMenuOpen(false);
+      practice.start();
+      return;
+    }
     void hasHeardGuide().then((heard) => {
       if (heard) setMenuOpen(true);
       else practice.start();
     });
-  }, [practice]);
+  }, [menuOpen, practice]);
 
   const goToCourses = useCallback(() => {
     // During practice a swipe is the drill, not a navigation.
@@ -75,12 +83,12 @@ export default function StudentLayout() {
   // only then leave the screen. Without the ordering, pressing divide during
   // the guide would navigate while it kept talking over the new screen.
   const goBack = useCallback(() => {
-    if (practice.running) {
-      // The back key is itself the last drill, so practice gets first refusal.
-      // Only once it is over does divide mean "leave" again.
-      practice.feed({ kind: "command", command: "back" });
-      return;
-    }
+    // The back key is itself the last drill, so practice gets first refusal --
+    // but only if it actually consumes the press. If it does not (it is not
+    // waiting, or is waiting for something else) divide must still mean
+    // "leave", or a practice run that lost its voice leaves a learner with no
+    // way out of the screen they are on.
+    if (practice.running && practice.feed({ kind: "command", command: "back" })) return;
     if (guide.playing) {
       guide.stop();
       return;
@@ -108,6 +116,9 @@ export default function StudentLayout() {
         else if (action.kind === "repeat") practice.feed({ kind: "command", command: "repeat" });
         else if (action.kind === "next") practice.feed({ kind: "command", command: "next" });
         else if (action.kind === "back") goBack();
+        // Minus abandons a practice run rather than restarting it underneath
+        // itself: someone pressing it mid-drill wants out, not a second copy.
+        else if (action.kind === "guide") practice.quit();
         return;
       }
       if (action.kind === "guide") openGuide();
@@ -145,6 +156,7 @@ export default function StudentLayout() {
   }
 
   return (
+    <GuideActivityProvider busy={practice.running || guide.playing || menuOpen}>
     <SwipeToCourses onSwipe={goToCourses}>
       <View style={styles.fill}>
         <GuideMenu
@@ -177,6 +189,7 @@ export default function StudentLayout() {
         </Tabs>
       </View>
     </SwipeToCourses>
+    </GuideActivityProvider>
   );
 }
 

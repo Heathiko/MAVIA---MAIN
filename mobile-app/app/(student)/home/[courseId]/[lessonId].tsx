@@ -12,6 +12,7 @@ import { useAudioPlayer } from "@/hooks/useAudioPlayer";
 import { useNarration } from "@/hooks/useNarration";
 import { useVoiceCommands } from "@/voice/useVoiceCommands";
 import { useBrailleKeypad } from "@/input/useBrailleKeypad";
+import { useGuideBusy } from "@/guide/GuideActivity";
 import {
   ApiSubmitResult,
   Variant,
@@ -169,7 +170,18 @@ export default function LessonPlayerScreen() {
   // never the two at once. A version with no generated audio is read aloud by
   // the device and then hands on exactly as finished audio would, so a
   // missing mp3 stalls nobody.
+  // A lesson never plays underneath the guide. expo-speech has one voice and
+  // the audio player is a second sound source, so a practice drill speaking
+  // while a real lesson narrates leaves a learner listening to both at once --
+  // reported from a real run. The guide wins; the lesson picks up the moment
+  // it stops, because this effect re-runs when guideBusy clears.
+  const guideBusy = useGuideBusy();
   useEffect(() => {
+    if (guideBusy) {
+      stopNarration();
+      stopAudio();
+      return;
+    }
     if (phase !== "audio" || !track) return;
     const line = pendingAnnouncement.current;
     pendingAnnouncement.current = null;
@@ -205,7 +217,7 @@ export default function LessonPlayerScreen() {
       stopNarration();
       stopAudio();
     };
-  }, [phase, trackIndex, track?.audio_ready, track?.audio_url, track?.text, load, speak, stopNarration, stopAudio, topicReplay]);
+  }, [guideBusy, phase, trackIndex, track?.audio_ready, track?.audio_url, track?.text, load, speak, stopNarration, stopAudio, topicReplay]);
 
   // Belt and braces for the phases that have no audio effect of their own:
   // QuestionCard starts narrating from its own mount effect, which React runs

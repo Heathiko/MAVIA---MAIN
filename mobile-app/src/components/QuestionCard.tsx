@@ -6,6 +6,7 @@ import { useBrailleKeypad } from "@/input/useBrailleKeypad";
 import { letterForTapCount, useTapCounter } from "@/input/tapAnswers";
 import { useScreenReaderEnabled } from "@/hooks/useScreenReaderEnabled";
 import { useOneTimeGuidePart } from "@/guide/useGuide";
+import { useGuideBusy } from "@/guide/GuideActivity";
 import { colors, radii, spacing } from "@/theme";
 
 // Mirrors lessons.Question from the API.
@@ -110,13 +111,15 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
   // Waits on the tip's storage check: reading the question the instant it
   // mounts would settle the wording before we know whether the tip belongs in
   // front of it. `ready` flips once, so later questions are unaffected.
+  const guideBusy = useGuideBusy();
   useEffect(() => {
-    if (!answeringTip.ready) return;
+    // Same rule as the lesson audio: never read a question over the guide.
+    if (guideBusy || !answeringTip.ready) return;
     advancedRef.current = false;
     readQuestionAloud({ withTip: true });
     return () => narration.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [question.id, answeringTip.ready]);
+  }, [question.id, answeringTip.ready, guideBusy]);
 
   // Asked to hear it again. Only while the question is still open: once an
   // answer is in, the read-back and verdict are already speaking and the card
