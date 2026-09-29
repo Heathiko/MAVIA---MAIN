@@ -89,5 +89,3 @@ export function useNarration() {
 
   return { speak, stop, isSpeaking: speakingText !== null, speakingText };
 }
-
-export type NarrationController = ReturnType<typeof useNarration>;

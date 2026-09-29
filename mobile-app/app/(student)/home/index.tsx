@@ -15,6 +15,8 @@ import GradientTile from "@/components/GradientTile";
 import ListRow from "@/components/ListRow";
 import EmptyState from "@/components/EmptyState";
 import { useResponsive } from "@/hooks/useResponsive";
+import { useNarration } from "@/hooks/useNarration";
+import { useListPicker } from "@/nav/useListPicker";
 import { Course, fetchContinueLearning, fetchCourses } from "@/data/library";
 import { colors, radii, spacing } from "@/theme";
 
@@ -52,9 +54,28 @@ export default function CourseListScreen() {
       )
     : courses;
 
-  function openCourse(course: Course) {
-    router.push(`/home/${course.id}`);
-  }
+  const openCourse = useCallback(
+    (course: Course) => {
+      router.push(`/home/${course.id}`);
+    },
+    [router]
+  );
+
+  // Choosing by ear: the courses are read out four at a time and picked by
+  // letter or by keypad. Held back until the list has actually loaded, so the
+  // prompt never announces an empty list and then has to correct itself.
+  // Searching is a sighted path, so typing a query turns the reading off
+  // rather than having it re-read on every keystroke.
+  const narration = useNarration();
+  const pickerReady = !loading && filtered.length > 0 && query.trim() === "";
+  useListPicker<Course>({
+    items: filtered,
+    labelOf: (course) => course.title,
+    question: "Which course would you like?",
+    narration,
+    onPick: openCourse,
+    enabled: pickerReady,
+  });
 
   return (
     <ScreenContainer>

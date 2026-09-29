@@ -11,6 +11,7 @@ import QuestionCard, { SubmitResult } from "@/components/QuestionCard";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
 import { useNarration } from "@/hooks/useNarration";
 import { useVoiceCommands } from "@/voice/useVoiceCommands";
+import { useBrailleKeypad } from "@/input/useBrailleKeypad";
 import {
   ApiSubmitResult,
   Variant,
@@ -245,6 +246,24 @@ export default function LessonPlayerScreen() {
         if (phase === "questions") setQuestionRepeat((n) => n + 1);
         else if (phase === "audio" && canGrade) goToQuestions();
       },
+    },
+    { enabled: !loading && !error }
+  );
+
+  // The multiply key is "say that again" in physical form: the same thing the
+  // repeat-the-lesson / repeat-the-question commands do, for a learner who
+  // would rather press than speak -- or whose voice the recognizer is having a
+  // bad day with. Which of the two it means follows the phase, so one key does
+  // the right thing without the learner having to decide which.
+  // The answer keys are QuestionCard's, and back / guide are the layout's.
+  useBrailleKeypad(
+    (action) => {
+      if (action.kind !== "repeat") return;
+      if (phase === "questions") setQuestionRepeat((n) => n + 1);
+      else if (phase !== "done") {
+        setState((prev) => ({ ...prev, phase: "audio", trackIndex: prev.pathStep ? 0 : prev.trackIndex }));
+        setTopicReplay((n) => n + 1);
+      }
     },
     { enabled: !loading && !error }
   );

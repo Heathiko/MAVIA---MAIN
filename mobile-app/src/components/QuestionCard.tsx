@@ -5,6 +5,7 @@ import { useNarration } from "@/hooks/useNarration";
 import { useBrailleKeypad } from "@/input/useBrailleKeypad";
 import { letterForTapCount, useTapCounter } from "@/input/tapAnswers";
 import { useScreenReaderEnabled } from "@/hooks/useScreenReaderEnabled";
+import { useOneTimeGuidePart } from "@/guide/useGuide";
 import { colors, radii, spacing } from "@/theme";
 
 // Mirrors lessons.Question from the API.
@@ -84,9 +85,19 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
 
   // "A. Solid. B. Liquid." -- the letter is the key they press, so it is
   // read with every option, not just implied by the order.
-  function readQuestionAloud() {
+  // How to answer, said once, in front of the very first question a learner
+  // ever reaches -- where it is about to be useful -- rather than only in the
+  // guide at launch. Spliced into the same utterance as the question, because
+  // a second speak() would cut the first one off.
+  const answeringTip = useOneTimeGuidePart("answering");
+
+  function readQuestionAloud({ withTip = false }: { withTip?: boolean } = {}) {
     const choiceText = options.map((o) => `${o.key.toUpperCase()}. ${o.label}.`).join(" ");
-    narration.speak(choiceText ? `${question.prompt} ${choiceText}` : question.prompt, {
+    const body = choiceText ? `${question.prompt} ${choiceText}` : question.prompt;
+    // Only the automatic first read carries the tip. Asking to hear the
+    // question again means the question, not the instructions.
+    const tip = withTip && !openEnded ? answeringTip.take() : "";
+    narration.speak(tip ? `${tip} ${body}` : body, {
       onDone: openEnded ? advanceOnce : undefined,
     });
   }
@@ -95,12 +106,17 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
   // Open-ended questions have nothing to grade -- move on as soon as the
   // prompt's been read instead of waiting on a tap that never comes from
   // choose() below.
+  //
+  // Waits on the tip's storage check: reading the question the instant it
+  // mounts would settle the wording before we know whether the tip belongs in
+  // front of it. `ready` flips once, so later questions are unaffected.
   useEffect(() => {
+    if (!answeringTip.ready) return;
     advancedRef.current = false;
-    readQuestionAloud();
+    readQuestionAloud({ withTip: true });
     return () => narration.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [question.id]);
+  }, [question.id, answeringTip.ready]);
 
   // Asked to hear it again. Only while the question is still open: once an
   // answer is in, the read-back and verdict are already speaking and the card
@@ -161,7 +177,7 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
     }
   }
 
-  // Braille keypad over Bluetooth: 7, 8, 9 and + answer A, B, C and D (the
+  // Braille keypad over Bluetooth: 7, 8, 4 and 5 answer A, B, C and D (the
   // mapping is src/input/brailleKeypad.ts). Answering goes through choose(),
   // exactly like a tap, so the read-back and verdict are identical.
   const numLockWarnedRef = useRef(false);
@@ -171,13 +187,17 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
         // Once per question: a held or repeated arrow should not become a loop.
         if (numLockWarnedRef.current) return;
         numLockWarnedRef.current = true;
-        narration.speak("Number lock is off. Press Num Lock, then answer with 7, 8, 9, or plus.");
+        narration.speak("Number lock is off. Press Num Lock, then answer with 7, 8, 4, or 5.");
         return;
       }
+      // The command keys (* / - +) are handled a level up, on the screen, so
+      // that they work the same while a lesson plays as they do on a question.
+      // Only an answer key means anything here.
+      if (action.kind !== "answer") return;
       if (choosingRef.current || answered || submitting) return;
       const option = options.find((o) => o.key === action.letter);
       if (!option) {
-        // e.g. + (D) on a True/False question: say so rather than do nothing.
+        // e.g. 5 (D) on a True/False question: say so rather than do nothing.
         narration.speak(`There is no option ${action.letter.toUpperCase()}.`);
         return;
       }

@@ -11,7 +11,19 @@
 // A screen that has no handler for a command simply ignores it, so a command
 // can exist before every screen supports it.
 
-export type VoiceCommandId = "repeatTopic" | "repeatQuestion";
+export type VoiceCommandId =
+  | "repeatTopic"
+  | "repeatQuestion"
+  | "chooseA"
+  | "chooseB"
+  | "chooseC"
+  | "chooseD"
+  | "nextPage"
+  | "goBack"
+  | "playGuide";
+
+/** The four list/answer letters, in the order they are read out. */
+export const LETTER_COMMANDS = ["chooseA", "chooseB", "chooseC", "chooseD"] as const;
 
 export type VoiceCommand = {
   id: VoiceCommandId;
@@ -40,6 +52,12 @@ export const VOICE_COMMANDS: VoiceCommand[] = [
       "repeat the topic",
       "can you say the topic again",
       "say the topic again",
+      // What learners actually say, read out of a recognizer transcript rather
+      // than guessed: "the topic" is our word for it, not theirs.
+      "can you repeat the lesson",
+      "please repeat the lesson",
+      "repeat the lesson",
+      "say the lesson again",
     ],
   },
   {
@@ -51,7 +69,57 @@ export const VOICE_COMMANDS: VoiceCommand[] = [
       "repeat the question",
       "can you say the question again",
       "say the question again",
+      "can you repeat that question",
+      "repeat that question",
     ],
+  },
+  // The list letters. These are the one place a single word is allowed to be a
+  // command, because a list screen is the only place they are ever listened
+  // for: see useListPicker, which turns them off while it is speaking and
+  // while any other screen is open. On a lesson screen a bare "a" would fire
+  // constantly -- "a solid has a definite shape".
+  ...(
+    [
+      ["chooseA", "a", ["a", "ay", "eh"]],
+      ["chooseB", "b", ["b", "bee", "be"]],
+      ["chooseC", "c", ["c", "see", "sea"]],
+      ["chooseD", "d", ["d", "dee"]],
+    ] as [VoiceCommandId, string, string[]][]
+  ).map(([id, letter, soundsLike]) => ({
+    id,
+    description: `Choose option ${letter.toUpperCase()}`,
+    phrases: [
+      ...soundsLike,
+      ...soundsLike.flatMap((word) => [`letter ${word}`, `option ${word}`, `number ${word}`]),
+    ],
+  })),
+  {
+    id: "nextPage",
+    description: "Hear the next four",
+    // The answer to "is the one you want in those four?" when it is not.
+    phrases: [
+      "next four",
+      "the next four",
+      "next page",
+      "show me more",
+      "read me more",
+      "more options",
+      "not there",
+      "its not there",
+      "not in there",
+      "none of those",
+      "none of these",
+    ],
+  },
+  {
+    id: "goBack",
+    description: "Go back",
+    phrases: ["go back", "take me back", "go back home", "back to my courses", "go to my courses"],
+  },
+  {
+    id: "playGuide",
+    description: "Hear the guide again",
+    phrases: ["play the guide", "hear the guide", "how does this work", "what can i say", "help me"],
   },
 ];
 

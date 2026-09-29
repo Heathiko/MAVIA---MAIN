@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { FlatList, StyleSheet, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
@@ -9,6 +9,8 @@ import GradientTile from "@/components/GradientTile";
 import ListRow from "@/components/ListRow";
 import EmptyState from "@/components/EmptyState";
 import { Course, Lesson, fetchCourse, fetchLessons } from "@/data/library";
+import { useNarration } from "@/hooks/useNarration";
+import { useListPicker } from "@/nav/useListPicker";
 import { colors, gradients, radii, shadow, spacing } from "@/theme";
 
 export default function CourseDetailScreen() {
@@ -38,9 +40,24 @@ export default function CourseDetailScreen() {
   const title = course?.title ?? "Course";
   const subtitle = course?.subtitle ?? "";
 
-  function openLesson(lesson: Lesson) {
-    router.push(`/home/${courseId}/${lesson.id}`);
-  }
+  const openLesson = useCallback(
+    (lesson: Lesson) => {
+      router.push(`/home/${courseId}/${lesson.id}`);
+    },
+    [router, courseId]
+  );
+
+  // The same four-at-a-time reading as the course list, so the two steps of
+  // "which course, then which lesson" feel like one flow with one set of keys.
+  const narration = useNarration();
+  useListPicker<Lesson>({
+    items: lessons,
+    labelOf: (lesson) => lesson.title,
+    question: `Which lesson in ${title}?`,
+    narration,
+    onPick: openLesson,
+    enabled: !loading && lessons.length > 0,
+  });
 
   return (
     <View style={styles.screen}>
