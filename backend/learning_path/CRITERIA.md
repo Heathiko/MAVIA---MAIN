@@ -69,13 +69,13 @@ refused (`services/teacher_links.py`). Screen: `docs/superpowers/specs/2026-09-2
 ## Measuring
 
 ```bash
-python manage.py evaluate_gold_paths --topics 62 79 152 340 --by-clue
+python manage.py evaluate_gold_paths --topics 62 79 152 340 357 --by-clue
 python manage.py evaluate_gold_paths --topics 340 --without meaning      # ablation
 python manage.py evaluate_gold_paths --topics 62 79 152 --build-on-latest
 python manage.py test learning_path.test_gold_paths
 ```
 
-Development set: gold 62, 79, 152. Test set: 340 (AI-drafted key), 357 when its key arrives.
+Development set: gold 62, 79, 152. Test set: 340 and 357 (AI-drafted keys).
 Never tune on the test set.
 
 ## History

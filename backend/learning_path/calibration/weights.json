@@ -6,7 +6,8 @@
     62,
     79,
     152,
-    340
+    340,
+    357
   ],
   "unrelated": [
     [
@@ -20,23 +21,27 @@
     [
       340,
       79
+    ],
+    [
+      340,
+      357
     ]
   ],
-  "related_cutoff": 0.2443,
-  "meaning_cutoff": 0.2981,
+  "related_cutoff": 0.2472,
+  "meaning_cutoff": 0.3006,
   "weights": {
-    "name": 0.9746,
-    "terms": 0.3761,
-    "meaning": 0.3522,
+    "name": 0.9808,
+    "terms": 0.2495,
+    "meaning": 0.3167,
     "heading": 0.0,
-    "order": 0.4055
+    "order": 0.2513
   },
   "agreement": {
-    "name": 0.726,
-    "terms": 0.5929,
-    "meaning": 0.5872,
-    "heading": 0.375,
-    "order": 0.6
+    "name": 0.7273,
+    "terms": 0.562,
+    "meaning": 0.5785,
+    "heading": 0.5,
+    "order": 0.5625
   },
-  "pairs": 250
+  "pairs": 294
 }

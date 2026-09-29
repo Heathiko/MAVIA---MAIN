@@ -534,10 +534,6 @@
         ],
         [
           "liquid",
-          "examples"
-        ],
-        [
-          "liquid",
           "gas"
         ],
         [
@@ -637,7 +633,7 @@
       "reachable_count": 10,
       "accepted_precision": 0.5714285714285714,
       "accepted_by_rule": {
-        "fusion": 14
+        "fusion": 15
       },
       "order": [
         "matter",

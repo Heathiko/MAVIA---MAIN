@@ -668,6 +668,10 @@
         ],
         [
           "changing",
+          "comparing"
+        ],
+        [
+          "changing",
           "comparing_detail"
         ],
         [
@@ -688,19 +692,11 @@
         ],
         [
           "comparing",
-          "changing"
-        ],
-        [
-          "comparing",
           "comparing_detail"
         ],
         [
           "comparing",
           "gas"
-        ],
-        [
-          "comparing",
-          "ice_example"
         ],
         [
           "comparing",
@@ -1202,6 +1198,332 @@
       ],
       "order_matches": false,
       "kendall_tau": 0.7142857142857143,
+      "ignored_links": [],
+      "unkeyed_concepts": 0,
+      "gate_loss": []
+    },
+    {
+      "topic": 357,
+      "accepted": [
+        [
+          "reproduction",
+          "parts_figure"
+        ],
+        [
+          "reproduction",
+          "petals"
+        ],
+        [
+          "reproduction",
+          "pistil"
+        ],
+        [
+          "reproduction",
+          "stamen"
+        ]
+      ],
+      "pending": [
+        [
+          "examples",
+          "parts_figure"
+        ],
+        [
+          "examples",
+          "seed"
+        ],
+        [
+          "examples",
+          "stamen"
+        ],
+        [
+          "fertilization",
+          "examples"
+        ],
+        [
+          "fertilization",
+          "parts_figure"
+        ],
+        [
+          "fertilization",
+          "pollination"
+        ],
+        [
+          "fertilization",
+          "seed"
+        ],
+        [
+          "fruit",
+          "fertilization"
+        ],
+        [
+          "fruit",
+          "petals"
+        ],
+        [
+          "fruit",
+          "pollination"
+        ],
+        [
+          "fruit",
+          "reproduction"
+        ],
+        [
+          "petals",
+          "examples"
+        ],
+        [
+          "petals",
+          "parts_figure"
+        ],
+        [
+          "pistil",
+          "examples"
+        ],
+        [
+          "pistil",
+          "fruit"
+        ],
+        [
+          "pistil",
+          "parts_figure"
+        ],
+        [
+          "pistil",
+          "petals"
+        ],
+        [
+          "pistil",
+          "pollination"
+        ],
+        [
+          "pollination",
+          "examples"
+        ],
+        [
+          "pollination",
+          "parts_figure"
+        ],
+        [
+          "pollination",
+          "petals"
+        ],
+        [
+          "pollination",
+          "reproduction"
+        ],
+        [
+          "reproduction",
+          "examples"
+        ],
+        [
+          "reproduction",
+          "seed"
+        ],
+        [
+          "stamen",
+          "fruit"
+        ],
+        [
+          "stamen",
+          "parts_figure"
+        ],
+        [
+          "stamen",
+          "pistil"
+        ]
+      ],
+      "missing_required": [
+        [
+          "stamen",
+          "pollination"
+        ],
+        [
+          "pistil",
+          "pollination"
+        ],
+        [
+          "stamen",
+          "fertilization"
+        ],
+        [
+          "pistil",
+          "fertilization"
+        ],
+        [
+          "pollination",
+          "fertilization"
+        ],
+        [
+          "fertilization",
+          "seed"
+        ],
+        [
+          "pistil",
+          "fruit"
+        ],
+        [
+          "fertilization",
+          "fruit"
+        ],
+        [
+          "parts_figure",
+          "examples"
+        ],
+        [
+          "stamen",
+          "examples"
+        ],
+        [
+          "pistil",
+          "examples"
+        ],
+        [
+          "petals",
+          "examples"
+        ],
+        [
+          "pollination",
+          "examples"
+        ],
+        [
+          "fertilization",
+          "examples"
+        ],
+        [
+          "seed",
+          "examples"
+        ],
+        [
+          "fruit",
+          "examples"
+        ]
+      ],
+      "unexpected_missing": [
+        [
+          "stamen",
+          "pollination"
+        ],
+        [
+          "pistil",
+          "pollination"
+        ],
+        [
+          "stamen",
+          "fertilization"
+        ],
+        [
+          "pistil",
+          "fertilization"
+        ],
+        [
+          "pollination",
+          "fertilization"
+        ],
+        [
+          "fertilization",
+          "seed"
+        ],
+        [
+          "pistil",
+          "fruit"
+        ],
+        [
+          "fertilization",
+          "fruit"
+        ],
+        [
+          "parts_figure",
+          "examples"
+        ],
+        [
+          "stamen",
+          "examples"
+        ],
+        [
+          "pistil",
+          "examples"
+        ],
+        [
+          "petals",
+          "examples"
+        ],
+        [
+          "pollination",
+          "examples"
+        ],
+        [
+          "fertilization",
+          "examples"
+        ],
+        [
+          "seed",
+          "examples"
+        ],
+        [
+          "fruit",
+          "examples"
+        ]
+      ],
+      "gaps_closed": [],
+      "forbidden_accepted": [],
+      "extra_accepted": [],
+      "unreachable": [
+        [
+          "stamen",
+          "pollination"
+        ],
+        [
+          "stamen",
+          "fertilization"
+        ],
+        [
+          "pistil",
+          "fertilization"
+        ],
+        [
+          "pollination",
+          "fertilization"
+        ],
+        [
+          "fertilization",
+          "fruit"
+        ],
+        [
+          "parts_figure",
+          "examples"
+        ],
+        [
+          "stamen",
+          "examples"
+        ],
+        [
+          "seed",
+          "examples"
+        ],
+        [
+          "fruit",
+          "examples"
+        ]
+      ],
+      "reachable_count": 11,
+      "accepted_precision": 1.0,
+      "accepted_by_rule": {
+        "fusion": 4
+      },
+      "order": [
+        "reproduction",
+        "parts_figure",
+        "stamen",
+        "pistil",
+        "petals",
+        "pollination",
+        "fertilization",
+        "seed",
+        "fruit",
+        "examples"
+      ],
+      "order_matches": true,
+      "kendall_tau": 1.0,
       "ignored_links": [],
       "unkeyed_concepts": 0,
       "gate_loss": []
