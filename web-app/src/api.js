@@ -441,6 +441,11 @@ export function decidePathLink(nodeId, linkId, status) {
   });
 }
 
+// The path saved at the topic's last successful publish, with each step's audio.
+export function fetchPublishedPath(nodeId) {
+  return request(`/learning-path/topics/${nodeId}/published/`);
+}
+
 export function movePathLink(nodeId, prerequisiteConceptId, dependentConceptId) {
   return request(`/learning-path/topics/${nodeId}/links/move/`, {
     method: "POST",

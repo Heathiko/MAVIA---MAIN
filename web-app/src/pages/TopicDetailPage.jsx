@@ -38,6 +38,7 @@ import {
 // The same path display the standalone page uses, so review step 5 and that
 // page cannot drift apart.
 import { MaterialPath } from "./LearningPathPage";
+import PublishedDialog from "../learning-path/PublishedDialog";
 
 function flattenNodes(nodes = []) {
   return nodes.flatMap((node) => [node, ...flattenNodes(node.children || [])]);
@@ -3397,6 +3398,7 @@ function LearningPathReviewPanel({
   const [reloadKey, setReloadKey] = useState(0);
   const [publishing, setPublishing] = useState(false);
   const [publishEvents, setPublishEvents] = useState([]);
+  const [showPublished, setShowPublished] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -3488,6 +3490,12 @@ function LearningPathReviewPanel({
           );
         } else {
           onMessage("Published.");
+        }
+        if (!(status === "failed" || unpublished)) {
+          // The published dialog replaces the progress window on success; a
+          // failed run keeps it, since it lists the problems to resolve.
+          setPublishEvents([]);
+          setShowPublished(true);
         }
         try {
           onResourcesChange(await fetchLearningResources(courseId, topicId));
@@ -3581,6 +3589,14 @@ function LearningPathReviewPanel({
           onPathData={setPathData}
         />
       ))}
+
+      {showPublished && (
+        <PublishedDialog
+          topicId={topicId}
+          topicTitle={topic?.title || ""}
+          onClose={() => setShowPublished(false)}
+        />
+      )}
 
       <div className="review-step-actions-row">
         <button
