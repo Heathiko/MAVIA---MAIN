@@ -16,7 +16,7 @@ decision.
 | Branch | State |
 |---|---|
 | `learning-path-criteria-v4` | v4 criteria (R1 definition / R2 containment accept, R3 reference pending). Pushed to origin. **Not merged.** |
-| `learning-path-graph-screen` | Built on v4. Graph-first review screen + fixes (below). **Not pushed, not merged — wait for the user's cue.** |
+| `learning-path-graph-screen` | Graph-first review screen + fixes (below), pushed 2026-09-30. Since then, locally: **criteria v5** (relatedness + two evidence families, `backend/learning_path/CRITERIA.md`; results in `docs/learning-path-v5-evaluation-2026-09-30.md`). **Not merged — wait for the user's cue.** |
 
 Live data (SQLite `backend/db.sqlite3`): outline 12 "Outline for Grade 1 Science".
 Topic **340** Solid, Liquid and Gas (materials 62, 63, 64 — published).
@@ -44,6 +44,8 @@ All other topics are empty.
 ## 1. Learning path formation (user's pipeline)
 
 ### 1.1 Automatic rules find few real prerequisites — highest impact
+> **2026-09-30, v5:** v4's R1/R2/R3 are gone. On the test topic 340, required links reached 11 → 17 of 23, 0 forbidden, accepted precision 0.92. Topic 357's chain is not yet measured (key pending). Gold 62 lost reach (9 → 5): heading containment no longer accepts on its own.
+
 Only R2 (section containment) fired on topics 340/357; **R1 never fired**.
 - **R1 is blind to the lessons' definition format.** PDFs define terms as a bold
   title + body ("**Pollination:** Pollen is carried from the anther to the
@@ -63,6 +65,8 @@ Only R2 (section containment) fired on topics 340/357; **R1 never fired**.
   the same lessons). Measure on unseen lessons (1.6).
 
 ### 1.2 Structural list sends lead sections to the end — small, ready
+> **2026-09-30, v5:** the label lists and lead/examples/closing tiers are removed; examples and summaries get links from the clues like any concept. Kahn ties now go to PDF order (the build-on-latest tie-break lowered τ on the development set), so examples are not pulled before Changing State unless a link requires it.
+
 `learning_path/services/concepts.py:39` `STRUCTURAL_LABELS` forces every match
 to the end of the path with no links. It mixes **lead** sections (Introduction,
 Overview, Objectives, Definition, Vocabulary, Glossary → should come first) with
@@ -72,11 +76,15 @@ not recognised. Fix: split into lead/trail, match on the title's start; update
 `publishing.order_with_links` rank.
 
 ### 1.3 Backwards recommendation
+> **2026-09-30, v5:** the same overview effect broke the first v5 build (Solid → Matter). Fixed by requiring the content clues to agree with author structure; when they disagree the link is pending in the structure's direction.
+
 `Seed formation → Reproduction in Flowering Plants` (topic 357, pending, R3): the
 parent overview says "seeds", so R3 reads it backwards. Known R3 weakness with
 parent/child overviews.
 
 ### 1.4 Figure rule — designed, awaiting the user's decision
+> **2026-09-30, v5:** superseded — figures are read through their descriptions like any passage; no separate rule.
+
 "A figure comes after every concept its caption/description names" (same name
 matching as R1–R3, no model). Simulated read-only: topic 340 particle figure
 moves from step 2 to after Gas; topic 357 flower-parts figure moves after

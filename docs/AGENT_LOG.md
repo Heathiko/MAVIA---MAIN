@@ -839,6 +839,15 @@ calls); topic 340's links identical before/after. Note: the dev server serves
 media without Range support, so audio cannot be seeked (pre-existing).
 
 
+### 2026-09-30 — Claude Code (Opus 5.5) — Learning-path criteria v5: relatedness + two evidence families
+
+**Branch / commits:** learning-path-graph-screen, e75429b..HEAD (spec, plan, Tasks 1–10, 12). Not pushed.
+**Tests:** `python manage.py test` 1225/1225 OK; `learning_path` 200 OK; web-app vitest 19/19, build OK.
+**Changed:** replaced v4 criteria with v5 (`backend/learning_path/CRITERIA.md`): sentence-embedding relatedness gate, clues name/terms/meaning (content) and heading/PDF order (structure), accepted only when the families agree; Kahn with weakest-link cycle breaking; redundant links hidden on the graph. Removed `concepts.py`, v4 text helpers, `evaluate_edges.py`. Added `calibrate_learning_path` and `calibration/weights.json`. Gold 62/79/152 no longer mark examples structural (user decision).
+**Live database:** untouched (read-only exports only).
+**Decisions I made:** see the ledger rulings in the final report — notably Kahn ties by PDF order (build-on-latest measured worse), and meaning clue kept despite being at chance on direction.
+**Not done / watch out:** topic 357's key (AI recommendation from the user) still to encode, then recalibrate (plan Task 11). 340 shows 62 pending suggestions — a lot for one screen. First v5 build accepted forbidden links (overviews read backwards); spec §14 records the fix. A `git stash pop` mistake briefly applied the user's `stash@{0}` (LATEST-with-bugs) here; the four touched files were restored to HEAD and the stash is intact.
+
 ---
 
 ## Open threads
