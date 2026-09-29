@@ -20,13 +20,17 @@ export type GuideSection = {
   text: string;
 };
 
-// Spoken as digits, not words, because that is what is printed on the keypad
-// the learner is feeling for.
+// What the guide CALLS each key, which is whatever the learner's fingers find
+// printed on it -- not what the key sends. Braille caps are overlaid on the
+// numpad, so the command keys are read out by their cap letter rather than as
+// arithmetic: saying "divide" to someone feeling a cap marked E is worse than
+// useless. The keycodes these names belong to never change, only the words
+// do, and every spoken mention of a key in the app comes from here.
 export const ANSWER_KEYS = { a: "7", b: "8", c: "4", d: "5" } as const;
 export const COMMAND_KEYS = {
-  repeat: "multiply",
-  back: "divide",
-  guide: "minus",
+  repeat: "R",
+  back: "E",
+  guide: "G",
   next: "plus",
 } as const;
 

@@ -7,6 +7,7 @@ import { letterForTapCount, useTapCounter } from "@/input/tapAnswers";
 import { useScreenReaderEnabled } from "@/hooks/useScreenReaderEnabled";
 import { useOneTimeGuidePart } from "@/guide/useGuide";
 import { useGuideBusy } from "@/guide/GuideActivity";
+import { ANSWER_KEYS } from "@/guide/script";
 import { colors, radii, spacing } from "@/theme";
 
 // Mirrors lessons.Question from the API.
@@ -180,7 +181,8 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
     }
   }
 
-  // Braille keypad over Bluetooth: 7, 8, 4 and 5 answer A, B, C and D (the
+  // Braille keypad over Bluetooth: the four answer keys (ANSWER_KEYS) answer
+  // A, B, C and D (the
   // mapping is src/input/brailleKeypad.ts). Answering goes through choose(),
   // exactly like a tap, so the read-back and verdict are identical.
   const numLockWarnedRef = useRef(false);
@@ -190,7 +192,9 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
         // Once per question: a held or repeated arrow should not become a loop.
         if (numLockWarnedRef.current) return;
         numLockWarnedRef.current = true;
-        narration.speak("Number lock is off. Press Num Lock, then answer with 7, 8, 4, or 5.");
+        narration.speak(
+          `Number lock is off. Press Num Lock, then answer with ${ANSWER_KEYS.a}, ${ANSWER_KEYS.b}, ${ANSWER_KEYS.c}, or ${ANSWER_KEYS.d}.`
+        );
         return;
       }
       // The command keys (* / - +) are handled a level up, on the screen, so

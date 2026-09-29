@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useBrailleKeypad } from "@/input/useBrailleKeypad";
 import { useVoiceCommands } from "@/voice/useVoiceCommands";
 import type { AnswerLetter } from "@/input/brailleKeypad";
+import { COMMAND_KEYS } from "@/guide/script";
 
 export const PAGE_SIZE = 4;
 const LETTERS: AnswerLetter[] = ["a", "b", "c", "d"];
@@ -110,7 +111,7 @@ export function useListPicker<T extends PickerItem>({
       .join(" ");
     const more =
       pageCountRef.current > 1
-        ? " If the one you want is not there, say next four, or press the plus key."
+        ? ` If the one you want is not there, say next four, or press the ${COMMAND_KEYS.next} key.`
         : "";
 
     narrationRef.current.speak(`${questionRef.current} ${options}${more}`, {
