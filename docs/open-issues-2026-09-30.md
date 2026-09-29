@@ -110,7 +110,27 @@ Changing figure) were **rejected**; every path-shaping link is teacher-approved
 (some from recommendations, some drag-added). Worth knowing when reporting how
 much of the path the system derived.
 
-### 1.8 Deferred minors from the whole-branch review (graph screen)
+### 1.8 Topic 340 arrangement findings (verify with the user)
+Full path with every learning object's text:
+`docs/learning-path-340-snapshot-2026-09-30.md`. Read against the content:
+- **Steps 1 and 2 are one concept split by grouping.** PDF 64's "What Is
+  Matter? (Part 1)" ("Matter is anything that has mass…") sits in step 2 with
+  "Matter usually exists…", not in step 1 "Matter". (See 3.2.)
+- **Step 13 "Example (Part 1 of 2)" is a changes-of-state example** (ice cube
+  melts, then evaporates) but sits with the examples, unlinked — caused by the
+  extraction chunk crossing the "7. Everyday Examples" heading (3.1).
+- **Step 12 Summary mentions melting/freezing/evaporating/condensing** yet has no
+  link from 10/11 (Changing State); only Matter/Solid/Liquid/Gas → Summary are
+  pending. It lands after 10/11 by document order alone.
+- **Steps 8 and 9 are the same comparison from different PDFs**; 8 → 9 is a
+  teacher link stitching a grouping split, not a real prerequisite. Same for
+  10 → 11 (Changing text → its table figure).
+- **Step 7 (particle figure) depends only on "As a general rule"**; it
+  illustrates Solid/Liquid/Gas — what the figure rule (1.4) would link.
+- **Liquid → As a general rule was drag-added by hand**; the text never names
+  liquids ("Solids have the least…; gases have the most"). Confirm intended.
+
+### 1.9 Deferred minors from the whole-branch review (graph screen)
 - `add_link`/`decide_link`: snapshot + loop check without `atomic`/lock —
   two teachers adding opposite links at once on PostgreSQL could both pass.
 - Undo timer keeps running during an in-flight restore; a restore failing
