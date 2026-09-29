@@ -1,22 +1,143 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { fetchTopicLearningPath } from "../api";
+import { addPathLink, decidePathLink, fetchTopicLearningPath, movePathLink, restorePathLinks } from "../api";
 import ConceptDetails from "../learning-path/ConceptDetails";
+import ConfirmDialog from "../learning-path/ConfirmDialog";
+import { classifyDrop } from "../learning-path/graphModel";
 import PathGraph from "../learning-path/PathGraph";
+import RecommendationsPanel from "../learning-path/RecommendationsPanel";
+import UndoBar from "../learning-path/UndoBar";
 
 // Exported so the topic review flow shows the same path display inline as its
 // own step, rather than keeping a second copy in sync with this one.
 export function MaterialPath({ path, topicId = null, editable = false, onPathData = null }) {
   const steps = path.steps || [];
+  const canEdit = editable && topicId !== null;
   const [selectedId, setSelectedId] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+  const [confirmError, setConfirmError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [undo, setUndo] = useState(null);
+
   const selected = steps.find((step) => step.concept_id === selectedId) || null;
+  const titleOf = (id) => steps.find((step) => step.concept_id === id)?.title || "Untitled concept";
   const linkCount = steps.reduce((count, step) => count + (step.prerequisites || []).length, 0);
   const clearSelection = useCallback(() => setSelectedId(null), []);
+  const closeUndo = useCallback(() => setUndo(null), []);
+  const closeConfirm = useCallback(() => setConfirm(null), []);
 
   useEffect(() => {
     if (selectedId !== null && !selected) setSelectedId(null);
   }, [selectedId, selected]);
+
+  function ask(next) {
+    setConfirmError("");
+    setConfirm(next);
+  }
+
+  // Runs a confirmed change; on success the preview is replaced and Undo offered.
+  async function apply(call, message) {
+    setBusy(true);
+    setConfirmError("");
+    try {
+      const data = await call();
+      if (onPathData) onPathData(data);
+      setConfirm(null);
+      setUndo(data.undo?.length ? { message, records: data.undo, error: "" } : null);
+    } catch (error) {
+      setConfirmError(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUndo() {
+    if (!undo) return;
+    setBusy(true);
+    try {
+      const data = await restorePathLinks(topicId, undo.records);
+      if (onPathData) onPathData(data);
+      setUndo(null);
+    } catch (error) {
+      setUndo((current) => current && { ...current, error: error.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Dropping B (dragged) onto A (target): teach A before B.
+  function handleDrop(draggedId, targetId) {
+    const b = titleOf(draggedId);
+    const a = titleOf(targetId);
+    const drop = classifyDrop(steps, draggedId, targetId);
+    if (drop.kind === "self") return;
+    if (drop.kind === "already") {
+      ask({ title: `${a} is already taught before ${b}.`, actions: [], cancelLabel: "OK" });
+      return;
+    }
+    const add = () => apply(() => addPathLink(topicId, targetId, draggedId), `${a} is now taught before ${b}.`);
+    if (drop.kind === "add") {
+      ask({ title: `Teach ${a} before ${b}?`, actions: [{ label: "Yes", primary: true, onClick: add }] });
+      return;
+    }
+    const current = drop.current.map((entry) => entry.title).join(", ");
+    ask({
+      title: `${b} already comes after ${current}. What do you want?`,
+      actions: [
+        { label: `Add ${a} as another prerequisite`, onClick: add },
+        {
+          label: `Move: ${a} replaces ${current}`,
+          primary: true,
+          onClick: () => apply(() => movePathLink(topicId, targetId, draggedId), `${b} now comes only after ${a}.`),
+        },
+      ],
+    });
+  }
+
+  function handleAccept(item) {
+    ask({
+      title: `Teach ${item.fromTitle} before ${item.toTitle}?`,
+      actions: [{
+        label: "Yes",
+        primary: true,
+        onClick: () => apply(
+          () => decidePathLink(topicId, item.linkId, "approved"),
+          `${item.fromTitle} is now taught before ${item.toTitle}.`,
+        ),
+      }],
+    });
+  }
+
+  function handleReject(item) {
+    ask({
+      title: `Don't teach ${item.fromTitle} before ${item.toTitle}?`,
+      message: "It won't be suggested again.",
+      actions: [{
+        label: "Yes",
+        primary: true,
+        onClick: () => apply(
+          () => decidePathLink(topicId, item.linkId, "rejected"),
+          `${item.fromTitle} → ${item.toTitle} won't be suggested again.`,
+        ),
+      }],
+    });
+  }
+
+  function handleRemove(link, step) {
+    ask({
+      title: `${link.title} no longer has to come before ${step.title}?`,
+      message: "It won't be suggested again.",
+      actions: [{
+        label: "Yes",
+        primary: true,
+        onClick: () => apply(
+          () => decidePathLink(topicId, link.link_id, "rejected"),
+          `${link.title} no longer has to come before ${step.title}.`,
+        ),
+      }],
+    });
+  }
 
   return (
     <section className="path-material">
@@ -26,7 +147,8 @@ export function MaterialPath({ path, topicId = null, editable = false, onPathDat
 
       {linkCount === 0 && steps.length > 0 && (
         <p className="muted-text path-ordering-note">
-          Ordered as your lesson files present it. Nothing has to be learned before anything else yet.
+          Ordered as your lesson files present it. Nothing has to be learned before anything else yet
+          {canEdit ? " — drag a concept onto the one that must come before it" : ""}.
         </p>
       )}
 
@@ -37,12 +159,37 @@ export function MaterialPath({ path, topicId = null, editable = false, onPathDat
         </p>
       )}
 
-      <div className="pg-screen is-read-only">
+      <div className={canEdit ? "pg-screen" : "pg-screen is-read-only"}>
         <div className="pg-graph-area">
-          <PathGraph steps={steps} selectedId={selectedId} onSelect={setSelectedId} editable={false} onDrop={() => {}} />
-          <ConceptDetails step={selected} onClose={clearSelection} />
+          <PathGraph
+            steps={steps}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            editable={canEdit && !busy}
+            onDrop={handleDrop}
+          />
+          <ConceptDetails step={selected} editable={canEdit} onRemove={handleRemove} onClose={clearSelection} />
         </div>
+        {canEdit && (
+          <RecommendationsPanel steps={steps} busy={busy} onAccept={handleAccept} onReject={handleReject} />
+        )}
       </div>
+
+      {confirm && (
+        <ConfirmDialog
+          title={confirm.title}
+          message={confirm.message}
+          actions={confirm.actions}
+          cancelLabel={confirm.cancelLabel}
+          error={confirmError}
+          busy={busy}
+          onCancel={closeConfirm}
+        />
+      )}
+
+      {undo && (
+        <UndoBar message={undo.message} error={undo.error} busy={busy} onUndo={handleUndo} onClose={closeUndo} />
+      )}
     </section>
   );
 }

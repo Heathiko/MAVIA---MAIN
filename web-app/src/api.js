@@ -441,6 +441,26 @@ export function decidePathLink(nodeId, linkId, status) {
   });
 }
 
+export function movePathLink(nodeId, prerequisiteConceptId, dependentConceptId) {
+  return request(`/learning-path/topics/${nodeId}/links/move/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prerequisite_concept_id: prerequisiteConceptId,
+      dependent_concept_id: dependentConceptId,
+    }),
+  });
+}
+
+// Puts back what a link change's `undo` record describes.
+export function restorePathLinks(nodeId, undo) {
+  return request(`/learning-path/topics/${nodeId}/links/restore/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ undo }),
+  });
+}
+
 export function editVersionText(courseId, nodeId, variantId, narration) {
   return request(`/courses/${courseId}/outline-nodes/${nodeId}/versions/${variantId}/`, {
     method: "POST",
