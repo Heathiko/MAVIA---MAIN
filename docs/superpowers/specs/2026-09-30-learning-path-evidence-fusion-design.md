@@ -96,19 +96,20 @@ Embeddings answer "related or not". Direction comes from the clues, fused.
 ## 5. Step 1: relatedness (`relatedness.py`)
 
 ```text
-match(A→B) = mean over sentences s of A of  max over sentences u of B of  cos(s, u)
-rel(A, B)  = (match(A→B) + match(B→A)) / 2
+best_match_average(A, B) = mean over each sentence of A of
+                           its highest cosine similarity with any sentence of B
+relatedness(A, B)        = (best_match_average(A, B) + best_match_average(B, A)) / 2
 ```
 
 Best-match averaging, as BERTScore (Zhang et al. 2020) does over tokens: one shared idea between
 two broader concepts still counts.
 
 **Threshold without an answer key.** Pairs of concepts from topics in *different subjects* are
-unrelated by construction. `θ_related` is the 95th percentile of their `rel`. Measured
+unrelated by construction. `related_cutoff` is the 95th percentile of their `relatedness`. Measured
 2026-09-30 on 340 × 357 (150 pairs): 0.25 (max 0.35). Topics that build on each other (309, 313
 on 340) are never paired for this.
 
-Below `θ_related` a pair gets no link and skips Steps 2–3. `rel` is stored on the link.
+Below `related_cutoff` a pair gets no link and skips Steps 2–3. `relatedness` is stored on the link.
 
 **What the gate does and does not do.** Inside one topic nearly every pair passes (the lowest
 pair involving "As a general rule" in 340 is 0.30). The gate mainly matters across topics and for
@@ -124,21 +125,26 @@ removes three thresholds that could otherwise be fitted to a lesson.
 **C1 name reference.** A's name = content-word stems of its title, without part suffix or
 numbering. B uses A's name when one of B's sentences contains all of them. A title with more than
 6 content words is not a name; C1 abstains for it.
-`vote = sign(uses(B,A) − uses(A,B))`, where `uses` is the share of sentences.
+`vote = sign(name_use(B, A) − name_use(A, B))`, where `name_use(B, A)` is the share of B's sentences
+using A's name.
 
 **C2 explains vs uses.** A term is owned by the concept where it is over-represented by Dunning's
 log-likelihood G² (Dunning 1993), against the rest of the topic, with G² ≥ 3.84 (p < 0.05). G²
 discounts small counts, which fixes the probe's "Seed formation owns *fertil*" error. Only terms
 used by at least two concepts matter.
-`relies(B,A)` = share of B's passages using a term A owns; `vote = sign(relies(B,A) − relies(A,B))`.
+`term_use(B, A)` = share of B's passages using a term A owns;
+`vote = sign(term_use(B, A) − term_use(A, B))`.
 
-**C3 meaning reference.** For a sentence s of B and every *other* concept X,
-`sim(s, X)` = best cosine between s and X's sentences. s points to X when `sim(s, X)` is above the
+**C3 meaning reference.** For each sentence of B and every *other* concept X,
+`sentence_similarity(sentence, X)` = highest cosine between the sentence and X's sentences. The
+sentence points to X when that similarity is above `meaning_cutoff`, the
 95th percentile of sentence-to-concept similarity between unrelated topics (same null as
 Section 5). A sentence is never compared with its own concept.
-`about(B,A)` = share of B's sentences pointing to A; `vote = sign(about(B,A) − about(A,B))`.
+`meaning_use(B, A)` = share of B's sentences pointing to A;
+`vote = sign(meaning_use(B, A) − meaning_use(A, B))`.
 Concepts with many sentences have more chances to be matched; this is measured on the
-development set, and if it biases votes, `sim` becomes the mean of the two best matches.
+development set, and if it biases votes, `sentence_similarity` becomes the mean of the two best
+matches.
 
 **C4 PDF order (weak).** Votes only when two or more PDFs teach both concepts and all of them
 put the pair the same way round. Otherwise 0. A single-PDF topic never gets a C4 vote.
@@ -146,10 +152,10 @@ put the pair the same way round. Otherwise 0. A single-PDF topic never gets a C4
 ## 7. Step 3: fusion and verdicts (`fusion.py`)
 
 **Weights, learned without an answer key.** For each clue k, over related pairs where k votes and
-the other clues have a majority: `acc_k` = share of agreement with that majority.
-`w_k = log(acc_k / (1 − acc_k))` (log-odds weighting of independent voters; Dawid & Skene 1979).
-`acc_k ≤ 0.5` → weight 0 (reported). `acc_k` capped at 0.95. `w_C4` capped at half the smallest
-content-clue weight, so any one content clue outvotes it.
+the other clues have a majority: `agreement` = share of pairs where the clue sides with that
+majority. `clue_weight = log(agreement / (1 − agreement))` (log-odds weighting of independent
+voters; Dawid & Skene 1979). `agreement ≤ 0.5` → weight 0 (reported). `agreement` capped at 0.95.
+The PDF-order clue's weight is capped at half the smallest content-clue weight, so any one content clue outvotes it.
 
 Weights are computed by `python manage.py calibrate_learning_path` and written to
 `learning_path/calibration/weights.json` (topics used, model revision, date). The file is
@@ -160,13 +166,13 @@ silently changes another topic's links.
 **Score and verdict.**
 
 ```text
-score = Σ_k w_k · vote_k        # sign = direction
-conf  = |score| / Σ_k w_k        # an abstaining clue lowers confidence
+score      = sum over clues of (clue_weight × vote)   # sign = direction
+confidence = |score| / sum over clues of clue_weight   # an abstaining clue lowers confidence
 ```
 
 | Verdict | Condition |
 |---|---|
-| ACCEPTED | `conf ≥ 0.5` and at least 2 clues voted for the direction |
+| ACCEPTED | `confidence ≥ 0.5` and at least 2 clues voted for the direction |
 | PENDING | not accepted, and at least one content clue (C1–C3) votes for the direction |
 | PARALLEL | related, but no content clue votes, or `score = 0` |
 | none | failed the relatedness gate |
@@ -203,9 +209,11 @@ loop of teacher links). This replaces "teach the earliest concept in the PDF".
 ```text
 ready ← concepts whose prerequisites are all placed
 while ready:
-    X ← the ready concept with the highest (recency(X), −pdf_position(X))
-    place X; release its dependents
-recency(X) = latest placement index among X's prerequisites (−1 if none)
+    next_concept ← the ready concept with the highest
+                   (latest_prerequisite_position, −pdf_position)
+    place next_concept; release its dependents
+latest_prerequisite_position = placement index of the concept's most recently placed
+                               prerequisite (−1 if it has none)
 ```
 
 Rule 1 keeps related material together (after Solid, Liquid, Gas, what builds on them comes
@@ -277,15 +285,19 @@ Names follow what `learning_path` already uses (`decide_pairs`, `order_with_link
 |---|---|
 | `embeddings.py` | `load_encoder()`, `embed(sentences)` |
 | `concept_text.py` | `ConceptText` (dataclass: `sentences`, `vectors`, `terms`, `pdfs`), `prepare(concepts)`, `split_sentences(text)`, `terms(sentence)`, `material_positions(...)` |
-| `relatedness.py` | `relatedness(a, b)`, `null_threshold(pairs)` |
-| `clues.py` | `name_vote(a, b)`, `term_vote(a, b, owners)`, `meaning_vote(a, b, cutoff)`, `order_vote(a, b, positions)`, `term_owners(texts)`, `g2(...)` |
+| `relatedness.py` | `relatedness(first, second)`, `related_cutoff(unrelated_pairs)` |
+| `clues.py` | `name_vote(prerequisite, dependent)`, `term_vote(prerequisite, dependent, term_owners)`, `meaning_vote(prerequisite, dependent, meaning_cutoff)`, `order_vote(prerequisite, dependent, positions)`, `find_term_owners(concepts)`, `log_likelihood(...)` |
 | `fusion.py` | `load_weights()`, `learn_weights(votes)`, `combine(votes, weights)`, `verdict(...)` |
 | `publishing.py` | `order_with_links`, `break_cycles(links)`, `redundant_links(links)` |
 
 Rules: no `compute_`/`get_`/`handle_` prefixes, no `helper`, `utils`, `manager`, `v2`,
 `enhanced`, `robust`; no names that restate their module (`clues.clue_name_vote`); locals as
-plain nouns (`score`, `conf`, `owners`, `cutoff`), single letters only for pair members (`a`,
-`b`) and loop sentences (`s`, `u`), as in the maths above. Docstrings say what and why in a line
+descriptive nouns (`score`, `confidence`, `clue_weight`, `agreement`, `term_owners`,
+`related_cutoff`). No single letters or maths-style names (`w_k`, `acc_k`, `θ`, `s`, `u`, `X`),
+including in loops: `for sentence in sentences`, `for concept in concepts`. Pairs are
+`prerequisite` / `dependent` (the keys `decide_pairs` already returns), or `first` / `second`
+where there is no direction yet. Docstrings say what and why in a line or two, in the voice of
+the existing modules; no "This function ...".
 or two, in the voice of the existing modules; no "This function ...".
 
 ## 12. Risks and limits
