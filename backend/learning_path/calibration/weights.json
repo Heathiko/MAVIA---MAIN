@@ -1,0 +1,42 @@
+{
+  "model": "sentence-transformers/all-MiniLM-L6-v2",
+  "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+  "date": "2026-09-30",
+  "topics": [
+    62,
+    79,
+    152,
+    340
+  ],
+  "unrelated": [
+    [
+      62,
+      79
+    ],
+    [
+      152,
+      79
+    ],
+    [
+      340,
+      79
+    ]
+  ],
+  "related_cutoff": 0.2443,
+  "meaning_cutoff": 0.2981,
+  "weights": {
+    "name": 0.9746,
+    "terms": 0.3761,
+    "meaning": 0.3522,
+    "heading": 0.0,
+    "order": 0.4055
+  },
+  "agreement": {
+    "name": 0.726,
+    "terms": 0.5929,
+    "meaning": 0.5872,
+    "heading": 0.375,
+    "order": 0.6
+  },
+  "pairs": 250
+}
