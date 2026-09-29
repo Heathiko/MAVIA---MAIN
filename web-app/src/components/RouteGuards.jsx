@@ -6,14 +6,16 @@ function FullPageLoading() {
   return <div className="mv-loading">Loading your workspace…</div>;
 }
 
-// Requires a signed-in user; bounces guests to /login remembering where they were.
-export function RequireAuth({ children }) {
+// Requires a signed-in user; bounces guests to a login screen remembering where
+// they were. `loginPath` lets a section send guests to its own entry point --
+// the guardian view has a second login screen of its own.
+export function RequireAuth({ loginPath = "/login", children }) {
   const { user, loading } = useAuth();
   const location = useLocation();
 
   if (loading) return <FullPageLoading />;
   if (!user) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    return <Navigate to={loginPath} replace state={{ from: location.pathname }} />;
   }
   return children;
 }

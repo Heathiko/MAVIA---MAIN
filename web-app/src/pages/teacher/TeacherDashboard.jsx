@@ -12,6 +12,8 @@ const NAV = [
   { to: "/review", label: "Review", icon: "♪" },
   { to: "/teacher/resources", label: "Resources", icon: "❐" },
   { to: "/teacher/settings", label: "Settings", icon: "⚙" },
+  // Preview of the guardian view, which has no role or backend of its own yet.
+  { to: "/guardian", label: "Guardian view", icon: "☍" },
 ];
 
 function courseStatus(course) {

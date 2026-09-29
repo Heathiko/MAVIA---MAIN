@@ -18,6 +18,9 @@ import ReviewCoursesPage from "./pages/teacher/ReviewCoursesPage";
 import CourseReviewPage from "./pages/teacher/CourseReviewPage";
 import AdminDashboard from "./pages/admin/AdminDashboard";
 import AdaptiveWeightsPage from "./pages/admin/AdaptiveWeightsPage";
+import GuardianLoginPage from "./pages/guardian/GuardianLoginPage";
+import GuardianOverviewPage from "./pages/guardian/GuardianOverviewPage";
+import GuardianScoresPage from "./pages/guardian/GuardianScoresPage";
 
 import { RequireAuth, RequireRole } from "./components/RouteGuards";
 import { ROLES, homePathForRole } from "./roles";
@@ -158,6 +161,34 @@ export default function App() {
           <RequireRole allow={[ROLES.TEACHER, ROLES.ADMIN]}>
             <CourseReviewPage />
           </RequireRole>
+        }
+      />
+      {/* Guardian view: planned for the next phase, so there is no GUARDIAN
+          role on the account model and nothing behind these screens yet. They
+          run on placeholder data and are open to any signed-in user until the
+          role exists. */}
+      <Route
+        path="/guardian/login"
+        element={
+          <GuestOnly>
+            <GuardianLoginPage />
+          </GuestOnly>
+        }
+      />
+      <Route
+        path="/guardian"
+        element={
+          <RequireAuth loginPath="/guardian/login">
+            <GuardianOverviewPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/guardian/scores"
+        element={
+          <RequireAuth loginPath="/guardian/login">
+            <GuardianScoresPage />
+          </RequireAuth>
         }
       />
       <Route
