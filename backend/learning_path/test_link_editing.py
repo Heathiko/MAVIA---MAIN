@@ -110,3 +110,59 @@ class UndoTests(LinkEditingFixture):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("no longer exists", response.json()["detail"])
+
+
+class MoveTests(LinkEditingFixture):
+    def setUp(self):
+        super().setUp()
+        group = LearningObjectGroup.objects.create(outline_node=self.topic, label="Gas")
+        self.objects["Gas"] = LearningObject.objects.create(
+            material=self.material, group=group, title="Gas", content="Gas is taught here.", order=3,
+        )
+        self.groups["Gas"] = group
+
+    def test_moving_replaces_every_current_prerequisite(self):
+        self._link("Matter", "Gas", "accepted")
+        self._link("Solid", "Gas", "approved")
+
+        response = self._post("move/", self._ids("Liquid", "Gas"))
+
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(self._state("Matter", "Gas"), ("rejected", "teacher"))
+        self.assertEqual(self._state("Solid", "Gas"), ("rejected", "teacher"))
+        self.assertEqual(self._state("Liquid", "Gas"), ("approved", "teacher"))
+
+    def test_undoing_a_move_restores_both_halves(self):
+        self._link("Matter", "Gas", "accepted")
+        self._link("Solid", "Gas", "approved")
+        undo = self._post("move/", self._ids("Liquid", "Gas")).json()["undo"]
+
+        self._post("restore/", {"undo": undo})
+
+        self.assertEqual(self._state("Matter", "Gas"), ("accepted", "derived"))
+        self.assertEqual(self._state("Solid", "Gas"), ("approved", "teacher"))
+        self.assertIsNone(self._row("Liquid", "Gas"))
+
+    def test_a_move_that_would_loop_changes_nothing(self):
+        self._link("Matter", "Gas", "accepted")
+        self._link("Gas", "Liquid", "approved")
+
+        response = self._post("move/", self._ids("Liquid", "Gas"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("loop", response.json()["detail"])
+        self.assertEqual(self._state("Matter", "Gas"), ("accepted", "derived"))
+        self.assertIsNone(self._row("Liquid", "Gas"))
+
+    def test_moving_under_the_current_prerequisite_rejects_nothing(self):
+        self._link("Matter", "Gas", "accepted")
+
+        self._post("move/", self._ids("Matter", "Gas"))
+
+        self.assertEqual(self._state("Matter", "Gas"), ("approved", "teacher"))
+        self.assertFalse(ConceptPrerequisite.objects.filter(status="rejected").exists())
+
+    def test_a_concept_cannot_move_under_itself(self):
+        response = self._post("move/", self._ids("Gas", "Gas"))
+
+        self.assertEqual(response.status_code, 400)

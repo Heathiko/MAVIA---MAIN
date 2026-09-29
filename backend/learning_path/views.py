@@ -8,7 +8,7 @@ from user.permissions import IsTeacherOrAdmin
 
 from .services import build_topic_path, get_published_path
 from .services.publishing import refresh_prerequisites
-from .services.teacher_links import LinkError, add_link, decide_link, restore_links
+from .services.teacher_links import LinkError, add_link, decide_link, move_link, restore_links
 
 # Ported from Milestone1-Jean (2026-09-15), where this review preview had no
 # permission classes: that project's DRF default is AllowAny, so it and
@@ -74,6 +74,28 @@ def add_path_link(request, node_id):
         detail = str(exc) if isinstance(exc, LinkError) else "Choose both concepts."
         return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
     return Response({**_preview(topic), "undo": undo}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([IsTeacherOrAdmin])
+def move_path_link(request, node_id):
+    """Make one concept the only prerequisite of another.
+
+    Body: ``{"prerequisite_concept_id": <group>, "dependent_concept_id": <group>}``.
+    """
+    topic = OutlineNode.objects.filter(pk=node_id).first()
+    if topic is None:
+        return Response({"detail": "Topic not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        undo = move_link(
+            topic,
+            int(request.data.get("prerequisite_concept_id")),
+            int(request.data.get("dependent_concept_id")),
+        )
+    except (TypeError, ValueError) as exc:
+        detail = str(exc) if isinstance(exc, LinkError) else "Choose both concepts."
+        return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({**_preview(topic), "undo": undo})
 
 
 @api_view(["POST"])

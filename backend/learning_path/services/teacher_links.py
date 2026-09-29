@@ -161,6 +161,51 @@ def decide_link(node, link_id, status):
     return undo
 
 
+@transaction.atomic
+def move_link(node, prerequisite_id, dependent_id):
+    """``dependent`` needs ``prerequisite`` first, and nothing it needed before.
+
+    Every other link shaping the path into ``dependent`` is rejected, and
+    ``prerequisite -> dependent`` is approved, in one step. Returns the undo
+    record covering both halves.
+    """
+    prerequisite = _group(node, prerequisite_id)
+    dependent = _group(node, dependent_id)
+    if prerequisite.id == dependent.id:
+        raise LinkError("A concept cannot be its own prerequisite.")
+
+    replaced = list(
+        ConceptPrerequisite.objects.filter(
+            outline_node=node, dependent=dependent, status__in=ConceptPrerequisite.SHAPES_PATH,
+        ).exclude(prerequisite=prerequisite)
+    )
+    existing = ConceptPrerequisite.objects.filter(prerequisite=prerequisite, dependent=dependent).first()
+    ignore = [row.id for row in replaced] + ([existing.id] if existing else [])
+    _refuse_loop(node, prerequisite, dependent, ignore_ids=ignore)
+    undo = _snapshot(
+        node,
+        [(row.prerequisite_id, row.dependent_id) for row in replaced] + [(prerequisite.id, dependent.id)],
+    )
+
+    now = timezone.now()
+    for row in replaced:
+        row.status = ConceptPrerequisite.Status.REJECTED
+        row.source = ConceptPrerequisite.Source.TEACHER
+        row.decided_at = now
+        row.save(update_fields=["status", "source", "decided_at", "updated_at"])
+    ConceptPrerequisite.objects.update_or_create(
+        prerequisite=prerequisite,
+        dependent=dependent,
+        defaults={
+            "outline_node": node,
+            "status": ConceptPrerequisite.Status.APPROVED,
+            "source": ConceptPrerequisite.Source.TEACHER,
+            "decided_at": now,
+        },
+    )
+    return undo
+
+
 def changed_since_publish(node):
     """True when a teacher decided a link after the path was last saved."""
     step = LearningPathStep.objects.filter(outline_node=node).order_by("-published_at").first()
