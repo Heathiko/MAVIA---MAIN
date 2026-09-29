@@ -38,6 +38,15 @@ function promptTimeoutMs(text: string): number {
   return Math.min(Math.max((text.length / 11) * 1000, 3000), 30000) + 2000;
 }
 
+// Practice is the one flow whose behaviour is timing a learner cannot see and
+// a log cannot infer: a nudge and a success sound alike from outside, and a
+// drill that silently never started waiting looks exactly like one that was
+// answered. These make a run readable in `adb logcat -s ReactNativeJS`.
+// Dev only -- a released build needs none of it.
+function trace(...parts: unknown[]) {
+  if (__DEV__) console.log("[practice]", ...parts);
+}
+
 function matches(expected: ExpectedInput, got: PracticeInput): boolean {
   if (expected.kind !== got.kind) return false;
   if (expected.kind === "letter" && got.kind === "letter") return expected.letter === got.letter;
@@ -104,6 +113,7 @@ export function useGuidePractice(narration: Narrator): Practice {
         if (!drill) return;
         nudgesRef.current += 1;
         if (nudgesRef.current > MAX_NUDGES) {
+          trace("giving up on", drill.id, "- moving on");
           waitingRef.current = false;
           narrationRef.current.speak(PRACTICE_SKIP, {
             onDone: () => {
@@ -113,6 +123,7 @@ export function useGuidePractice(narration: Narrator): Practice {
           });
           return;
         }
+        trace("nudge", drill.id, nudgesRef.current, "of", MAX_NUDGES);
         narrationRef.current.speak(drill.nudge, {
           onDone: () => {
             if (run !== runRef.current) return;
@@ -134,6 +145,7 @@ export function useGuidePractice(narration: Narrator): Practice {
 
       const drill = DRILLS[index];
       if (!drill) {
+        trace("all drills done - closing");
         narrationRef.current.speak(PRACTICE_CLOSING, {
           onDone: () => {
             if (run !== runRef.current) return;
@@ -147,8 +159,10 @@ export function useGuidePractice(narration: Narrator): Practice {
       const beginWaiting = () => {
         if (run !== runRef.current || waitingRef.current) return;
         waitingRef.current = true;
+        trace("waiting for", drill.id, JSON.stringify(drill.expects));
         armNudge(run, index);
       };
+      trace("drill", index + 1, "of", DRILLS.length, ":", drill.id);
       narrationRef.current.speak(drill.prompt, { onDone: beginWaiting });
       // Watchdog. onDone is not guaranteed -- a platform can drop it, and
       // anything else calling speak() cancels it outright -- and a drill that
@@ -166,6 +180,7 @@ export function useGuidePractice(narration: Narrator): Practice {
     const run = runRef.current;
     setRunning(true);
     nudgesRef.current = 0;
+    trace("run started");
     narrationRef.current.speak(PRACTICE_WELCOME, {
       onDone: () => {
         if (run !== runRef.current) return;
@@ -187,6 +202,7 @@ export function useGuidePractice(narration: Narrator): Practice {
   const feed = useCallback(
     (input: PracticeInput) => {
       if (!runningRef.current) return false;
+      trace("input", JSON.stringify(input), "waiting=" + waitingRef.current);
       // Only a run that is actually waiting for an answer consumes input.
       //
       // This used to swallow everything while running, on the reasoning that a
@@ -200,11 +216,15 @@ export function useGuidePractice(narration: Narrator): Practice {
 
       const drill = DRILLS[stepRef.current];
       if (!drill) return true;
-      if (!matches(drill.expects, input)) return true;
+      if (!matches(drill.expects, input)) {
+        trace("wrong input for", drill.id, "- ignored");
+        return true;
+      }
 
       const run = runRef.current;
       waitingRef.current = false;
       clearTimer();
+      trace("PASSED", drill.id);
       narrationRef.current.speak(drill.success, {
         onDone: () => {
           if (run !== runRef.current) return;
