@@ -138,6 +138,37 @@ class RefreshPrerequisiteTests(PublishingFixture):
         self.assertEqual(self._status("Matter", "Solid"), "accepted")
         self.assertEqual(ConceptPrerequisite.objects.count(), 1)
 
+    def _stale_copy_of_a_teacher_decision(self, status):
+        """A row a teacher decided after this derivation read it as derived.
+
+        On PostgreSQL READ COMMITTED the read does not block a concurrent
+        Accept, so the in-memory copy can be older than the stored row.
+        """
+        row = ConceptPrerequisite.objects.create(
+            outline_node=self.topic, prerequisite=self.groups["Matter"], dependent=self.groups["Solid"],
+            status=status, source="teacher",
+        )
+        stale = ConceptPrerequisite.objects.get(pk=row.pk)
+        stale.status, stale.source = "pending", "derived"
+        return {(row.prerequisite_id, row.dependent_id): stale}
+
+    def test_a_concurrent_teacher_decision_is_not_overwritten(self):
+        stale = self._stale_copy_of_a_teacher_decision("approved")
+
+        with self._derive(("Matter", "Solid", "pending", False)), \
+                patch.object(publishing, "_stored_links", return_value=stale):
+            publishing.refresh_prerequisites(self.topic)
+
+        self.assertEqual(self._status("Matter", "Solid"), "approved")
+
+    def test_a_concurrent_teacher_decision_is_not_deleted(self):
+        stale = self._stale_copy_of_a_teacher_decision("rejected")
+
+        with self._derive(), patch.object(publishing, "_stored_links", return_value=stale):
+            publishing.refresh_prerequisites(self.topic)
+
+        self.assertEqual(self._status("Matter", "Solid"), "rejected")
+
     def test_a_changed_verdict_is_updated_in_place(self):
         with self._derive(("Matter", "Solid", "accepted", False)):
             publishing.refresh_prerequisites(self.topic)

@@ -27,9 +27,11 @@ logger = logging.getLogger(__name__)
 
 def _stored_links(node):
     """``{(prerequisite id, dependent id): row}`` for the topic's stored links."""
+    # select_for_update locks the rows on PostgreSQL so a concurrent Accept waits;
+    # SQLite ignores it (its IMMEDIATE transaction already holds the write lock).
     return {
         (row.prerequisite_id, row.dependent_id): row
-        for row in ConceptPrerequisite.objects.filter(outline_node=node)
+        for row in ConceptPrerequisite.objects.select_for_update().filter(outline_node=node)
     }
 
 
@@ -80,19 +82,28 @@ def refresh_prerequisites(node, concepts=None, runtime_instance=None):
                 row.save(update_fields=["evidence", "cross_section", "updated_at"])
                 continue
             # Updated in place, not re-created: the review screen derives on
-            # every load, and an Accept or Undo holds this row's id.
-            row.status = decision["verdict"]
-            row.source = ConceptPrerequisite.Source.DERIVED
-            row.cross_section = decision["cross_section"]
-            row.evidence = decision["evidence"]
-            row.save(update_fields=["status", "source", "cross_section", "evidence", "updated_at"])
+            # every load, and an Accept or Undo holds this row's id. The write
+            # is conditional on the stored row: a teacher decision that landed
+            # after the read above must not be overwritten by this stale copy.
+            ConceptPrerequisite.objects.filter(pk=row.pk).exclude(
+                status__in=ConceptPrerequisite.TEACHER_DECIDED,
+            ).update(
+                status=decision["verdict"],
+                source=ConceptPrerequisite.Source.DERIVED,
+                cross_section=decision["cross_section"],
+                evidence=decision["evidence"],
+                updated_at=timezone.now(),
+            )
 
-        # Derived rows the criteria no longer produce.
+        # Derived rows the criteria no longer produce -- again only while the
+        # stored row is still derived.
         stale = [
             row.pk for pair, row in existing.items()
             if pair not in fresh and row.status not in ConceptPrerequisite.TEACHER_DECIDED
         ]
-        ConceptPrerequisite.objects.filter(pk__in=stale).delete()
+        ConceptPrerequisite.objects.filter(pk__in=stale).exclude(
+            status__in=ConceptPrerequisite.TEACHER_DECIDED,
+        ).delete()
 
     counts = {"accepted": 0, "pending": 0, "teacher_decided": len(decided_pairs)}
     for decision in fresh.values():
