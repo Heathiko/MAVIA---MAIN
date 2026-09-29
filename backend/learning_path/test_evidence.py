@@ -13,6 +13,7 @@ from .services.criteria import (
     defining_sentences,
     definition_dependency,
     head_words,
+    passage_reference,
     says,
     says_plainly,
 )
@@ -165,3 +166,49 @@ class DefinitionDependencyTests(SimpleTestCase):
         self.assertIsNone(names[4])
         self.assertIsNone(definition_dependency(figure, self.solid, names, heads))
         self.assertIsNone(definition_dependency(self.solid, figure, names, heads))
+
+
+class PassageReferenceTests(SimpleTestCase):
+    def test_passages_naming_another_concept_point_to_it(self):
+        solid = Headed(1, 0, "Solid", "It keeps its shape.")
+        comparing = Headed(2, 1, "Comparing", "The table puts the solid beside the gas.")
+        names, heads = names_and_heads([solid, comparing])
+
+        references = passage_reference([solid, comparing], names, heads)
+
+        self.assertEqual(references[(1, 2)], {"prw_forward": 1.0, "prw_backward": 0.0, "prd": 1.0})
+        self.assertEqual(references[(2, 1)]["prd"], -1.0)
+
+    def test_the_share_is_over_the_dependents_passages(self):
+        solid = Headed(1, 0, "Solid", "It keeps its shape.")
+        changing = Headed(2, 1, "Changing", ("A solid can melt.", "Heat is added."))
+        names, heads = names_and_heads([solid, changing])
+
+        self.assertEqual(passage_reference([solid, changing], names, heads)[(1, 2)]["prw_forward"], 0.5)
+
+    def test_a_contrastive_passage_does_not_count(self):
+        solid = Headed(1, 0, "Solid", "It keeps its shape.")
+        gas = Headed(2, 1, "Gas", "A gas spreads out, unlike a solid.")
+        names, heads = names_and_heads([solid, gas])
+
+        self.assertEqual(passage_reference([solid, gas], names, heads)[(1, 2)]["prd"], 0.0)
+
+    def test_an_unnamed_concept_has_no_reference(self):
+        figure = Headed(1, 0, "The image shows three boxes of dots representing the states", "A solid.")
+        solid = Headed(2, 1, "Solid", "It keeps its shape.")
+        names, heads = names_and_heads([figure, solid])
+
+        references = passage_reference([figure, solid], names, heads)
+
+        self.assertNotIn((1, 2), references)
+        self.assertNotIn((2, 1), references)
+
+    def test_a_parents_overview_points_the_reference_backwards(self):
+        """The known weakness R2 has to overrule (spec Section 11): Matter's
+        overview names its children, so the passage score reads Solid -> Matter.
+        Measured on gold topic 62 at -1.0 for Matter -> Solid."""
+        matter = Headed(1, 0, "Matter", "Matter can be a solid, a liquid or a gas.")
+        solid = Headed(2, 1, "Solid", "It keeps its shape.", ("Matter",))
+        names, heads = names_and_heads([matter, solid])
+
+        self.assertEqual(passage_reference([matter, solid], names, heads)[(2, 1)]["prd"], 1.0)

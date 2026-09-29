@@ -215,6 +215,48 @@ def definition_dependency(a, b, names, heads):
     return None
 
 
+def passage_reference(concepts, names, heads):
+    """R3: ``{(a id, b id): {prw_forward, prw_backward, prd}}`` for named pairs.
+
+    Pan et al. 2017, Feature 2 (video reference distance), a generalisation of
+    RefD (Liang et al. 2015) to course material without Wikipedia links. Pan's
+    unit is a video; here it is a learning object, and a concept's units are
+    its grouped members -- grouping already decided which passages teach it.
+
+    ``prw_forward`` is the share of b's passages that name a; ``prw_backward``
+    the share of a's passages that name b; ``prd`` their difference. A positive
+    ``prd`` means b's passages lean on a, so a comes first. Position is never
+    read, and no concept owns any word.
+    """
+    passages = {
+        concept.id: [
+            getattr(member, "content", "") or ""
+            for member in (getattr(concept, "members", None) or (concept,))
+        ]
+        for concept in concepts
+    }
+
+    def share(holder_id, target_id):
+        texts = passages[holder_id]
+        if not texts:
+            return 0.0
+        return sum(1 for text in texts if says_plainly(text, target_id, names, heads)) / len(texts)
+
+    named = [concept for concept in concepts if names.get(concept.id)]
+    references = {}
+    for a in named:
+        for b in named:
+            if a.id == b.id:
+                continue
+            forward, backward = share(b.id, a.id), share(a.id, b.id)
+            references[(a.id, b.id)] = {
+                "prw_forward": round(forward, 6),
+                "prw_backward": round(backward, 6),
+                "prd": round(forward - backward, 6),
+            }
+    return references
+
+
 def _terms(text):
     return [
         singular(word) for word in normalize(text).split()
