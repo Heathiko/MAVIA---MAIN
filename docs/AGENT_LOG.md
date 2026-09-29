@@ -791,6 +791,43 @@ had staged all of it at one point; it was unstaged before committing. Check
 **Not done:** the user ended the session mid-decision on the True/False-in-MCQ
 defect below.
 
+### 2026-09-29 — Claude Code — Learning path review screen is graph-first
+
+**Branch / commits:** `learning-path-graph-screen` (from `learning-path-criteria-v4`), b97586e..HEAD.
+Spec `docs/superpowers/specs/2026-09-29-learning-path-graph-screen-design.md`,
+plan `docs/superpowers/plans/2026-09-29-learning-path-graph-screen.md`.
+**Tests:** `python manage.py test` → 1212 OK; `cd web-app && npm test` → 14 OK;
+`npm run build` OK. Playwright walkthrough of every editing action on topics 340
+and 357 (add, move, add-vs-move choice, "already", loop refusal, accept, reject,
+remove, undo of each, 10 s undo timeout, read-only page, load-failure Retry).
+**Changed:**
+- Review step 5 is now a React Flow + dagre prerequisite graph (75%) with a
+  recommended-links panel (25%); list view and the heading-column concept map
+  removed. Drag B onto A = A before B; when B already has prerequisites the
+  confirm offers Add or Move. Every change is confirmed and undoable for 10 s.
+- Links are derived when the screen opens (`GET /api/learning-path/topics/<id>/`
+  calls `refresh_prerequisites`), no longer only at publish.
+- `refresh_prerequisites` keeps derived link ids stable and tolerates two opens
+  deriving at once (found live: IntegrityError 500 on concurrent first loads).
+- New `links/move/` and `links/restore/`; add/decide/move return an `undo` record.
+- Each link carries a plain-words `reason`; each step names its `source_materials`;
+  R3 evidence records passage counts.
+**Live database:** links for topics 340 and 357 were derived by opening the
+screen (derived rows only). Every walkthrough change was undone; both topics'
+link rows were compared before/after and are identical.
+**Decisions I made:** listed as `Ruling:` lines in the run ledger and in the
+hand-back message (in-place branch not worktree; `_path` test client reuse;
+arrow styling; key fix; Retry banner replaces the page-wide error for failed
+path loads).
+**Not done / watch out:**
+- Old `.cm-*`, `.lf-*`, `.path-step*`, `.ps-*` rules in
+  `web-app/src/styles/pipeline.css` are now unused; delete in a cleanup pass.
+- Entering the Versions step auto-POSTs `generate-all-versions` for topic 357
+  (pre-existing); anyone driving the UI to step 5 triggers it.
+- The details card sits over the graph's top-left and can cover highlighted
+  neighbours on small topics.
+- Opening the screen now writes (derived links); it is teacher-only.
+
 
 ---
 
