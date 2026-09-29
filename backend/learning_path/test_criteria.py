@@ -183,7 +183,10 @@ class DecisionTableTests(SimpleTestCase):
         self.assertEqual(decided[(1, 2)]["verdict"], PENDING)
         self.assertEqual(decided[(1, 2)]["evidence"], {
             "rule": "reference",
-            "reference": {"prw_forward": 1.0, "prw_backward": 0.0, "prd": 1.0, "theta": PRD_THRESHOLD},
+            "reference": {
+                "prw_forward": 1.0, "prw_backward": 0.0, "prd": 1.0, "theta": PRD_THRESHOLD,
+                "passages_forward": 1, "passages_backward": 1,
+            },
         })
 
     def test_reference_at_or_below_the_threshold_decides_nothing(self):

@@ -146,6 +146,28 @@ class TopicPreviewTests(TopicFixture):
 
         self.assertEqual(sorted(ConceptPrerequisite.objects.values_list("id", flat=True)), first)
 
+    def test_a_suggestion_says_why_in_plain_words(self):
+        with self._derive(("Liquid", "Solid", "pending")):
+            path = self._path()
+
+        solid = next(step for step in path["steps"] if step["title"] == "Solid")
+        self.assertEqual(
+            solid["suggestions"][0]["reason"],
+            "Solid's text names Liquid in 1 of 1 passages; Liquid's text never names Solid.",
+        )
+
+    def test_a_teacher_link_says_the_teacher_added_it(self):
+        self._link("Liquid", "Solid", "approved")
+
+        solid = next(step for step in self._path()["steps"] if step["title"] == "Solid")
+
+        self.assertEqual(solid["prerequisites"][0]["reason"], "Added by you.")
+
+    def test_each_step_names_its_source_files(self):
+        path = self._path()
+
+        self.assertEqual(path["steps"][0]["source_materials"], [{"id": self.material.id, "title": "Lesson one"}])
+
 
 class PublishedPathTests(TopicFixture):
     def setUp(self):

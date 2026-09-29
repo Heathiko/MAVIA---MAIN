@@ -12,6 +12,7 @@ from lessons.models import OutlineNode
 from ..models import ConceptPrerequisite, LearningPathStep
 from .concept_units import concepts_for_topic
 from .publishing import order_with_links, path_links
+from .reasons import link_reason
 from .teacher_links import changed_since_publish
 
 
@@ -45,6 +46,7 @@ def build_topic_path(node_id):
             "title": title[row.prerequisite_id],
             "status": row.status,
             "cross_section": row.cross_section,
+            "reason": link_reason(row.evidence, title[row.prerequisite_id], title[row.dependent_id]),
         }
         if row.status in ConceptPrerequisite.SHAPES_PATH:
             shown[row.dependent_id].append(entry)
@@ -60,6 +62,11 @@ def build_topic_path(node_id):
             ((member.section_title or "").strip() for member in members if (member.section_title or "").strip()),
             "",
         )
+
+    def sources(concept):
+        # The files a step was assembled from, named for the details card.
+        named = {member.material_id: member.material.title for member in concept.members}
+        return [{"id": material_id, "title": named[material_id]} for material_id in sorted(named)]
 
     steps = []
     for position, concept in enumerate(ordered, start=1):
@@ -77,6 +84,7 @@ def build_topic_path(node_id):
             "kind": concept.kind,
             "content": concept.content,
             "source_material_ids": concept.source_material_ids,
+            "source_materials": sources(concept),
             "source_count": len(concept.members),
             "source_order": document_index[concept.id],
             "dag_depth": depth[concept.id],

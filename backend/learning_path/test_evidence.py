@@ -176,7 +176,7 @@ class PassageReferenceTests(SimpleTestCase):
 
         references = passage_reference([solid, comparing], names, heads)
 
-        self.assertEqual(references[(1, 2)], {"prw_forward": 1.0, "prw_backward": 0.0, "prd": 1.0})
+        self.assertEqual(references[(1, 2)], {"prw_forward": 1.0, "prw_backward": 0.0, "prd": 1.0, "passages_forward": 1, "passages_backward": 1})
         self.assertEqual(references[(2, 1)]["prd"], -1.0)
 
     def test_the_share_is_over_the_dependents_passages(self):

@@ -163,7 +163,7 @@ def definition_dependency(a, b, names, heads):
 
 
 def passage_reference(concepts, names, heads):
-    """R3: ``{(a id, b id): {prw_forward, prw_backward, prd}}`` for named pairs.
+    """R3: ``{(a id, b id): {prw_forward, prw_backward, prd, passages_forward, passages_backward}}`` for named pairs.
 
     Pan et al. 2017, Feature 2 (video reference distance), a generalisation of
     RefD (Liang et al. 2015) to course material without Wikipedia links. Pan's
@@ -200,6 +200,9 @@ def passage_reference(concepts, names, heads):
                 "prw_forward": round(forward, 6),
                 "prw_backward": round(backward, 6),
                 "prd": round(forward - backward, 6),
+                # Passage counts, so a reason can say "4 of 5" not "0.8".
+                "passages_forward": len(passages[b.id]),
+                "passages_backward": len(passages[a.id]),
             }
     return references
 
