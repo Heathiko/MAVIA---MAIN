@@ -286,3 +286,26 @@ class StructuralOrderTests(TestCase):
         ordered, _, _ = order_with_links(concepts, [])
 
         self.assertEqual([concept.id for concept in ordered], [2, 3, 1])
+
+
+    def test_an_introduction_comes_first_even_when_the_document_puts_it_later(self):
+        concepts = [
+            SimpleNamespace(id=1, title="Solid"),
+            SimpleNamespace(id=2, title="Introduction"),
+            SimpleNamespace(id=3, title="Gas"),
+        ]
+
+        ordered, _, _ = order_with_links(concepts, [])
+
+        self.assertEqual([concept.id for concept in ordered], [2, 1, 3])
+
+    def test_a_summary_closes_the_path_after_the_examples(self):
+        concepts = [
+            SimpleNamespace(id=1, title="Summary: what to remember"),
+            SimpleNamespace(id=2, title="Solid"),
+            SimpleNamespace(id=3, title="Everyday Examples"),
+        ]
+
+        ordered, _, _ = order_with_links(concepts, [])
+
+        self.assertEqual([concept.id for concept in ordered], [2, 3, 1])

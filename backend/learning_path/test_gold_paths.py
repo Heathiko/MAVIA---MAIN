@@ -42,3 +42,13 @@ class GoldPathTests(SimpleTestCase):
         """Topic 152 freezes the pipeline's own 14 concepts for the lesson
         topic 62 holds in the teacher's grouping (see export_live_concepts)."""
         self._assert_gold(self._report(152))
+
+    def test_topic_340_against_the_recommended_arrangement(self):
+        """Topic 340 is measured against a draft key built from an outside
+        recommendation (fixtures/gold_map_340.json), so it is a floor, not an
+        acceptance: no forbidden link accepted, and the required links the
+        rules reach must not fall. The expected order is not asserted yet -- it
+        needs rules that read sentence titles and figures (open-issues 1.4)."""
+        report = self._report(340)
+        self.assertEqual(report["forbidden_accepted"], [], json.dumps(report, indent=2))
+        self.assertGreaterEqual(report["reachable_count"], 11, json.dumps(report, indent=2))

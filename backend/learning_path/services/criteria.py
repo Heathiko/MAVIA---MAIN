@@ -18,7 +18,7 @@ and docs/superpowers/specs/2026-09-29-learning-path-criteria-v4-design.md.
 import re
 from collections import Counter
 
-from .concepts import heading_name, is_structural, resolve_concept
+from .concepts import heading_name, resolve_concept, structural_role
 from .text_signals import (
     MIN_TERM_LENGTH,
     STOP_WORDS,
@@ -329,6 +329,48 @@ def _strong_evidence(a, b, names, heads):
     return None
 
 
+def _trail_decisions(concepts, trail, names=None, heads=None):
+    """Pending links from each concept an Examples or Summary section names.
+
+    An Examples or Summary section has no name, so R1 and R2 cannot see it and
+    R3 needs a name on both sides. What it can do is *use* concepts: "An ice
+    cube is a solid" builds on Solid. The evidence is R3's own reading -- the
+    share of the section's passages that name the concept -- with nothing in
+    the other direction, since nothing can name a section that has no name. It
+    is a suggestion only, like every R3 link, and never between two sections.
+    """
+    if names is None:
+        names = concept_names(concepts)
+        heads = head_words(names)
+    decisions = []
+    for dependent in trail:
+        texts = [
+            getattr(member, "content", "") or ""
+            for member in (getattr(dependent, "members", None) or (dependent,))
+        ]
+        for prerequisite in concepts:
+            if not names.get(prerequisite.id):
+                continue
+            naming = sum(1 for text in texts if says_plainly(text, prerequisite.id, names, heads))
+            if not naming or naming / len(texts) <= PRD_THRESHOLD:
+                continue
+            decisions.append({
+                "prerequisite": prerequisite,
+                "dependent": dependent,
+                "verdict": PENDING,
+                "evidence": {"rule": "reference", "reference": {
+                    "prw_forward": round(naming / len(texts), 6),
+                    "prw_backward": 0.0,
+                    "prd": round(naming / len(texts), 6),
+                    "passages_forward": len(texts),
+                    "passages_backward": 0,
+                    "theta": PRD_THRESHOLD,
+                }},
+                "cross_section": crosses_sections(prerequisite, dependent),
+            })
+    return decisions
+
+
 def decide_pairs(concepts, runtime_instance=None):
     """Every ordered pair the evidence accepts or sends to the teacher.
 
@@ -340,11 +382,15 @@ def decide_pairs(concepts, runtime_instance=None):
     a parent's overview names its children, so R3 reads parent/child pairs
     backwards (measured: Matter/Solid on topic 62).
     """
-    # Examples and similar furniture present concepts; nothing depends on them
-    # and they depend on nothing. They are ordered last by `order_with_links`.
-    concepts = [concept for concept in concepts if not is_structural(concept)]
-    if len(concepts) < 2:
+    # Furniture names nothing, so nothing can depend on it. A lead section
+    # (Introduction) takes no part; Examples and a Summary still *depend on*
+    # the concepts their text names -- see ``trail_references``.
+    trail = [concept for concept in concepts if structural_role(concept) in ("examples", "closing")]
+    concepts = [concept for concept in concepts if structural_role(concept) is None]
+    if not concepts:
         return []
+    if len(concepts) < 2:
+        return _trail_decisions(concepts, trail)
 
     names = concept_names(concepts)
     heads = head_words(names)
@@ -395,4 +441,4 @@ def decide_pairs(concepts, runtime_instance=None):
                 "evidence": evidence,
                 "cross_section": crosses_sections(a, b),
             })
-    return decisions
+    return decisions + _trail_decisions(concepts, trail, names, heads)

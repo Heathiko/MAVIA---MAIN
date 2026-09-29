@@ -280,13 +280,44 @@ class DecisionTableTests(SimpleTestCase):
     def test_too_few_concepts_decide_nothing(self):
         self.assertEqual(decide_pairs([Headed(1, 0, "Matter", "Matter has mass.")]), [])
 
-    def test_structural_concepts_take_part_in_no_pair(self):
+    def test_a_trail_concept_is_never_a_prerequisite(self):
         matter, solid = self.matter_and_solid()
         examples = Headed(3, 2, "7. Everyday Examples", "Matter, a solid, a liquid and a gas.", ("Matter",))
 
         decided = rows([matter, solid, examples])
 
-        self.assertFalse(any(3 in pair for pair in decided))
+        self.assertFalse(any(pair[0] == 3 for pair in decided))
+
+    def test_an_examples_concept_depends_on_the_concepts_it_names(self):
+        matter, solid = self.matter_and_solid()
+        examples = Headed(3, 2, "7. Everyday Examples", "An ice cube is a solid. Matter is all around.")
+
+        decided = rows([matter, solid, examples])
+
+        self.assertEqual(decided[(2, 3)]["verdict"], PENDING)
+        self.assertEqual(decided[(2, 3)]["evidence"]["rule"], "reference")
+        self.assertIn((1, 3), decided)
+
+    def test_a_trail_link_is_only_a_suggestion(self):
+        """R3-style evidence alone never shapes the path without the teacher."""
+        matter, solid = self.matter_and_solid()
+        summary = Headed(3, 2, "Summary: what to remember", "Solids keep their shape.")
+
+        decided = rows([matter, solid, summary])
+
+        self.assertEqual({row["verdict"] for pair, row in decided.items() if pair[1] == 3}, {PENDING})
+
+    def test_a_lead_concept_takes_part_in_no_pair(self):
+        matter, solid = self.matter_and_solid()
+        intro = Headed(3, 2, "Introduction", "Matter, a solid, a liquid and a gas.")
+
+        self.assertFalse(any(3 in pair for pair in rows([matter, solid, intro])))
+
+    def test_a_trail_concept_that_names_nothing_gets_no_link(self):
+        matter, solid = self.matter_and_solid()
+        examples = Headed(3, 2, "Everyday Examples", "Look around the room.")
+
+        self.assertFalse(any(3 in pair for pair in rows([matter, solid, examples])))
 
 
 class MemberTextTests(TestCase):

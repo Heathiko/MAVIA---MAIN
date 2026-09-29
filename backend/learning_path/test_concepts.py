@@ -2,7 +2,13 @@ from django.test import SimpleTestCase
 
 from lessons.services.semantic_grouping import _GENERIC_INSTRUCTIONAL_LABELS
 
-from .services.concepts import STRUCTURAL_LABELS, is_structural, resolve_concept, strip_numbering
+from .services.concepts import (
+    STRUCTURAL_LABELS,
+    is_structural,
+    resolve_concept,
+    strip_numbering,
+    structural_role,
+)
 
 
 class Chunk:
@@ -106,3 +112,33 @@ class NumberingAndStructureTests(SimpleTestCase):
 
     def test_a_numbered_vocabulary_heading_is_structural(self):
         self.assertTrue(is_structural(Chunk("3. Vocabulary")))
+
+
+class StructuralRoleTests(SimpleTestCase):
+    """Furniture is not one thing: an Introduction opens a lesson, Examples
+    follow what they illustrate, a Summary closes it."""
+
+    def test_opening_labels_are_lead(self):
+        for title in ("Introduction", "Overview", "Objectives", "Definition", "3. Vocabulary", "Glossary"):
+            self.assertEqual(structural_role(Chunk(title)), "lead", msg=title)
+
+    def test_example_labels_are_examples(self):
+        for title in ("Everyday Examples", "7. Everyday Examples", "Example (Part 1 of 2)", "Activity"):
+            self.assertEqual(structural_role(Chunk(title)), "examples", msg=title)
+
+    def test_closing_labels_are_closing(self):
+        for title in ("Summary", "Review", "Recap", "Conclusion", "Practice questions"):
+            self.assertEqual(structural_role(Chunk(title)), "closing", msg=title)
+
+    def test_a_label_followed_by_a_colon_still_counts(self):
+        """Regression: "Summary: what to remember" was not recognised, so a
+        summary was ordered as if it were a concept (topic 340)."""
+        chunk = Chunk("Summary: what to remember (Part 1 of 2)")
+        self.assertEqual(structural_role(chunk), "closing")
+        self.assertTrue(is_structural(chunk))
+        self.assertIsNone(resolve_concept(chunk))
+
+    def test_a_title_that_only_begins_with_a_label_word_is_a_concept(self):
+        for title in ("Examples of solids", "Review of matter", "Solid"):
+            self.assertIsNone(structural_role(Chunk(title)), msg=title)
+        self.assertFalse(is_structural(Chunk("Solid")))
