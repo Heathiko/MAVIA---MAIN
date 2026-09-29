@@ -49,10 +49,10 @@ export const DRILLS: Drill[] = [
     prompt:
       "Now, choosing. I read four things out, each with a letter. " +
       "A, Science. B, Maths. C, English. D, History. " +
-      `Choose Maths. Say B, or press ${ANSWER_KEYS.b}.`,
+      `Choose Maths. Say it, or press the key marked ${ANSWER_KEYS.b}.`,
     expects: { kind: "letter", letter: "b" },
     success: "Correct, B was Maths. Courses and lessons are always chosen that way.",
-    nudge: `Maths was the second one. Say B, or press ${ANSWER_KEYS.b}.`,
+    nudge: `Maths was the second one. Say ${ANSWER_KEYS.b}, or press that key.`,
   },
   {
     id: "repeat",
@@ -68,10 +68,10 @@ export const DRILLS: Drill[] = [
     prompt:
       "Now a question, the way your lessons will ask them. " +
       "Which of these is a solid? A, water. B, air. C, ice. D, steam. " +
-      `Answer C: say C, press ${ANSWER_KEYS.c}, or tap the screen three times.`,
+      `Answer C. Say it, press the key marked ${ANSWER_KEYS.c}, or tap the screen three times.`,
     expects: { kind: "letter", letter: "c" },
     success: "Correct. Ice is a solid. That is how every question is answered.",
-    nudge: `Ice was the third one. Say C, or press ${ANSWER_KEYS.c}.`,
+    nudge: `Ice was the third one. Say ${ANSWER_KEYS.c}, or press that key.`,
   },
   {
     id: "back",

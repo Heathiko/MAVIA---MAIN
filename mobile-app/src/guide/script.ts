@@ -26,12 +26,15 @@ export type GuideSection = {
 // arithmetic: saying "divide" to someone feeling a cap marked E is worse than
 // useless. The keycodes these names belong to never change, only the words
 // do, and every spoken mention of a key in the app comes from here.
-export const ANSWER_KEYS = { a: "7", b: "8", c: "4", d: "5" } as const;
+// The answer keys carry braille caps marked A to D, so that is what they are
+// called. The digits underneath (7, 8, 4, 5) are what the keypad sends and
+// what brailleKeypad.ts binds; a learner never needs to hear them.
+export const ANSWER_KEYS = { a: "A", b: "B", c: "C", d: "D" } as const;
 export const COMMAND_KEYS = {
   repeat: "R",
   back: "E",
   guide: "G",
-  next: "plus",
+  next: "N",
 } as const;
 
 // Exactly four, so the menu is one page of A to D with no paging of its own.
@@ -49,8 +52,8 @@ export const GUIDE_SECTIONS: GuideSection[] = [
     title: "Choosing a course or lesson",
     text:
       "I read your courses out four at a time, and each one gets a letter. " +
-      `Say the letter you want, or press its key: ${ANSWER_KEYS.a} for A, ${ANSWER_KEYS.b} for B, ` +
-      `${ANSWER_KEYS.c} for C, and ${ANSWER_KEYS.d} for D. ` +
+      `Say the letter you want, or press its key: the four keys are marked ${ANSWER_KEYS.a}, ` +
+      `${ANSWER_KEYS.b}, ${ANSWER_KEYS.c} and ${ANSWER_KEYS.d}. ` +
       "If the one you want is not among those four, say next four, " +
       `or press the ${COMMAND_KEYS.next} key. ` +
       "Once you pick a course, I ask which lesson the same way.",
@@ -69,8 +72,8 @@ export const GUIDE_SECTIONS: GuideSection[] = [
     title: "Answering a question",
     text:
       "There are two ways to answer. " +
-      `Press the key for your letter: ${ANSWER_KEYS.a} for A, ${ANSWER_KEYS.b} for B, ` +
-      `${ANSWER_KEYS.c} for C, and ${ANSWER_KEYS.d} for D. ` +
+      `Press the key marked with your letter: ${ANSWER_KEYS.a}, ${ANSWER_KEYS.b}, ` +
+      `${ANSWER_KEYS.c} or ${ANSWER_KEYS.d}. ` +
       "Or tap anywhere on the screen: once for A, twice for B, three times for C, four times for D. " +
       "I say each letter as you tap, and your answer is taken a moment after you stop.",
   },
