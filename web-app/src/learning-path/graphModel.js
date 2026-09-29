@@ -9,6 +9,7 @@ const STRIP_COLUMNS = 5;
 const COLUMN_STEP = NODE_WIDTH + 30;
 const ROW_STEP = NODE_HEIGHT + 30;
 const MARGIN = 20;
+const EDGE_COLOR = "#6b7a8c";
 
 const byPosition = (steps) => [...steps].sort((a, b) => a.position - b.position);
 
@@ -100,7 +101,8 @@ export function buildGraph(steps, selectedId = null) {
       id: `link-${edge.linkId}`,
       source: String(edge.from),
       target: String(edge.to),
-      markerEnd: { type: "arrowclosed" },
+      markerEnd: { type: "arrowclosed", width: 18, height: 18, color: EDGE_COLOR },
+      style: { stroke: EDGE_COLOR, strokeWidth: 1.5 },
     })),
   };
 }
