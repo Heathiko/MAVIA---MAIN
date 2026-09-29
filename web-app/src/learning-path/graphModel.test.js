@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildGraph, classifyDrop, conceptsToReview, highlightRoles, splitLinked } from "./graphModel";
+import { buildGraph, classifyDrop, conceptsToReview, highlightRoles, pathEdges, splitLinked } from "./graphModel";
 
 const link = (linkId, conceptId, title, extra = {}) => ({ link_id: linkId, concept_id: conceptId, title, ...extra });
 const step = (id, position, title, prerequisites = [], suggestions = []) => ({
@@ -108,5 +108,17 @@ describe("pending recommendations on the graph", () => {
   it("counts the concepts that have something to review", () => {
     expect(conceptsToReview(STEPS)).toBe(1);
     expect(conceptsToReview([step(1, 1, "A")])).toBe(0);
+  });
+});
+
+describe("pathEdges", () => {
+  it("leaves out links a longer chain already implies", () => {
+    const steps = [
+      step(1, 1, "Matter"),
+      step(2, 2, "Solid", [link(10, 1, "Matter")]),
+      step(3, 3, "Liquid", [link(11, 2, "Solid"), link(12, 1, "Matter", { redundant: true })]),
+    ];
+
+    expect(pathEdges(steps).map((edge) => edge.linkId)).toEqual([10, 11]);
   });
 });

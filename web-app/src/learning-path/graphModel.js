@@ -13,10 +13,14 @@ const EDGE_COLOR = "#6b7a8c";
 
 const byPosition = (steps) => [...steps].sort((a, b) => a.position - b.position);
 
-// Links that shape the path, one per "learn first" entry on a step.
+// Links that shape the path, one per "learn first" entry on a step. A link a
+// longer chain already implies (Matter -> Liquid beside Matter -> Solid -> Liquid)
+// stays stored but is not drawn.
 export function pathEdges(steps) {
   return steps.flatMap((step) =>
-    (step.prerequisites || []).map((link) => ({ linkId: link.link_id, from: link.concept_id, to: step.concept_id })),
+    (step.prerequisites || [])
+      .filter((link) => !link.redundant)
+      .map((link) => ({ linkId: link.link_id, from: link.concept_id, to: step.concept_id })),
   );
 }
 
