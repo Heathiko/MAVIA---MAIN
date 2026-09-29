@@ -25,6 +25,14 @@ from .concepts import is_structural
 logger = logging.getLogger(__name__)
 
 
+def _stored_links(node):
+    """``{(prerequisite id, dependent id): row}`` for the topic's stored links."""
+    return {
+        (row.prerequisite_id, row.dependent_id): row
+        for row in ConceptPrerequisite.objects.filter(outline_node=node)
+    }
+
+
 def refresh_prerequisites(node, concepts=None, runtime_instance=None):
     """Re-derive this topic's links, keeping every teacher decision.
 
@@ -33,47 +41,51 @@ def refresh_prerequisites(node, concepts=None, runtime_instance=None):
     concepts = list(concepts if concepts is not None else concepts_for_topic(node))
     decisions = criteria.decide_pairs(concepts, runtime_instance)
 
-    existing = {
-        (row.prerequisite_id, row.dependent_id): row
-        for row in ConceptPrerequisite.objects.filter(outline_node=node)
-    }
-    decided_pairs = {
-        pair for pair, row in existing.items()
-        if row.status in ConceptPrerequisite.TEACHER_DECIDED
-    }
-
     fresh = {}
     for decision in decisions:
         pair = (decision["prerequisite"].id, decision["dependent"].id)
         fresh[pair] = decision
 
     with transaction.atomic():
+        # Read inside the transaction: two screens opening at once both derive,
+        # and the later one must see what the earlier one stored.
+        existing = _stored_links(node)
+        decided_pairs = {
+            pair for pair, row in existing.items()
+            if row.status in ConceptPrerequisite.TEACHER_DECIDED
+        }
+
         for pair, decision in fresh.items():
             row = existing.get(pair)
-            if pair in decided_pairs:
+            if row is None:
+                # get_or_create, not create: a concurrent request may have
+                # stored this pair after the read above.
+                row, created = ConceptPrerequisite.objects.get_or_create(
+                    prerequisite_id=pair[0],
+                    dependent_id=pair[1],
+                    defaults={
+                        "outline_node": node,
+                        "status": decision["verdict"],
+                        "source": ConceptPrerequisite.Source.DERIVED,
+                        "cross_section": decision["cross_section"],
+                        "evidence": decision["evidence"],
+                    },
+                )
+                if created:
+                    continue
+            if row.status in ConceptPrerequisite.TEACHER_DECIDED:
                 # The teacher's call stands; refresh only the explanation.
                 row.evidence = decision["evidence"]
                 row.cross_section = decision["cross_section"]
                 row.save(update_fields=["evidence", "cross_section", "updated_at"])
                 continue
-            if row is not None:
-                # Updated in place, not re-created: the review screen derives on
-                # every load, and an Accept or Undo holds this row's id.
-                row.status = decision["verdict"]
-                row.source = ConceptPrerequisite.Source.DERIVED
-                row.cross_section = decision["cross_section"]
-                row.evidence = decision["evidence"]
-                row.save(update_fields=["status", "source", "cross_section", "evidence", "updated_at"])
-                continue
-            ConceptPrerequisite.objects.create(
-                outline_node=node,
-                prerequisite_id=pair[0],
-                dependent_id=pair[1],
-                status=decision["verdict"],
-                source=ConceptPrerequisite.Source.DERIVED,
-                cross_section=decision["cross_section"],
-                evidence=decision["evidence"],
-            )
+            # Updated in place, not re-created: the review screen derives on
+            # every load, and an Accept or Undo holds this row's id.
+            row.status = decision["verdict"]
+            row.source = ConceptPrerequisite.Source.DERIVED
+            row.cross_section = decision["cross_section"]
+            row.evidence = decision["evidence"]
+            row.save(update_fields=["status", "source", "cross_section", "evidence", "updated_at"])
 
         # Derived rows the criteria no longer produce.
         stale = [
@@ -82,7 +94,7 @@ def refresh_prerequisites(node, concepts=None, runtime_instance=None):
         ]
         ConceptPrerequisite.objects.filter(pk__in=stale).delete()
 
-    counts ={"accepted": 0, "pending": 0, "teacher_decided": len(decided_pairs)}
+    counts = {"accepted": 0, "pending": 0, "teacher_decided": len(decided_pairs)}
     for decision in fresh.values():
         pair = (decision["prerequisite"].id, decision["dependent"].id)
         if pair not in decided_pairs:

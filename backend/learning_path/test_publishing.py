@@ -122,6 +122,22 @@ class RefreshPrerequisiteTests(PublishingFixture):
 
         self.assertEqual(ConceptPrerequisite.objects.get().id, first)
 
+    def test_a_link_stored_by_a_concurrent_request_is_updated_not_duplicated(self):
+        """Two screens opening at once (React runs effects twice in development)
+        both derive; the one that read before the other committed must not
+        insert the same pair again. Measured 2026-09-29: IntegrityError, HTTP 500."""
+        ConceptPrerequisite.objects.create(
+            outline_node=self.topic, prerequisite=self.groups["Matter"], dependent=self.groups["Solid"],
+            status="pending", source="derived",
+        )
+
+        with self._derive(("Matter", "Solid", "accepted", False)), \
+                patch.object(publishing, "_stored_links", return_value={}):
+            publishing.refresh_prerequisites(self.topic)
+
+        self.assertEqual(self._status("Matter", "Solid"), "accepted")
+        self.assertEqual(ConceptPrerequisite.objects.count(), 1)
+
     def test_a_changed_verdict_is_updated_in_place(self):
         with self._derive(("Matter", "Solid", "accepted", False)):
             publishing.refresh_prerequisites(self.topic)
