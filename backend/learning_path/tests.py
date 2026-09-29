@@ -49,13 +49,41 @@ class TopicFixture(TestCase):
             status=status, source="teacher" if status in ("approved", "rejected") else "derived",
         )
 
+    def _derive(self, *rows):
+        """Replace the criteria with a fixed outcome, as a context manager.
+
+        Each row is ``(before, after, verdict)``; evidence is a reference rule
+        naming one passage each way, so reasons read predictably.
+        """
+        from unittest.mock import patch
+
+        from .services import publishing
+
+        concepts = {concept.title: concept for concept in publishing.concepts_for_topic(self.topic)}
+        built = [
+            {
+                "prerequisite": concepts[before],
+                "dependent": concepts[after],
+                "verdict": verdict,
+                "evidence": {"rule": "reference", "reference": {
+                    "prw_forward": 1.0, "prw_backward": 0.0, "prd": 1.0, "theta": 0.05,
+                    "passages_forward": 1, "passages_backward": 1,
+                }},
+                "cross_section": False,
+            }
+            for before, after, verdict in rows
+        ]
+        return patch.object(publishing.criteria, "decide_pairs", return_value=built)
+
 
 class TopicPreviewTests(TopicFixture):
     def _path(self):
         # The preview is teacher/admin-gated in mavia (see views.py's
         # topic_learning_path) -- unlike unauthenticated access, which
         # PublishedPathTests below covers separately.
-        body = self._client("TEACHER").get(f"/api/learning-path/topics/{self.topic.id}/").json()
+        if not hasattr(self, "_teacher"):
+            self._teacher = self._client("TEACHER")
+        body = self._teacher.get(f"/api/learning-path/topics/{self.topic.id}/").json()
         return body["paths"][0] if body["paths"] else None
 
     def test_one_path_for_the_whole_topic(self):
@@ -95,13 +123,28 @@ class TopicPreviewTests(TopicFixture):
         self.assertEqual(solid["prerequisite_ids"], [self.objects["Liquid"].id])
 
     def test_pending_and_rejected_links_do_not_shape_the_preview(self):
-        self._link("Liquid", "Matter", "pending")
         self._link("Solid", "Matter", "rejected")
-
-        path = self._path()
+        with self._derive(("Liquid", "Matter", "pending")):
+            path = self._path()
 
         self.assertEqual(path["steps"][0]["title"], "Matter")
         self.assertEqual(path["edges"], [])
+
+    def test_opening_the_preview_derives_and_stores_links(self):
+        with self._derive(("Matter", "Solid", "accepted")):
+            path = self._path()
+
+        solid = next(step for step in path["steps"] if step["title"] == "Solid")
+        self.assertEqual([link["title"] for link in solid["prerequisites"]], ["Matter"])
+        self.assertEqual(ConceptPrerequisite.objects.get().status, "accepted")
+
+    def test_reopening_the_preview_keeps_every_link_id(self):
+        with self._derive(("Matter", "Solid", "accepted"), ("Liquid", "Solid", "pending")):
+            self._path()
+            first = sorted(ConceptPrerequisite.objects.values_list("id", flat=True))
+            self._path()
+
+        self.assertEqual(sorted(ConceptPrerequisite.objects.values_list("id", flat=True)), first)
 
 
 class PublishedPathTests(TopicFixture):
@@ -320,7 +363,8 @@ class TeacherLinkTests(TopicFixture):
 
     def test_approving_a_suggestion_makes_it_shape_the_order(self):
         link = self._link("Liquid", "Solid", "pending")
-        before = self._steps(self.teacher.get(f"{self.base}/"))
+        with self._derive(("Liquid", "Solid", "pending")):
+            before = self._steps(self.teacher.get(f"{self.base}/"))
         self.assertEqual([s["title"] for s in before["Solid"]["suggestions"]], ["Liquid"])
 
         response = self.teacher.post(f"{self.base}/links/{link.id}/decision/", {"status": "approved"}, format="json")

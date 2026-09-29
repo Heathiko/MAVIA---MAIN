@@ -7,6 +7,7 @@ from lessons.models import OutlineNode
 from user.permissions import IsTeacherOrAdmin
 
 from .services import build_topic_path, get_published_path
+from .services.publishing import refresh_prerequisites
 from .services.teacher_links import LinkError, add_link, decide_link
 
 # Ported from Milestone1-Jean (2026-09-15), where this review preview had no
@@ -36,6 +37,10 @@ def topic_learning_path(request, node_id):
     except OutlineNode.DoesNotExist:
         return Response({"detail": "Topic not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    # Links are derived on every open, not only at publish: v4's criteria
+    # call no model (measured ~25 ms per topic), and a teacher must see the
+    # links and recommendations before publishing makes them the students'.
+    refresh_prerequisites(topic)
     return Response(_preview(topic))
 
 

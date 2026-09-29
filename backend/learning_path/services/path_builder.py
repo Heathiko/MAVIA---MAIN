@@ -1,11 +1,10 @@
 """The topic's learning path as the review screen previews it.
 
 The preview uses the same ordering the publish step saves
-(``publishing.order_with_links``) over the links already stored -- ``accepted``
-from the last publish and anything a teacher ``approved`` -- so what a teacher
-reviews before publishing is what the saved path will look like. It never runs
-the criteria itself: deriving links calls the sentence encoder, which is too
-slow for a page load and happens at publish instead.
+(``publishing.order_with_links``) over the links stored for the topic --
+``accepted`` and ``approved``. The review endpoint re-derives those links
+(``publishing.refresh_prerequisites``) just before building this preview, so
+what a teacher reviews is what publishing would save.
 """
 
 from lessons.models import OutlineNode
