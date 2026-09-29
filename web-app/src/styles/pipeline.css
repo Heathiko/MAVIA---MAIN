@@ -7081,3 +7081,128 @@ button {
 .concept-bundle .concept-bundle-move-to select {
   max-width: 100%;
 }
+
+/* ==========================================================================
+   TEACHER REVIEW — layout and density rework
+   Appended last on purpose: this screen's rules are spread over thousands of
+   lines above, and one block that states the intent is easier to read and to
+   undo than fifty edits scattered through them.
+
+   What was wrong, from a screenshot of the real screen: a concept sat in a
+   card, inside a card, inside a panel, and each drew its own 1px line and its
+   own left accent bar. Four questions below it repeated the same bordered box
+   four times. Nothing had room to breathe, and the queue was a 360px rail
+   whose text had been shrunk to fit it.
+   ========================================================================== */
+
+/* One column. The queue goes ABOVE the list rather than beside it: it holds
+   the step numbers and the "next step" button, which navigate the whole
+   pipeline, so it should be read before the long browsable list and not
+   compete with it for width. Given the full width it no longer needs small
+   text to fit. The aside follows the list in the DOM, so order moves it
+   without the markup having to change. */
+.connection-review-layout.has-recommendations {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.5rem;
+}
+.connection-review-layout.has-recommendations > .match-suggestion-panel.panel-aside {
+  order: -1;
+  position: static;
+  max-width: none;
+  width: 100%;
+}
+
+/* The queue, as a band. Nothing in it is small any more. */
+.match-suggestion-panel.panel-aside {
+  padding: 1.75rem 2rem;
+  border-radius: var(--mv-radius-lg);
+  background: var(--mv-brand-50);
+  box-shadow: none;
+  font-size: 1rem;
+}
+.match-suggestion-panel.panel-aside p,
+.match-suggestion-panel.panel-aside li {
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--mv-ink);
+}
+.match-suggestion-panel.panel-aside .connection-eyebrow {
+  font-size: 0.8rem;
+  letter-spacing: 0.14em;
+}
+.match-suggestion-panel.panel-aside h2,
+.match-suggestion-panel.panel-aside h3 {
+  font-size: 1.4rem;
+  letter-spacing: -0.02em;
+}
+
+/* The list is the long thing, so it is the thing that scrolls -- the page
+   itself stays put and the queue above it stays in view. */
+.connection-review-panel {
+  max-height: 68vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 1.5rem;
+  background: var(--mv-surface);
+  border-radius: var(--mv-radius-lg);
+  box-shadow: var(--mv-shadow-sm);
+}
+
+/* Depth, removed. A concept is separated from the next by space, not by three
+   nested outlines; the file block inside it is a heading and an indent, not a
+   box; and the questions are rows, not four copies of the same card. */
+.connection-group-card {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 0 2.25rem;
+  border-bottom: 1px solid var(--mv-border);
+  border-radius: 0;
+}
+.connection-group-card:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.connection-object-row,
+.connection-question-heading,
+.connection-question-list {
+  border: none;
+  border-left: none;
+  background: transparent;
+  box-shadow: none;
+}
+.connection-object-row {
+  padding: 1rem 0 0;
+}
+.connection-question-list {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0;
+}
+.connection-question-row {
+  border: none;
+  border-radius: var(--mv-radius-sm);
+  background: transparent;
+  box-shadow: none;
+  padding: 0.85rem 1rem;
+}
+/* Zebra rather than four outlines: it separates the rows without adding a
+   single line to the screen. */
+.connection-question-row:nth-child(odd) {
+  background: var(--mv-panel);
+}
+
+/* Room. Most of "overwhelming" was things touching each other. */
+.connection-review-main {
+  gap: 1.5rem;
+}
+.concept-bundle {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+.concept-bundle-list {
+  display: grid;
+  gap: 1rem;
+}
