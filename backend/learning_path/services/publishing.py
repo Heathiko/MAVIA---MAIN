@@ -8,8 +8,7 @@ agreed with the teacher who reviewed the design:
 * **Teacher decisions are never overwritten.** Re-deriving replaces only the
   rows the criteria produced; ``approved`` and ``rejected`` rows stay.
 * **Prerequisite links win over document order.** Kahn's sort respects every
-  ``accepted`` and ``approved`` link; ties go to the concept building on the
-  latest step, then the merged document order.
+  ``accepted`` and ``approved`` link; ties go to the merged document order.
 """
 
 import logging
@@ -193,13 +192,15 @@ def redundant_links(links):
     return redundant
 
 
-def order_with_links(concepts, links, confidence=None, build_on_latest=True):
+def order_with_links(concepts, links, confidence=None, build_on_latest=False):
     """Kahn's topological sort over the links; returns ``(ordered, depth by id, ignored links)``.
 
     Loops are first broken at their least confident derived link. Among
-    concepts ready at the same time, the one building on the step placed most
-    recently goes first (keeps related material together), then the earliest
-    in the topic's merged PDF order.
+    concepts ready at the same time the earliest in the topic's merged PDF
+    order goes first. ``build_on_latest`` first prefers the concept building
+    on the step placed most recently; it is off because it lowered Kendall's
+    tau on the development topics (79: 0.71 vs 1.00, 152: 0.73 vs 1.00, with
+    examples left out; docs/learning-path-v5-evaluation-2026-09-30.md).
     """
     position = {concept.id: index for index, concept in enumerate(concepts)}
     kept, ignored = break_cycles(

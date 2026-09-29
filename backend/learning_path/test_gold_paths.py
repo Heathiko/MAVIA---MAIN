@@ -14,6 +14,10 @@ from .services import criteria
 from .services.embeddings import EncoderUnavailable, load_encoder
 from .services.gold import gold_report, load_gold
 
+# Measured v5 values from docs/learning-path-v5-evaluation-2026-09-30.md.
+REACHABLE_FLOOR = {62: 5, 79: 3, 152: 10, 340: 17}
+TAU_FLOOR = {62: 1.0, 79: 1.0, 152: 0.80, 340: 0.75}
+
 
 class GoldPathTests(SimpleTestCase):
     @classmethod
@@ -31,6 +35,8 @@ class GoldPathTests(SimpleTestCase):
     def _assert_gold(self, topic_id):
         report = self._report(topic_id)
         self.assertEqual(report["forbidden_accepted"], [], json.dumps(report, indent=2))
+        self.assertGreaterEqual(report["reachable_count"], REACHABLE_FLOOR[topic_id], json.dumps(report, indent=2))
+        self.assertGreaterEqual(report["kendall_tau"], TAU_FLOOR[topic_id], json.dumps(report, indent=2))
 
     def test_solid_liquid_and_gas(self):
         self._assert_gold(62)

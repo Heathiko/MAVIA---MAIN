@@ -6,12 +6,16 @@ table quotes, and what ``test_gold_paths`` asserts on.
 """
 
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import criteria
+from . import criteria, embeddings
+from .clues import find_term_owners, pair_votes
+from .concept_text import material_positions, prepare
+from .fusion import CLUES
 from .publishing import order_with_links
+from .relatedness import relatedness
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
@@ -91,7 +95,7 @@ def kendall_tau(order, expected):
     return (concordant - discordant) / (concordant + discordant)
 
 
-def gold_report(data, concepts, decisions, build_on_latest=True):
+def gold_report(data, concepts, decisions, build_on_latest=False):
     key = {concept.id: concept.key for concept in concepts}
     by_key = {concept.key: concept for concept in concepts if concept.key}
     accepted = _edges(decisions, key, criteria.ACCEPTED)
@@ -172,3 +176,48 @@ def gold_report(data, concepts, decisions, build_on_latest=True):
         "ignored_links": [[key[before], key[after]] for before, after in ignored],
         "unkeyed_concepts": sum(1 for concept in concepts if concept.key is None),
     }
+
+
+def _keyed_texts(concepts):
+    texts = prepare(concepts, embed=embeddings.embed)
+    by_key = defaultdict(list)
+    for text in texts:
+        if getattr(text.concept, "key", None):
+            by_key[text.concept.key].append(text)
+    return texts, by_key
+
+
+def gate_loss(data, concepts, calibration):
+    """The key's links whose two concepts the relatedness gate keeps apart."""
+    _, by_key = _keyed_texts(concepts)
+    lost = []
+    for before, after in data["required"]:
+        closest = max(
+            (relatedness(first, second) for first in by_key[before] for second in by_key[after]),
+            default=0.0,
+        )
+        if closest < calibration["related_cutoff"]:
+            lost.append([before, after])
+    return lost
+
+
+def clue_accuracy(data, concepts, calibration):
+    """For each clue, how many of the key's links it points the right and the wrong way."""
+    texts, _ = _keyed_texts(concepts)
+    owners = find_term_owners(texts)
+    positions = material_positions(concepts)
+    required = {tuple(edge) for edge in data["required"]}
+    counts = {clue: {"right": 0, "wrong": 0} for clue in CLUES}
+    for pair in pair_votes(texts, owners, positions, calibration["related_cutoff"], calibration["meaning_cutoff"]):
+        first, second = getattr(pair["first"].concept, "key", None), getattr(pair["second"].concept, "key", None)
+        if (first, second) in required:
+            truth = 1
+        elif (second, first) in required:
+            truth = -1
+        else:
+            continue
+        for clue in CLUES:
+            vote = pair["votes"][clue]
+            if vote:
+                counts[clue]["right" if vote == truth else "wrong"] += 1
+    return counts

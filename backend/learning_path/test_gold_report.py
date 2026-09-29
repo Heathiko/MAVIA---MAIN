@@ -89,3 +89,39 @@ class GoldReportTests(SimpleTestCase):
         report = gold_report(self.data, self.concepts, [])
 
         self.assertEqual(report["kendall_tau"], 1.0)
+
+
+class ClueMeasureTests(SimpleTestCase):
+    def setUp(self):
+        from .testing import concept as make_concept
+
+        self.concepts = [
+            make_concept(1, "Stamen", "The anther makes pollen grains. " * 8, key="stamen"),
+            make_concept(2, "Pollination", "Pollen travels from an anther to a stigma.", key="pollination"),
+            make_concept(3, "Weather", "Clouds bring heavy rain showers today. " * 8, key="weather"),
+        ]
+        self.data = {"required": [["stamen", "pollination"], ["stamen", "weather"]]}
+        self.calibration = {"related_cutoff": 0.1, "meaning_cutoff": 0.3}
+
+    def test_clue_accuracy_counts_votes_on_the_keys_links(self):
+        from unittest.mock import patch
+
+        from .services.gold import clue_accuracy
+        from .testing import word_vectors
+
+        with patch("learning_path.services.embeddings.embed", word_vectors):
+            counts = clue_accuracy(self.data, self.concepts, self.calibration)
+
+        self.assertEqual(counts["terms"]["right"], 1)
+        self.assertEqual(counts["terms"]["wrong"], 0)
+
+    def test_gate_loss_lists_key_links_the_gate_blocks(self):
+        from unittest.mock import patch
+
+        from .services.gold import gate_loss
+        from .testing import word_vectors
+
+        with patch("learning_path.services.embeddings.embed", word_vectors):
+            lost = gate_loss(self.data, self.concepts, self.calibration)
+
+        self.assertEqual(lost, [["stamen", "weather"]])

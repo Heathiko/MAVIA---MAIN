@@ -306,12 +306,12 @@ class TieBreakTests(SimpleTestCase):
                          SimpleNamespace(id=3, title="Examples")]
 
     def test_a_concept_building_on_the_step_just_placed_comes_next(self):
-        ordered, _, _ = order_with_links(self.concepts, [(1, 3)])
+        ordered, _, _ = order_with_links(self.concepts, [(1, 3)], build_on_latest=True)
 
         self.assertEqual([concept.id for concept in ordered], [1, 3, 2])
 
-    def test_pdf_order_alone_when_the_rule_is_off(self):
-        ordered, _, _ = order_with_links(self.concepts, [(1, 3)], build_on_latest=False)
+    def test_pdf_order_breaks_ties_by_default(self):
+        ordered, _, _ = order_with_links(self.concepts, [(1, 3)])
 
         self.assertEqual([concept.id for concept in ordered], [1, 2, 3])
 
