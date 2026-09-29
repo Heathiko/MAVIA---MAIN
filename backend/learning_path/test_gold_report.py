@@ -77,3 +77,15 @@ class GoldReportTests(SimpleTestCase):
 
     def test_nothing_accepted_has_no_precision(self):
         self.assertIsNone(gold_report(self.data, self.concepts, [])["accepted_precision"])
+
+    def test_kendall_tau_is_one_in_order_and_minus_one_reversed(self):
+        from .services.gold import kendall_tau
+
+        self.assertEqual(kendall_tau(["a", "b", "c"], ["a", "b", "c"]), 1.0)
+        self.assertEqual(kendall_tau(["c", "b", "a"], ["a", "b", "c"]), -1.0)
+        self.assertIsNone(kendall_tau(["a"], ["a", "b"]))
+
+    def test_the_report_carries_kendall_tau(self):
+        report = gold_report(self.data, self.concepts, [])
+
+        self.assertEqual(report["kendall_tau"], 1.0)

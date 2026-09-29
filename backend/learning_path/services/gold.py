@@ -69,6 +69,28 @@ def _edges(decisions, key, verdict):
     })
 
 
+def kendall_tau(order, expected):
+    """Agreement between two orders over the keys both contain: 1 same, -1 reversed.
+
+    Replaces the all-or-nothing order match, which fails on a single swap and
+    says nothing about how close a path is. ``None`` below two shared keys.
+    """
+    rank = {}
+    for index, key in enumerate(order):
+        rank.setdefault(key, index)
+    shared = [key for key in expected if key in rank]
+    if len(shared) < 2:
+        return None
+    concordant = discordant = 0
+    for index, earlier in enumerate(shared):
+        for later in shared[index + 1:]:
+            if rank[earlier] < rank[later]:
+                concordant += 1
+            else:
+                discordant += 1
+    return (concordant - discordant) / (concordant + discordant)
+
+
 def gold_report(data, concepts, decisions):
     key = {concept.id: concept.key for concept in concepts}
     by_key = {concept.key: concept for concept in concepts if concept.key}
@@ -144,6 +166,7 @@ def gold_report(data, concepts, decisions):
         "accepted_by_rule": dict(rules),
         "order": order,
         "order_matches": order == data["expected_order"],
+        "kendall_tau": kendall_tau(order, data["expected_order"]),
         "ignored_links": [[key[before], key[after]] for before, after in ignored],
         "unkeyed_concepts": sum(1 for concept in concepts if concept.key is None),
     }
