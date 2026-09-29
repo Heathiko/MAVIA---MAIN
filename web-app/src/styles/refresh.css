@@ -129,123 +129,182 @@
    palette, which is also what makes it findable for a teacher who navigates
    by region before they can read a label.
    -------------------------------------------------------------------------- */
-/* `.card.lesson-pdf-sidebar` rather than the class alone: the sidebar also
-   carries `.card`, which paints it white, and a single class cannot outrank
-   two. Earlier guesses at this name (.workspace-sidebar, .pipeline-sidebar)
-   matched nothing at all, which is why it stayed pale through two passes. */
+/* `.card.lesson-pdf-sidebar`, not the class alone: it also carries `.card`,
+   which paints it white, and one class cannot outrank two. Earlier guesses at
+   this name (.workspace-sidebar, .pipeline-sidebar) matched nothing at all.
+
+   Every child is named below rather than left to inherit. A dark panel whose
+   contents were drawn for a white one is worse than leaving it white: pale
+   chips, bordered buttons and grey-on-grey captions all survive the
+   background change and look like leftovers. */
 .card.lesson-pdf-sidebar,
 .mv-side {
   background: var(--mv-dark);
-  color: #ffffff;
+  color: #e8edf4;
   border: none;
   border-radius: var(--mv-radius-lg);
   box-shadow: none;
+  padding: 1.5rem 1.15rem;
 }
 
-.card.lesson-pdf-sidebar strong,
-.card.lesson-pdf-sidebar h1,
-.card.lesson-pdf-sidebar h2,
-.card.lesson-pdf-sidebar h3,
-.card.lesson-pdf-sidebar h4 {
+/* --- brand row ---------------------------------------------------------- */
+.card.lesson-pdf-sidebar .lesson-sidebar-brand,
+.card.lesson-pdf-sidebar .lesson-sidebar-brand:hover {
+  background: transparent;
+  border: none;
+  text-decoration: none;
+}
+.card.lesson-pdf-sidebar .lesson-sidebar-brand-copy strong {
   color: #ffffff;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.card.lesson-pdf-sidebar .lesson-sidebar-brand-copy small {
+  color: #7f8b9c;
 }
 
-.card.lesson-pdf-sidebar small,
-.card.lesson-pdf-sidebar p,
-.card.lesson-pdf-sidebar span {
+/* The collapse control is a quiet glyph, not a white box on a dark field. */
+.card.lesson-pdf-sidebar .sidebar-collapse-toggle {
+  background: transparent;
+  border: 1px solid #2c333f;
   color: #aab4c4;
+  border-radius: var(--mv-radius-sm);
 }
-
-.card.lesson-pdf-sidebar a {
-  color: #dbe3ee;
-}
-
-/* The one selected file is the only saturated thing in a dark column, so it
-   needs no outline to be found. */
-.card.lesson-pdf-sidebar .is-active,
-.card.lesson-pdf-sidebar [aria-current="true"],
-.card.lesson-pdf-sidebar [aria-selected="true"] {
-  background: var(--mv-brand-600);
+.card.lesson-pdf-sidebar .sidebar-collapse-toggle:hover {
+  background: var(--mv-dark-soft);
   color: #ffffff;
+  border-color: #39424f;
+}
+
+/* --- section labels ----------------------------------------------------- */
+.card.lesson-pdf-sidebar .lesson-pdf-nav-label {
+  color: #7f8b9c;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  background: transparent;
+  border: none;
+  padding: 1.25rem 0.35rem 0.5rem;
+}
+/* The count rides as a small filled pill rather than a bare number. */
+.card.lesson-pdf-sidebar .lesson-pdf-nav-label > span {
+  background: var(--mv-dark-soft);
+  color: #c4ccd8;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.72rem;
+  letter-spacing: 0;
+}
+
+/* --- file rows ---------------------------------------------------------- */
+.card.lesson-pdf-sidebar .lesson-pdf-list {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.card.lesson-pdf-sidebar .lesson-pdf-nav-item {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: var(--mv-radius-sm);
+  padding: 0.7rem 0.75rem;
+  color: #dbe3ee;
+  text-align: left;
+  box-shadow: none;
+}
+.card.lesson-pdf-sidebar .lesson-pdf-nav-item:hover {
+  background: var(--mv-dark-soft);
+}
+.card.lesson-pdf-sidebar .lesson-pdf-nav-copy strong {
+  color: #eef2f8;
+  font-weight: 600;
+}
+.card.lesson-pdf-sidebar .lesson-pdf-nav-copy small {
+  color: #7f8b9c;
+}
+
+/* The index chip: a filled square, legible on the dark ground. */
+.card.lesson-pdf-sidebar .lesson-pdf-short-label {
+  background: var(--mv-dark-soft);
+  color: #aab4c4;
+  border: none;
+  border-radius: 8px;
+  font-weight: 700;
+}
+
+/* The selected file is the only saturated thing in the column, so it needs no
+   outline to be found. */
+.card.lesson-pdf-sidebar .lesson-pdf-nav-item.is-active,
+.card.lesson-pdf-sidebar .lesson-pdf-nav-item[aria-current="page"] {
+  background: var(--mv-brand-600);
   border-color: transparent;
 }
-
-.card.lesson-pdf-sidebar .is-active strong,
-.card.lesson-pdf-sidebar .is-active small,
-.card.lesson-pdf-sidebar [aria-current="true"] strong,
-.card.lesson-pdf-sidebar [aria-current="true"] small {
+.card.lesson-pdf-sidebar .lesson-pdf-nav-item.is-active .lesson-pdf-nav-copy strong,
+.card.lesson-pdf-sidebar .lesson-pdf-nav-item[aria-current="page"] .lesson-pdf-nav-copy strong {
+  color: #ffffff;
+}
+.card.lesson-pdf-sidebar .lesson-pdf-nav-item.is-active .lesson-pdf-nav-copy small,
+.card.lesson-pdf-sidebar .lesson-pdf-nav-item[aria-current="page"] .lesson-pdf-nav-copy small {
+  color: rgba(255, 255, 255, 0.78);
+}
+.card.lesson-pdf-sidebar .lesson-pdf-nav-item.is-active .lesson-pdf-short-label,
+.card.lesson-pdf-sidebar .lesson-pdf-nav-item[aria-current="page"] .lesson-pdf-short-label {
+  background: rgba(255, 255, 255, 0.2);
   color: #ffffff;
 }
 
-/* Buttons and rows inside it lose their pale card backgrounds. */
+/* --- anything else that arrived styled for a white panel ----------------- */
+.card.lesson-pdf-sidebar .card,
 .card.lesson-pdf-sidebar .lesson-item,
-.card.lesson-pdf-sidebar button:not(.btn-primary):not(.btn-danger) {
+.card.lesson-pdf-sidebar button:not(.btn-primary):not(.btn-danger):not(.lesson-pdf-nav-item):not(.sidebar-collapse-toggle) {
   background: transparent;
   border-color: transparent;
   color: #dbe3ee;
+  box-shadow: none;
+}
+.card.lesson-pdf-sidebar p,
+.card.lesson-pdf-sidebar small {
+  color: #7f8b9c;
+}
+.card.lesson-pdf-sidebar a {
+  color: #9cc4fa;
 }
 
-.card.lesson-pdf-sidebar .lesson-item:hover,
-.card.lesson-pdf-sidebar button:not(.btn-primary):not(.btn-danger):hover {
-  background: var(--mv-dark-soft);
-  color: #ffffff;
-}
-
+/* The teacher shell's own sidebar (.mv-side, from mavia.css). The dead
+   .workspace-sidebar / .pipeline-sidebar selectors that used to be listed
+   here matched nothing in this app and only made it look as though the
+   sidebar had been styled. */
 .mv-side h1,
 .mv-side h2,
 .mv-side h3,
-.mv-side strong,
-.workspace-sidebar h1,
-.workspace-sidebar h2,
-.workspace-sidebar h3,
-.workspace-sidebar strong,
-.pipeline-sidebar h1,
-.pipeline-sidebar h2,
-.pipeline-sidebar h3,
-.pipeline-sidebar strong,
-.lesson-sidebar strong {
+.mv-side strong {
   color: #ffffff;
 }
 
 .mv-side p,
 .mv-side small,
-.mv-side span,
-.workspace-sidebar p,
-.workspace-sidebar small,
-.workspace-sidebar span,
-.pipeline-sidebar p,
-.pipeline-sidebar small,
-.pipeline-sidebar span,
-.lesson-sidebar p,
-.lesson-sidebar small {
+.mv-side span {
   color: #aab4c4;
 }
 
-/* The selected item is the one saturated thing in a dark column, so it needs
-   no border to be found. */
 .mv-side a,
-.workspace-sidebar a,
-.pipeline-sidebar a,
-.mv-side button,
-.workspace-sidebar button,
-.pipeline-sidebar button {
+.mv-side button {
   color: #dbe3ee;
   border-color: transparent;
 }
 
-.mv-side a:hover,
-.workspace-sidebar a:hover,
-.pipeline-sidebar a:hover {
+.mv-side a:hover {
   background: var(--mv-dark-soft);
   color: #ffffff;
 }
 
+/* The selected item is the one saturated thing in a dark column, so it needs
+   no border to be found. */
 .mv-side a[aria-current],
-.mv-side .is-active,
-.workspace-sidebar .is-active,
-.pipeline-sidebar .is-active,
-.workspace-sidebar a[aria-current],
-.pipeline-sidebar a[aria-current] {
+.mv-side .is-active {
   background: var(--mv-brand-600);
   color: #ffffff;
   border-radius: var(--mv-radius-pill);
