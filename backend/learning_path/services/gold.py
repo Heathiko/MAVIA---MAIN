@@ -6,6 +6,7 @@ table quotes, and what ``test_gold_paths`` asserts on.
 """
 
 import json
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -78,14 +79,29 @@ def gold_report(data, concepts, decisions):
     parallel = [set(group) for group in data["parallel"]]
     known_missing = [tuple(edge) for edge in data.get("known_missing", [])]
 
+    explicit_forbidden = {tuple(edge) for edge in data.get("forbidden", [])}
+
     def forbidden(edge):
         before, after = edge
         return (
-            before in structural
+            edge in explicit_forbidden
+            or before in structural
             or after in structural
             or any(before in group and after in group for group in parallel)
             or (after, before) in required
         )
+
+    # Gold maps list direct edges only. An accepted edge the required chain
+    # implies ("matter -> comparing" through solid) is correct, not an extra.
+    implied = set(required)
+    changed = True
+    while changed:
+        changed = False
+        for (first, middle) in list(implied):
+            for (other, last) in list(implied):
+                if middle == other and first != last and (first, last) not in implied:
+                    implied.add((first, last))
+                    changed = True
 
     # Ordered from the decisions themselves, not from `accepted`: a fixture in
     # the live shape has edges `accepted` drops (unkeyed concepts, and the two
@@ -104,7 +120,13 @@ def gold_report(data, concepts, decisions):
         if index == 0 or name != sequence[index - 1]
     ]
     accepted_set = set(accepted)
+    reachable = accepted_set | set(pending)
     missing_required = [edge for edge in required if edge not in accepted_set]
+    unreachable = [edge for edge in required if edge not in reachable]
+    rules = Counter(
+        (row.get("evidence") or {}).get("rule", "none")
+        for row in decisions if row["verdict"] == criteria.ACCEPTED
+    )
     return {
         "topic": data["topic_id"],
         "accepted": [list(edge) for edge in accepted],
@@ -114,6 +136,12 @@ def gold_report(data, concepts, decisions):
         "gaps_closed": [list(edge) for edge in known_missing if edge in accepted_set],
         "forbidden_accepted": [list(edge) for edge in accepted if forbidden(edge)],
         "extra_accepted": [list(edge) for edge in accepted if edge not in required and not forbidden(edge)],
+        "unreachable": [list(edge) for edge in unreachable],
+        "reachable_count": len(required) - len(unreachable),
+        "accepted_precision": (
+            sum(1 for edge in accepted if edge in implied) / len(accepted) if accepted else None
+        ),
+        "accepted_by_rule": dict(rules),
         "order": order,
         "order_matches": order == data["expected_order"],
         "ignored_links": [[key[before], key[after]] for before, after in ignored],
