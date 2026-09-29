@@ -1,4 +1,4 @@
-"""The four direction clues (spec section 6).
+"""The direction clues (spec section 6 and amendment 1).
 
 Each looks at one pair and votes +1 (prerequisite first), -1 (dependent first)
 or 0, with the numbers behind the vote. A clue votes whenever its evidence
@@ -11,6 +11,7 @@ from collections import Counter
 
 import numpy as np
 
+from .concept_text import terms
 from .relatedness import UNRELATED_PERCENTILE, relatedness
 
 # Chi-squared with one degree of freedom at p < 0.05 (Dunning 1993).
@@ -138,6 +139,31 @@ def order_vote(prerequisite, dependent, positions):
     return 0, record
 
 
+def heading_stems(text):
+    """The stems of every heading the concept's members sit under."""
+    members = getattr(text.concept, "members", None) or ()
+    return {frozenset(terms(getattr(member, "section_title", "") or "")) for member in members} - {frozenset()}
+
+
+def _named_by(text, heading):
+    return bool(text.name) and set(text.name) <= heading
+
+
+def heading_vote(prerequisite, dependent):
+    """Author structure: the dependent sits under a heading naming the prerequisite (Wang et al. 2016)."""
+    under = any(_named_by(prerequisite, heading) for heading in heading_stems(dependent))
+    under_back = any(_named_by(dependent, heading) for heading in heading_stems(prerequisite))
+    return _sign(under - under_back), {"under": under, "under_back": under_back}
+
+
+def presented_in_parallel(first, second):
+    """Both sit under one heading that names neither: the author presents them side by side."""
+    return any(
+        not _named_by(first, heading) and not _named_by(second, heading)
+        for heading in heading_stems(first) & heading_stems(second)
+    )
+
+
 def pair_votes(texts, term_owners, positions, related_cutoff, meaning_cutoff, semantic=True):
     """Relatedness and the four votes for every pair, each read as "first before second"."""
     for index, first in enumerate(texts):
@@ -152,7 +178,9 @@ def pair_votes(texts, term_owners, positions, related_cutoff, meaning_cutoff, se
                     "name": name_vote(first, second)[0],
                     "terms": term_vote(first, second, term_owners)[0],
                     "meaning": meaning_vote(first, second, meaning_cutoff)[0] if semantic else 0,
+                    "heading": heading_vote(first, second)[0],
                     "order": order_vote(first, second, positions)[0],
+                    "parallel": presented_in_parallel(first, second),
                 },
             }
 
@@ -162,6 +190,7 @@ def clue_records(prerequisite, dependent, term_owners, positions, meaning_cutoff
     records = {
         "name": name_vote(prerequisite, dependent)[1],
         "terms": term_vote(prerequisite, dependent, term_owners)[1],
+        "heading": heading_vote(prerequisite, dependent)[1],
         "order": order_vote(prerequisite, dependent, positions)[1],
     }
     if semantic:

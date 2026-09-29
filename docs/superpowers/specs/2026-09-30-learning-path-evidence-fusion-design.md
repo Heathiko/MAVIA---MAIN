@@ -322,3 +322,50 @@ or two, in the voice of the existing modules; no "This function ...".
 - Size corrections: Dunning G² for C2, null-calibrated cutoff for C3.
 - Weights from `calibrate_learning_path`, committed, not recomputed per request.
 - Test keys: AI-drafted, same tool and prompt for 340 and 357; 357's key pending.
+
+## 14. Amendment 1 (2026-09-30): two evidence families instead of learned weights
+
+**Supersedes** the verdict rules of §7 and adds a clue to §6. Approved by the user after the stop
+rule fired in implementation Task 7.
+
+**What happened.** Built as specified, v5 accepted forbidden links on all four gold topics. With
+examples no longer marked structural (user decision), the real errors on the development set were
+parent/child pairs read backwards — Solid → Matter (62), Gas → Matter (152): an overview names its
+children, so the name, terms and meaning clues all vote "child first", and the weaker PDF-order
+vote is outvoted. The three content clues all measure how much one concept mentions another, so
+their errors are correlated; log-odds weighting assumes independent voters and cannot fix that.
+
+**Change.**
+- A fifth clue, **heading** (structure): B sits under a heading whose stems contain A's name
+  (Wang et al. 2016). And a **parallel** flag: both concepts sit under one heading that names
+  neither — the author presents them side by side.
+- Two families: **content** = name, terms, meaning (counted once, by the sign of their sum);
+  **structure** = heading, PDF order.
+
+| Situation | Verdict, direction |
+|---|---|
+| content silent (or cancels) | no link |
+| parallel flag set | PENDING, content's direction |
+| structure disagrees with content | PENDING, structure's direction (evidence `disagreement: true`) |
+| structure agrees with content | ACCEPTED |
+| all three content clues agree, structure silent | ACCEPTED |
+| otherwise | PENDING, content's direction |
+
+  Without the encoder nothing is ACCEPTED. Structure alone never makes a link.
+- `confidence` = share of the voting clues that agree with the chosen direction (used for the
+  reason text and for breaking loops).
+- Learned weights are **reported only** (per-clue agreement in `weights.json`); they no longer
+  decide verdicts. Cutoffs are still calibrated as in §5–6.
+- Gold 62/79/152 no longer mark examples as structural (user decision); their `expected_order`
+  still puts examples last, so Kendall's τ there understates agreement with the new decision.
+
+**Trade-offs (accepted by the user).** Heading containment compares headings with concept names —
+word matching, allowed only inside the structure family and never enough for a link alone. Most
+ACCEPTED links are ones the author's structure also supports; text-only links are PENDING unless
+all three content clues agree.
+
+**Measured on the development set before the change was approved (62/79/152):** forbidden 0/0/0,
+reachable 5/10, 3/8, 10/10 (v4: 9, 3, 8).
+
+**Thesis framing.** A link is trusted when two views of the material whose errors do not coincide
+confirm each other — the multi-view agreement idea of co-training (Blum & Mitchell 1998).

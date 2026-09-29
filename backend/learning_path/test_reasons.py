@@ -52,3 +52,47 @@ class LinkReasonTests(SimpleTestCase):
     def test_a_teacher_link_has_no_evidence(self):
         self.assertEqual(link_reason({}, "A", "B"), "Added by you.")
         self.assertEqual(link_reason(None, "A", "B"), "Added by you.")
+
+    def test_a_fused_link_names_its_clues(self):
+        evidence = {
+            "rule": "fusion", "confidence": 0.81, "semantic": True,
+            "votes": {"name": 0, "terms": 1, "meaning": 1, "order": 1},
+            "records": {"terms": {"owned": ["anther", "filament"]}, "order": {"pdfs": 2, "agree": 2}},
+        }
+
+        self.assertEqual(
+            link_reason(evidence, "Stamen", "Pollination"),
+            "Pollination uses terms Stamen explains (anther, filament). "
+            "Pollination's sentences refer to Stamen's ideas. "
+            "2 of 2 files teach Stamen first. Confidence 0.81.",
+        )
+
+    def test_a_fused_link_says_which_clues_disagree_and_when_meaning_was_unavailable(self):
+        evidence = {"rule": "fusion", "confidence": 0.3, "semantic": False,
+                    "votes": {"name": 1, "terms": 0, "meaning": 0, "order": -1}, "records": {}}
+
+        self.assertEqual(
+            link_reason(evidence, "Stamen", "Pollination"),
+            "Pollination names Stamen. Against it: the files' order. "
+            "The meaning check was unavailable. Confidence 0.30.",
+        )
+
+    def test_a_fused_link_against_the_text_says_so(self):
+        evidence = {"rule": "fusion", "confidence": 0.5, "semantic": True, "disagreement": True, "parallel": False,
+                    "votes": {"name": -1, "terms": 0, "meaning": 0, "heading": 1, "order": 0}, "records": {}}
+
+        self.assertEqual(
+            link_reason(evidence, "Matter", "Solid"),
+            "Solid sits under a heading naming Matter. Against it: the name. "
+            "The text reads the other way; this follows how the files are organised. Confidence 0.50.",
+        )
+
+    def test_siblings_are_explained(self):
+        evidence = {"rule": "fusion", "confidence": 1.0, "semantic": True, "disagreement": False, "parallel": True,
+                    "votes": {"name": 1, "terms": 0, "meaning": 0, "heading": 0, "order": 0}, "records": {}}
+
+        self.assertEqual(
+            link_reason(evidence, "Solid", "Gas"),
+            "Gas names Solid. The files present Solid and Gas side by side under one heading. Confidence 1.00.",
+        )
+

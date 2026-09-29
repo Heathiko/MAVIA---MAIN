@@ -9,12 +9,14 @@ from .services import clues
 from .services.clues import (
     SIGNIFICANT_G2,
     find_term_owners,
+    heading_vote,
     log_likelihood,
     meaning_cutoff,
     meaning_vote,
     name_vote,
     order_vote,
     pair_votes,
+    presented_in_parallel,
     term_vote,
 )
 from .services.concept_text import prepare, terms
@@ -138,7 +140,7 @@ class PairVoteTests(SimpleTestCase):
 
         self.assertEqual([(pair["first"].id, pair["second"].id) for pair in pairs], [(1, 2), (1, 3), (2, 3)])
         self.assertEqual(pairs[0]["votes"]["name"], 1)
-        self.assertEqual(set(pairs[0]["votes"]), {"name", "terms", "meaning", "order"})
+        self.assertEqual(set(pairs[0]["votes"]), {"name", "terms", "meaning", "heading", "order", "parallel"})
 
     def test_without_the_encoder_every_pair_passes_and_meaning_abstains(self):
         texts = prepare([concept(1, "Stamen", "The stamen makes pollen grains."), concept(2, "Fruit", "A fruit grows around the seed.")])
@@ -148,3 +150,30 @@ class PairVoteTests(SimpleTestCase):
         self.assertTrue(pair["related"])
         self.assertIsNone(pair["relatedness"])
         self.assertEqual(pair["votes"]["meaning"], 0)
+
+
+class HeadingTests(SimpleTestCase):
+    def setUp(self):
+        self.matter, self.solid, self.gas = prepare([
+            concept(1, "Matter", member("Matter has mass and takes up space.")),
+            concept(2, "Solid", member("A solid keeps its own shape.", section_title="Matter")),
+            concept(3, "Gas", member("A gas spreads out to fill space.", section_title="Matter")),
+        ])
+
+    def test_a_concept_under_a_heading_naming_another_comes_after_it(self):
+        self.assertEqual(heading_vote(self.matter, self.solid)[0], 1)
+        self.assertEqual(heading_vote(self.solid, self.matter)[0], -1)
+
+    def test_two_concepts_under_a_heading_naming_neither_are_parallel(self):
+        self.assertTrue(presented_in_parallel(self.solid, self.gas))
+
+    def test_the_concept_a_shared_heading_names_is_the_parent_not_a_sibling(self):
+        parent = prepare([concept(1, "Matter", member("Matter has mass and takes up space.", section_title="Matter"))])[0]
+
+        self.assertFalse(presented_in_parallel(parent, self.solid))
+
+    def test_pair_votes_carry_the_heading_clue_and_the_parallel_flag(self):
+        [pair, *_] = pair_votes([self.matter, self.solid, self.gas], {}, {}, related_cutoff=0.0, meaning_cutoff=0.3, semantic=False)
+
+        self.assertEqual(pair["votes"]["heading"], 1)
+        self.assertFalse(pair["votes"]["parallel"])

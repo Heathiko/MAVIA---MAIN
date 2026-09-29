@@ -91,7 +91,7 @@ def kendall_tau(order, expected):
     return (concordant - discordant) / (concordant + discordant)
 
 
-def gold_report(data, concepts, decisions):
+def gold_report(data, concepts, decisions, build_on_latest=True):
     key = {concept.id: concept.key for concept in concepts}
     by_key = {concept.key: concept for concept in concepts if concept.key}
     accepted = _edges(decisions, key, criteria.ACCEPTED)
@@ -128,11 +128,13 @@ def gold_report(data, concepts, decisions):
     # Ordered from the decisions themselves, not from `accepted`: a fixture in
     # the live shape has edges `accepted` drops (unkeyed concepts, and the two
     # halves of a split concept), and those edges still move the path.
-    links = [
-        (row["prerequisite"].id, row["dependent"].id)
-        for row in decisions if row["verdict"] == criteria.ACCEPTED
-    ]
-    ordered, _, ignored = order_with_links(concepts, links)
+    accepted_rows = [row for row in decisions if row["verdict"] == criteria.ACCEPTED]
+    links = [(row["prerequisite"].id, row["dependent"].id) for row in accepted_rows]
+    confidence = {
+        (row["prerequisite"].id, row["dependent"].id): (row.get("evidence") or {}).get("confidence", 0.0)
+        for row in accepted_rows
+    }
+    ordered, _, ignored = order_with_links(concepts, links, confidence, build_on_latest=build_on_latest)
     # An unkeyed concept is taught somewhere in the order, but the teacher's map
     # says nothing about where; two concepts sharing a key are one concept
     # taught over two steps. Both collapse away before the order is compared.

@@ -1657,6 +1657,23 @@ git add backend/learning_path/services/publishing.py backend/learning_path/servi
 git commit -m "Break loops at the weakest link and tie-break Kahn by the latest step"
 ```
 
+## Amendment 1 (2026-09-30, approved by the user)
+
+Spec §14 replaces the learned-weight verdict with two evidence families. Implemented inside
+Task 7 (commit "Replace the v4 criteria…"): `clues.heading_vote`, `clues.presented_in_parallel`,
+`clues.heading_stems`; `pair_votes` votes gain `"heading"` and `"parallel"`; `fusion.CLUES =
+CONTENT_CLUES + STRUCTURE_CLUES`, `fusion.verdict(votes, semantic=True)`,
+`fusion.confidence(votes, direction)`, `fusion.family_direction`; `fusion.combine` removed;
+`learn_weights` reports agreement only; `calibration.DEFAULTS` weights gain `"heading"`;
+`criteria.decide_pairs(..., without=())` silences clues for ablations and stores `parallel` and
+`disagreement` in the evidence; `reasons` explains headings, disagreement and siblings; gold
+fixtures 62/79/152 have `"structural": []`.
+
+Later tasks read with this amendment:
+- **Task 9:** the calibration's `weights` are reported, not used for verdicts.
+- **Task 10:** `clue_accuracy` iterates `CLUES` (the votes dict also holds the `parallel` flag);
+  `--without CLUE` passes `without=(clue,)` to `decide_pairs` instead of zeroing a weight.
+
 ---
 
 ### Task 7: Rewrite the criteria as fusion; retire the v4 rules

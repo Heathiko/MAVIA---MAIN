@@ -1,22 +1,52 @@
-"""Combining the clues into one confidence and verdict (spec section 7).
+"""Deciding a link from two evidence families (spec amendment 1).
 
-Weights come from how often each clue agrees with the others -- log-odds
-weighting of independent voters (Dawid & Skene 1979) -- so no answer key is
-read and nothing is fitted to one lesson.
+What the text says (name, terms, meaning) and how the author organised it
+(heading, PDF order) fail for different reasons, so a link is trusted when the
+two agree -- the multi-view idea of co-training (Blum & Mitchell 1998). The
+three content clues all measure mentions, so they count once, as a family.
+Structure alone never makes a link.
 """
 
 import math
 
-CLUES = ("name", "terms", "meaning", "order")
 CONTENT_CLUES = ("name", "terms", "meaning")
+STRUCTURE_CLUES = ("heading", "order")
+CLUES = CONTENT_CLUES + STRUCTURE_CLUES
 
 ACCEPTED = "accepted"
 PENDING = "pending"
 PARALLEL = "parallel"
 
-ACCEPT_CONFIDENCE = 0.5
-MIN_SUPPORTING_CLUES = 2
 MAX_AGREEMENT = 0.95
+
+
+def family_direction(votes, family):
+    total = sum(votes[clue] for clue in family)
+    return (total > 0) - (total < 0)
+
+
+def verdict(votes, semantic=True):
+    """``(verdict, direction)``; direction +1 means "first before second"."""
+    content = family_direction(votes, CONTENT_CLUES)
+    structure = family_direction(votes, STRUCTURE_CLUES)
+    if not content:
+        return PARALLEL, 0
+    if votes.get("parallel"):
+        return PENDING, content
+    if structure == -content:
+        return PENDING, structure
+    unanimous = all(votes[clue] == content for clue in CONTENT_CLUES)
+    if semantic and (structure == content or unanimous):
+        return ACCEPTED, content
+    return PENDING, content
+
+
+def confidence(votes, direction):
+    """Share of the clues that voted which agree with ``direction``."""
+    voting = [clue for clue in CLUES if votes[clue]]
+    if not voting or not direction:
+        return 0.0
+    return sum(1 for clue in voting if votes[clue] == direction) / len(voting)
 
 
 def _log_odds(agreement):
@@ -27,7 +57,11 @@ def _log_odds(agreement):
 
 
 def learn_weights(vote_rows):
-    """``(weights, agreement)`` per clue, from agreement with the other clues' majority."""
+    """``(weights, agreement)`` per clue, from agreement with the other clues' majority.
+
+    Reported by the calibration, not used for verdicts: weights cannot correct
+    errors the content clues share (measured on gold 62/152, 2026-09-30).
+    """
     agreement = {}
     for clue in CLUES:
         agreeing = counted = 0
@@ -40,25 +74,4 @@ def learn_weights(vote_rows):
             counted += 1
             agreeing += (votes[clue] > 0) == (others > 0)
         agreement[clue] = agreeing / counted if counted else 0.5
-    weights = {clue: _log_odds(agreement[clue]) for clue in CLUES}
-    content = [weights[clue] for clue in CONTENT_CLUES if weights[clue] > 0]
-    weights["order"] = min(weights["order"], min(content) / 2 if content else 0.0)
-    return weights, agreement
-
-
-def combine(votes, weights):
-    """``(score, confidence)``: the sign of the score is the direction; an abstaining clue lowers confidence."""
-    score = sum(weights[clue] * votes[clue] for clue in CLUES)
-    total = sum(weights[clue] for clue in CLUES)
-    return score, (abs(score) / total if total else 0.0)
-
-
-def verdict(votes, score, confidence, semantic=True):
-    """``(verdict, direction)``; direction +1 means "first before second"."""
-    direction = (score > 0) - (score < 0)
-    supporting = [clue for clue in CLUES if direction and votes[clue] == direction]
-    if not any(clue in CONTENT_CLUES for clue in supporting):
-        return PARALLEL, 0
-    if semantic and confidence >= ACCEPT_CONFIDENCE and len(supporting) >= MIN_SUPPORTING_CLUES:
-        return ACCEPTED, direction
-    return PENDING, direction
+    return {clue: _log_odds(agreement[clue]) for clue in CLUES}, agreement

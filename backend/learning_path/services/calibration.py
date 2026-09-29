@@ -1,4 +1,4 @@
-"""Clue weights and similarity cutoffs, learned once and stored for the whole group.
+"""Similarity cutoffs and clue agreement, learned once and stored for the whole group.
 
 Weights are not recomputed when a screen opens, so a new upload never quietly
 changes another topic's links. ``calibrate_learning_path`` writes the file.
@@ -22,7 +22,7 @@ CALIBRATION = Path(__file__).resolve().parent.parent / "calibration" / "weights.
 # Used until the command has been run. Cutoffs measured 2026-09-30 on topics
 # 340 x 357 (150 concept pairs, 2005 sentence matches).
 DEFAULTS = {
-    "weights": {"name": 1.0, "terms": 1.0, "meaning": 1.0, "order": 0.5},
+    "weights": {"name": 1.0, "terms": 1.0, "meaning": 1.0, "heading": 1.0, "order": 1.0},
     "related_cutoff": 0.25,
     "meaning_cutoff": 0.30,
     "source": "defaults",
