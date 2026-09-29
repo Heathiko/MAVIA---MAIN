@@ -48,19 +48,22 @@ def refresh_prerequisites(node, concepts=None, runtime_instance=None):
         fresh[pair] = decision
 
     with transaction.atomic():
-        # Derived rows the criteria no longer produce, or produce differently,
-        # are rebuilt from scratch below.
-        ConceptPrerequisite.objects.filter(outline_node=node).exclude(
-            status__in=ConceptPrerequisite.TEACHER_DECIDED,
-        ).delete()
-
         for pair, decision in fresh.items():
+            row = existing.get(pair)
             if pair in decided_pairs:
                 # The teacher's call stands; refresh only the explanation.
-                row = existing[pair]
                 row.evidence = decision["evidence"]
                 row.cross_section = decision["cross_section"]
                 row.save(update_fields=["evidence", "cross_section", "updated_at"])
+                continue
+            if row is not None:
+                # Updated in place, not re-created: the review screen derives on
+                # every load, and an Accept or Undo holds this row's id.
+                row.status = decision["verdict"]
+                row.source = ConceptPrerequisite.Source.DERIVED
+                row.cross_section = decision["cross_section"]
+                row.evidence = decision["evidence"]
+                row.save(update_fields=["status", "source", "cross_section", "evidence", "updated_at"])
                 continue
             ConceptPrerequisite.objects.create(
                 outline_node=node,
@@ -72,7 +75,14 @@ def refresh_prerequisites(node, concepts=None, runtime_instance=None):
                 evidence=decision["evidence"],
             )
 
-    counts = {"accepted": 0, "pending": 0, "teacher_decided": len(decided_pairs)}
+        # Derived rows the criteria no longer produce.
+        stale = [
+            row.pk for pair, row in existing.items()
+            if pair not in fresh and row.status not in ConceptPrerequisite.TEACHER_DECIDED
+        ]
+        ConceptPrerequisite.objects.filter(pk__in=stale).delete()
+
+    counts ={"accepted": 0, "pending": 0, "teacher_decided": len(decided_pairs)}
     for decision in fresh.values():
         pair = (decision["prerequisite"].id, decision["dependent"].id)
         if pair not in decided_pairs:

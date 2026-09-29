@@ -114,6 +114,25 @@ class RefreshPrerequisiteTests(PublishingFixture):
 
         self.assertEqual(self._status("Matter", "Liquid"), "approved")
 
+    def test_a_link_the_criteria_still_produce_keeps_its_id(self):
+        with self._derive(("Matter", "Solid", "accepted", False)):
+            publishing.refresh_prerequisites(self.topic)
+            first = ConceptPrerequisite.objects.get().id
+            publishing.refresh_prerequisites(self.topic)
+
+        self.assertEqual(ConceptPrerequisite.objects.get().id, first)
+
+    def test_a_changed_verdict_is_updated_in_place(self):
+        with self._derive(("Matter", "Solid", "accepted", False)):
+            publishing.refresh_prerequisites(self.topic)
+        first = ConceptPrerequisite.objects.get().id
+
+        with self._derive(("Matter", "Solid", "pending", True)):
+            publishing.refresh_prerequisites(self.topic)
+
+        row = ConceptPrerequisite.objects.get()
+        self.assertEqual((row.id, row.status, row.cross_section), (first, "pending", True))
+
 
 class OrderTests(PublishingFixture):
     def test_without_links_the_document_order_is_kept(self):
