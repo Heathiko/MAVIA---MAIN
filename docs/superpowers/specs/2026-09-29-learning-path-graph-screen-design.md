@@ -254,3 +254,26 @@ undo each, trigger a loop refusal; read-only page shows no editing controls.
   content.
 - Out of scope: the criteria themselves, the figure rule, course-level links,
   version generation.
+
+## 10. Revision 2026-09-30 (user decision after trying the screen)
+
+Supersedes D2 and the recommendations panel in 3.1:
+
+- **One full-width graph.** The 25% recommended-links panel is removed on both
+  the editable and the read-only screen.
+- **Recommendations live on the concept they would change.** A pending link
+  "A → B" is listed in **B**'s details card under *Must learn first*, as a
+  yellow row labelled *Pending* with its reason, the "different section" flag,
+  and Accept / Reject (same confirm and 10 s Undo as before).
+- **The graph flags concepts needing a decision.** A concept with pending
+  links gets a yellow fill and border and a yellow count badge; a line above
+  the graph reads "N concepts have recommended links to review." Neither
+  appears on the read-only page.
+- **"Topic published!" dialog.** After a successful publish it replaces the
+  progress window (a failed run keeps it). It loads
+  `GET /learning-path/topics/<id>/published/` and lists each concept in path
+  order with one player for its **Normal** narration only — no questions, no
+  Simplified/Elaborated. A concept told in several parts plays them back to
+  back ("Part 1 of 2"), as the learner hears that step; only one concept plays
+  at a time; there is no "Play all" (user decision). Missing audio is shown as
+  "No audio for this concept" or "N parts have no audio and are skipped".

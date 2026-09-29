@@ -828,6 +828,16 @@ path loads).
   neighbours on small topics.
 - Opening the screen now writes (derived links); it is teacher-only.
 
+**Addendum 2026-09-30 (same branch, commits 0385758, 8a97d2b):** per the user,
+the recommendations panel is gone -- the graph is full width, pending links sit
+in the dependent concept's card as yellow rows, and concepts with pending links
+are marked yellow with a count. A "Topic published!" dialog now follows a
+successful publish, playing each concept's Normal narration in path order
+(multi-part concepts play back to back; no Play all). Verified in a headless
+browser with the publish simulated in the browser (no real publish, no model
+calls); topic 340's links identical before/after. Note: the dev server serves
+media without Range support, so audio cannot be seeked (pre-existing).
+
 
 ---
 
