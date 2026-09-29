@@ -113,3 +113,12 @@ def definition_subject(content):
     if all(word in STOP_WORDS or len(word) < MIN_TERM_LENGTH for word in words):
         return None
     return " ".join(singular(word) for word in words)
+
+
+def first_sentence(text):
+    """The text up to its first sentence break, stripped.
+
+    Uses the same split as ``definition_subject``, so the sentence a definition
+    is read from is the sentence reported as the definition.
+    """
+    return _SENTENCE_SPLIT.split(text or "", 1)[0].strip()

@@ -16,7 +16,15 @@ from collections import Counter, defaultdict
 from lessons.services.semantic_grouping import runtime as semantic_runtime
 
 from .concepts import heading_name, is_structural, resolve_concept
-from .text_signals import MIN_TERM_LENGTH, STOP_WORDS, mentions, normalize, singular
+from .text_signals import (
+    MIN_TERM_LENGTH,
+    STOP_WORDS,
+    definition_subject,
+    first_sentence,
+    mentions,
+    normalize,
+    singular,
+)
 
 # ACE's methodology windows the dependent's text rather than embedding it whole,
 # so a single sentence referring to another concept is not diluted by a long
@@ -133,6 +141,78 @@ def contained_in(holder, target_name):
         heading_name(getattr(member, "section_title", "") or "") == target_name
         for member in members
     )
+
+
+def says(text, concept_id, names, heads):
+    """True when ``text`` names the concept: its full name, or its head word.
+
+    A multi-word name counts through its head word only when that word is
+    unambiguous (see ``head_words``): lessons say "the seed", not "seed
+    formation".
+    """
+    name = names.get(concept_id)
+    if not name:
+        return False
+    normalized = normalize(text)
+    if mentions(normalized, name):
+        return True
+    return concept_id in heads and mentions(normalized, heads[concept_id])
+
+
+def says_plainly(text, concept_id, names, heads):
+    """``says``, in at least one clause that is not a contrast.
+
+    "A gas spreads out, unlike a solid" names solid only to say what a gas is
+    not. The contrast check reads the full name only, so a head-word mention is
+    always plain -- the known limitation recorded on ``_CONTRAST``.
+    """
+    if not says(text, concept_id, names, heads):
+        return False
+    return not only_contrastive_mentions(names[concept_id], text)
+
+
+def _canonical(name):
+    """A name compared word by word in singular form: "solids" matches "solid"."""
+    return " ".join(singular(word) for word in (name or "").split())
+
+
+def defining_sentences(concept, name):
+    """The sentences that define ``concept``: R1's evidence.
+
+    Wang et al. (2016) take a concept's first sentence as its definition. Here
+    that is the first sentence of each member, counted only when it actually
+    opens by defining the concept ("Melting is...", "Solids are..."). A member
+    merely *titled* with the name is not enough: "Matter" over "It comes in
+    three states: solid, liquid and gas" would make Solid a prerequisite of
+    Matter (measured on gold topic 62, 2026-09-29).
+    """
+    if not name:
+        return []
+    target = _canonical(name)
+    found = []
+    for member in getattr(concept, "members", None) or (concept,):
+        content = getattr(member, "content", "") or ""
+        if _canonical(definition_subject(content)) == target:
+            found.append(first_sentence(content))
+    return found
+
+
+def definition_dependency(a, b, names, heads):
+    """R1: B's defining sentence that names A, when A must come first; else None.
+
+    Wang et al. 2016, *Supportive relationship in concept definition*: "A is
+    likely to be B's prerequisite if A is used in B's definition"; Talukdar &
+    Cohen 2012 use the same first-sentence signal. Two definitions naming each
+    other decide nothing, and a mention only inside a contrast is not a use.
+    """
+    if not names.get(a.id) or not names.get(b.id):
+        return None
+    if any(says(sentence, b.id, names, heads) for sentence in defining_sentences(a, names[a.id])):
+        return None
+    for sentence in defining_sentences(b, names[b.id]):
+        if says_plainly(sentence, a.id, names, heads):
+            return sentence
+    return None
 
 
 def _terms(text):
