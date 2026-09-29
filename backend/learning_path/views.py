@@ -8,7 +8,7 @@ from user.permissions import IsTeacherOrAdmin
 
 from .services import build_topic_path, get_published_path
 from .services.publishing import refresh_prerequisites
-from .services.teacher_links import LinkError, add_link, decide_link
+from .services.teacher_links import LinkError, add_link, decide_link, restore_links
 
 # Ported from Milestone1-Jean (2026-09-15), where this review preview had no
 # permission classes: that project's DRF default is AllowAny, so it and
@@ -65,7 +65,7 @@ def add_path_link(request, node_id):
     if topic is None:
         return Response({"detail": "Topic not found."}, status=status.HTTP_404_NOT_FOUND)
     try:
-        add_link(
+        undo = add_link(
             topic,
             int(request.data.get("prerequisite_concept_id")),
             int(request.data.get("dependent_concept_id")),
@@ -73,7 +73,7 @@ def add_path_link(request, node_id):
     except (TypeError, ValueError) as exc:
         detail = str(exc) if isinstance(exc, LinkError) else "Choose both concepts."
         return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
-    return Response(_preview(topic), status=status.HTTP_201_CREATED)
+    return Response({**_preview(topic), "undo": undo}, status=status.HTTP_201_CREATED)
 
 
 @api_view(["POST"])
@@ -84,7 +84,21 @@ def decide_path_link(request, node_id, link_id):
     if topic is None:
         return Response({"detail": "Topic not found."}, status=status.HTTP_404_NOT_FOUND)
     try:
-        decide_link(topic, link_id, request.data.get("status"))
+        undo = decide_link(topic, link_id, request.data.get("status"))
+    except LinkError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({**_preview(topic), "undo": undo})
+
+
+@api_view(["POST"])
+@permission_classes([IsTeacherOrAdmin])
+def restore_path_links(request, node_id):
+    """Undo a link change. Body: ``{"undo": [<record from the change's response>]}``."""
+    topic = OutlineNode.objects.filter(pk=node_id).first()
+    if topic is None:
+        return Response({"detail": "Topic not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        restore_links(topic, request.data.get("undo"))
     except LinkError as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     return Response(_preview(topic))
