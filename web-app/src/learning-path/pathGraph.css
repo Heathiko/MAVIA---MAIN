@@ -1,12 +1,5 @@
 /* Learning path graph screen. Colours reuse the concept map's highlight
    palette (pipeline.css --cm-*) so selection reads the same as before. */
-.pg-screen {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 1fr);
-  gap: 1rem;
-  align-items: start;
-}
-.pg-screen.is-read-only { grid-template-columns: minmax(0, 1fr); }
 .pg-graph-area { position: relative; }
 .pg-canvas {
   height: 70vh;
@@ -80,7 +73,7 @@
   top: 12px;
   left: 12px;
   z-index: 5;
-  width: min(340px, calc(100% - 24px));
+  width: min(380px, calc(100% - 24px));
   max-height: calc(100% - 24px);
   overflow: auto;
   padding: 0.9rem;
@@ -98,30 +91,7 @@
 .pg-details-list li { display: flex; justify-content: space-between; gap: 0.5rem; align-items: start; }
 .pg-details-list small { display: block; color: var(--muted, #5c6b7c); }
 
-@media (max-width: 900px) {
-  .pg-screen { grid-template-columns: minmax(0, 1fr); }
-}
 
-.pg-panel {
-  max-height: 70vh;
-  overflow: auto;
-  padding: 0.9rem;
-  border: 1px solid var(--border, #dde5ee);
-  border-radius: 12px;
-  background: #fff;
-}
-.pg-panel h4 { margin: 0 0 0.6rem; font-size: 0.95rem; }
-.pg-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
-.pg-card {
-  display: grid;
-  gap: 0.35rem;
-  padding: 0.65rem;
-  border: 1px solid var(--border, #dde5ee);
-  border-radius: 10px;
-  font-size: 0.85rem;
-}
-.pg-card p { margin: 0; color: var(--muted, #5c6b7c); }
-.pg-card-actions { display: flex; gap: 0.4rem; }
 .pg-flag {
   justify-self: start;
   padding: 0 0.4rem;
@@ -167,3 +137,55 @@
   color: #fff;
 }
 .pg-undo-close { border: 0; background: transparent; color: #fff; font-size: 1.1rem; cursor: pointer; }
+
+/* Pending recommendations: yellow means "waiting for the teacher". */
+.pg-node { position: relative; }
+.pg-node.has-pending { border-color: #b7791f; background: #fffbea; }
+.pg-node-pending {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: #f6c343;
+  color: #3d2c00;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+.pg-node .pg-node-pending { position: absolute; top: -0.6rem; right: -0.6rem; box-shadow: 0 0 0 2px #fff; }
+.pg-review-note {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #f0d58a;
+  border-radius: 10px;
+  background: #fffbea;
+  color: #5c4400;
+  font-size: 0.88rem;
+}
+.pg-pending-list { list-style: none; margin: 0.5rem 0 0; padding: 0; display: grid; gap: 0.5rem; }
+.pg-pending {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.6rem 0.65rem;
+  border: 1px solid #f0d58a;
+  border-left: 4px solid #f6c343;
+  border-radius: 8px;
+  background: #fffbea;
+}
+.pg-pending-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.pg-pending-label {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: #f6c343;
+  color: #3d2c00;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.pg-pending small { color: #5c4400; }
+.pg-pending-actions { display: flex; gap: 0.4rem; }

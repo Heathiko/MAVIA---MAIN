@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildGraph, classifyDrop, highlightRoles, recommendations, splitLinked } from "./graphModel";
+import { buildGraph, classifyDrop, conceptsToReview, highlightRoles, splitLinked } from "./graphModel";
 
 const link = (linkId, conceptId, title, extra = {}) => ({ link_id: linkId, concept_id: conceptId, title, ...extra });
 const step = (id, position, title, prerequisites = [], suggestions = []) => ({
@@ -97,12 +97,16 @@ describe("classifyDrop", () => {
   });
 });
 
-describe("recommendations", () => {
-  it("lists each pending link with its reason", () => {
-    expect(recommendations(STEPS)).toEqual([{
-      linkId: 20, fromId: 2, fromTitle: "Solid", toId: 3, toTitle: "Liquid",
-      reason: "Liquid's text names Solid in 1 of 1 passages; Solid's text never names Liquid.",
-      crossSection: true,
-    }]);
+describe("pending recommendations on the graph", () => {
+  it("counts each concept's pending recommendations on its node", () => {
+    const graph = buildGraph(STEPS);
+    const pending = (id) => graph.nodes.find((node) => node.id === String(id)).data.pending;
+    expect(pending(3)).toBe(1);
+    expect(pending(2)).toBe(0);
+  });
+
+  it("counts the concepts that have something to review", () => {
+    expect(conceptsToReview(STEPS)).toBe(1);
+    expect(conceptsToReview([step(1, 1, "A")])).toBe(0);
   });
 });

@@ -82,7 +82,7 @@ export function buildGraph(steps, selectedId = null) {
     id: String(step.concept_id),
     type: "concept",
     position: positions.get(step.concept_id),
-    data: { step, role: roleOf(step.concept_id) },
+    data: { step, role: roleOf(step.concept_id), pending: (step.suggestions || []).length },
   }));
   if (unlinked.length) {
     nodes.push({
@@ -107,6 +107,11 @@ export function buildGraph(steps, selectedId = null) {
   };
 }
 
+// How many concepts carry recommendations the teacher still has to decide.
+export function conceptsToReview(steps) {
+  return steps.filter((step) => (step.suggestions || []).length > 0).length;
+}
+
 // Dropping B (dragged) onto A (target) means "teach A before B".
 export function classifyDrop(steps, draggedId, targetId) {
   if (draggedId === targetId) return { kind: "self", current: [] };
@@ -115,19 +120,4 @@ export function classifyDrop(steps, draggedId, targetId) {
   if (current.some((entry) => entry.concept_id === targetId)) return { kind: "already", current };
   if (!current.length) return { kind: "add", current };
   return { kind: "choose", current };
-}
-
-// Pending links for the right-hand panel, in the teaching order of the step they would change.
-export function recommendations(steps) {
-  return byPosition(steps).flatMap((step) =>
-    (step.suggestions || []).map((entry) => ({
-      linkId: entry.link_id,
-      fromId: entry.concept_id,
-      fromTitle: entry.title,
-      toId: step.concept_id,
-      toTitle: step.title,
-      reason: entry.reason || "",
-      crossSection: Boolean(entry.cross_section),
-    })),
-  );
 }

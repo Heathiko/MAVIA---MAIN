@@ -4,9 +4,8 @@ import { Link, useParams } from "react-router-dom";
 import { addPathLink, decidePathLink, fetchTopicLearningPath, movePathLink, restorePathLinks } from "../api";
 import ConceptDetails from "../learning-path/ConceptDetails";
 import ConfirmDialog from "../learning-path/ConfirmDialog";
-import { classifyDrop } from "../learning-path/graphModel";
+import { classifyDrop, conceptsToReview } from "../learning-path/graphModel";
 import PathGraph from "../learning-path/PathGraph";
-import RecommendationsPanel from "../learning-path/RecommendationsPanel";
 import UndoBar from "../learning-path/UndoBar";
 
 // Exported so the topic review flow shows the same path display inline as its
@@ -23,6 +22,7 @@ export function MaterialPath({ path, topicId = null, editable = false, onPathDat
   const selected = steps.find((step) => step.concept_id === selectedId) || null;
   const titleOf = (id) => steps.find((step) => step.concept_id === id)?.title || "Untitled concept";
   const linkCount = steps.reduce((count, step) => count + (step.prerequisites || []).length, 0);
+  const toReview = conceptsToReview(steps);
   const clearSelection = useCallback(() => setSelectedId(null), []);
   const closeUndo = useCallback(() => setUndo(null), []);
   const closeConfirm = useCallback(() => setConfirm(null), []);
@@ -95,30 +95,32 @@ export function MaterialPath({ path, topicId = null, editable = false, onPathDat
     });
   }
 
-  function handleAccept(item) {
+  // A recommendation sits on the concept it would change: "link" may need to
+  // come before "step".
+  function handleAccept(link, step) {
     ask({
-      title: `Teach ${item.fromTitle} before ${item.toTitle}?`,
+      title: `Teach ${link.title} before ${step.title}?`,
       actions: [{
         label: "Yes",
         primary: true,
         onClick: () => apply(
-          () => decidePathLink(topicId, item.linkId, "approved"),
-          `${item.fromTitle} is now taught before ${item.toTitle}.`,
+          () => decidePathLink(topicId, link.link_id, "approved"),
+          `${link.title} is now taught before ${step.title}.`,
         ),
       }],
     });
   }
 
-  function handleReject(item) {
+  function handleReject(link, step) {
     ask({
-      title: `Don't teach ${item.fromTitle} before ${item.toTitle}?`,
+      title: `Don't teach ${link.title} before ${step.title}?`,
       message: "It won't be suggested again.",
       actions: [{
         label: "Yes",
         primary: true,
         onClick: () => apply(
-          () => decidePathLink(topicId, item.linkId, "rejected"),
-          `${item.fromTitle} → ${item.toTitle} won't be suggested again.`,
+          () => decidePathLink(topicId, link.link_id, "rejected"),
+          `${link.title} → ${step.title} won't be suggested again.`,
         ),
       }],
     });
@@ -159,20 +161,34 @@ export function MaterialPath({ path, topicId = null, editable = false, onPathDat
         </p>
       )}
 
-      <div className={canEdit ? "pg-screen" : "pg-screen is-read-only"}>
-        <div className="pg-graph-area">
-          <PathGraph
-            steps={steps}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            editable={canEdit && !busy}
-            onDrop={handleDrop}
-          />
-          <ConceptDetails step={selected} editable={canEdit} onRemove={handleRemove} onClose={clearSelection} />
-        </div>
-        {canEdit && (
-          <RecommendationsPanel steps={steps} busy={busy} onAccept={handleAccept} onReject={handleReject} />
-        )}
+      {canEdit && toReview > 0 && (
+        <p className="pg-review-note" role="status">
+          <span className="pg-node-pending" aria-hidden="true">!</span>
+          <strong>
+            {toReview} concept{toReview === 1 ? " has" : "s have"} recommended links to review.
+          </strong>{" "}
+          Click a concept marked in yellow to see them.
+        </p>
+      )}
+
+      <div className="pg-graph-area">
+        <PathGraph
+          steps={steps}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          editable={canEdit && !busy}
+          showPending={canEdit}
+          onDrop={handleDrop}
+        />
+        <ConceptDetails
+          step={selected}
+          editable={canEdit}
+          busy={busy}
+          onRemove={handleRemove}
+          onAccept={handleAccept}
+          onReject={handleReject}
+          onClose={clearSelection}
+        />
       </div>
 
       {confirm && (
