@@ -2,7 +2,7 @@
 
 **Status (2026-09-30):** implemented on branch `learning-path-graph-screen`.
 Design: `docs/superpowers/specs/2026-09-30-learning-path-evidence-fusion-design.md`
-(§14 = the two-family amendment that is what the code does).
+(§14 and §15 = the amendments that are what the code does).
 Measurements: `docs/learning-path-v5-evaluation-2026-09-30.md`. Numbers live there, not here.
 
 **Scope:** one path per **topic**, whose steps are **concepts** (grouping's concept bundles
@@ -45,9 +45,10 @@ Content = sign of name + terms + meaning. Structure = sign of heading + order.
 
 | Situation | Verdict, direction |
 |---|---|
-| content silent or cancelling | no link (structure alone never links) |
-| `parallel` flag | pending, content's direction |
+| content silent, ≥ 2 PDFs agree on the order, structure agrees, not siblings | pending, the files' direction (amendment 2) |
+| content silent or cancelling, otherwise | no link |
 | structure disagrees with content | pending, structure's direction (`disagreement: true`) |
+| `parallel` flag | pending, content's direction |
 | structure agrees with content | **accepted** |
 | all three content clues agree, structure silent | **accepted** |
 | otherwise | pending, content's direction |

@@ -32,6 +32,8 @@ def _fused_reason(evidence, a, b):
     against = [_CLUE_NAMES[clue] for clue in _CLUE_NAMES if votes.get(clue) == -1]
     if against:
         parts.append(f"Against it: {', '.join(against)}.")
+    if not any(votes.get(clue) for clue in ("name", "terms", "meaning")):
+        parts.append("The text says nothing either way.")
     if evidence.get("disagreement"):
         parts.append("The text reads the other way; this follows how the files are organised.")
     if evidence.get("parallel"):

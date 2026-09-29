@@ -26,12 +26,16 @@
       ],
       "pending": [
         [
+          "comparing",
+          "examples"
+        ],
+        [
           "gas",
           "changing"
         ],
         [
           "gas",
-          "solid"
+          "examples"
         ],
         [
           "liquid",
@@ -40,6 +44,14 @@
         [
           "matter",
           "changing"
+        ],
+        [
+          "matter",
+          "comparing"
+        ],
+        [
+          "matter",
+          "examples"
         ],
         [
           "matter",
@@ -52,6 +64,14 @@
         [
           "matter",
           "solid"
+        ],
+        [
+          "solid",
+          "examples"
+        ],
+        [
+          "solid",
+          "gas"
         ]
       ],
       "missing_required": [
@@ -179,15 +199,19 @@
       "pending": [
         [
           "fertilization",
+          "fruit"
+        ],
+        [
+          "fertilization",
           "seed"
         ],
         [
           "fruit",
-          "fertilization"
+          "examples"
         ],
         [
-          "fruit",
-          "pollination"
+          "petals",
+          "examples"
         ],
         [
           "petals",
@@ -200,6 +224,30 @@
         [
           "petals",
           "pollination"
+        ],
+        [
+          "petals",
+          "seed"
+        ],
+        [
+          "pistil",
+          "examples"
+        ],
+        [
+          "pistil",
+          "fertilization"
+        ],
+        [
+          "pistil",
+          "seed"
+        ],
+        [
+          "pollination",
+          "fruit"
+        ],
+        [
+          "reproduction",
+          "examples"
         ],
         [
           "reproduction",
@@ -212,6 +260,10 @@
         [
           "reproduction",
           "pistil"
+        ],
+        [
+          "reproduction",
+          "pollination"
         ],
         [
           "reproduction",
@@ -222,8 +274,28 @@
           "stamen"
         ],
         [
+          "seed",
+          "examples"
+        ],
+        [
+          "stamen",
+          "examples"
+        ],
+        [
+          "stamen",
+          "fertilization"
+        ],
+        [
+          "stamen",
+          "fruit"
+        ],
+        [
           "stamen",
           "pistil"
+        ],
+        [
+          "stamen",
+          "pollination"
         ],
         [
           "stamen",
@@ -293,10 +365,6 @@
       ],
       "unreachable": [
         [
-          "stamen",
-          "pollination"
-        ],
-        [
           "pollination",
           "fertilization"
         ],
@@ -305,7 +373,7 @@
           "fruit"
         ]
       ],
-      "reachable_count": 5,
+      "reachable_count": 6,
       "accepted_precision": 0.6,
       "accepted_by_rule": {
         "fusion": 5
@@ -381,10 +449,6 @@
           "examples"
         ],
         [
-          "gas",
-          "solid"
-        ],
-        [
           "liquid",
           "changing"
         ],
@@ -419,6 +483,10 @@
         [
           "solid",
           "examples"
+        ],
+        [
+          "solid",
+          "gas"
         ]
       ],
       "missing_required": [
@@ -735,10 +803,6 @@
         ],
         [
           "liquid",
-          "solid"
-        ],
-        [
-          "liquid",
           "summary"
         ],
         [
@@ -771,6 +835,10 @@
         ],
         [
           "solid",
+          "changing"
+        ],
+        [
+          "solid",
           "changing_diagram"
         ],
         [
@@ -784,6 +852,10 @@
         [
           "solid",
           "figure"
+        ],
+        [
+          "solid",
+          "liquid"
         ],
         [
           "solid",
@@ -807,11 +879,19 @@
         ],
         [
           "states",
+          "gas"
+        ],
+        [
+          "states",
           "liquid"
         ],
         [
           "states",
           "same_substance"
+        ],
+        [
+          "states",
+          "solid"
         ],
         [
           "states",
@@ -1052,14 +1132,6 @@
           "states"
         ],
         [
-          "states",
-          "solid"
-        ],
-        [
-          "states",
-          "gas"
-        ],
-        [
           "solid",
           "energy_rule"
         ],
@@ -1080,7 +1152,7 @@
           "ice_example"
         ]
       ],
-      "reachable_count": 15,
+      "reachable_count": 17,
       "accepted_precision": 0.7777777777777778,
       "accepted_by_rule": {
         "fusion": 9
@@ -1147,15 +1219,15 @@
       "pending": [
         [
           "fertilization",
+          "fruit"
+        ],
+        [
+          "fertilization",
           "seed"
         ],
         [
           "fruit",
-          "fertilization"
-        ],
-        [
-          "fruit",
-          "pollination"
+          "examples"
         ],
         [
           "parts_figure",
@@ -1171,11 +1243,27 @@
         ],
         [
           "parts_figure",
+          "petals"
+        ],
+        [
+          "parts_figure",
+          "pistil"
+        ],
+        [
+          "parts_figure",
           "pollination"
         ],
         [
           "parts_figure",
           "seed"
+        ],
+        [
+          "parts_figure",
+          "stamen"
+        ],
+        [
+          "petals",
+          "examples"
         ],
         [
           "petals",
@@ -1187,15 +1275,31 @@
         ],
         [
           "petals",
-          "parts_figure"
-        ],
-        [
-          "petals",
           "pollination"
         ],
         [
+          "petals",
+          "seed"
+        ],
+        [
           "pistil",
-          "parts_figure"
+          "examples"
+        ],
+        [
+          "pistil",
+          "fertilization"
+        ],
+        [
+          "pistil",
+          "seed"
+        ],
+        [
+          "pollination",
+          "fruit"
+        ],
+        [
+          "reproduction",
+          "fertilization"
         ],
         [
           "reproduction",
@@ -1203,15 +1307,39 @@
         ],
         [
           "reproduction",
+          "pistil"
+        ],
+        [
+          "reproduction",
           "pollination"
         ],
         [
+          "reproduction",
+          "stamen"
+        ],
+        [
+          "seed",
+          "examples"
+        ],
+        [
           "stamen",
-          "parts_figure"
+          "examples"
+        ],
+        [
+          "stamen",
+          "fertilization"
+        ],
+        [
+          "stamen",
+          "fruit"
         ],
         [
           "stamen",
           "pistil"
+        ],
+        [
+          "stamen",
+          "pollination"
         ],
         [
           "stamen",
@@ -1348,55 +1476,11 @@
       ],
       "unreachable": [
         [
-          "reproduction",
-          "stamen"
-        ],
-        [
-          "reproduction",
-          "pistil"
-        ],
-        [
-          "stamen",
-          "pollination"
-        ],
-        [
-          "stamen",
-          "fertilization"
-        ],
-        [
-          "pistil",
-          "fertilization"
-        ],
-        [
           "pollination",
           "fertilization"
-        ],
-        [
-          "fertilization",
-          "fruit"
-        ],
-        [
-          "stamen",
-          "examples"
-        ],
-        [
-          "pistil",
-          "examples"
-        ],
-        [
-          "petals",
-          "examples"
-        ],
-        [
-          "seed",
-          "examples"
-        ],
-        [
-          "fruit",
-          "examples"
         ]
       ],
-      "reachable_count": 8,
+      "reachable_count": 19,
       "accepted_precision": 1.0,
       "accepted_by_rule": {
         "fusion": 8

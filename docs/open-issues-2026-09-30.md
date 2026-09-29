@@ -44,7 +44,7 @@ All other topics are empty.
 ## 1. Learning path formation (user's pipeline)
 
 ### 1.1 Automatic rules find few real prerequisites — highest impact
-> **2026-09-30, v5:** v4's R1/R2/R3 are gone. On the test topic 340, required links reached 11 → 18 of 23, 0 forbidden, accepted precision 0.92. Topic 357 (AI-drafted key): 8 → 14 of 20 required links, τ 1.00, 0 forbidden, every accepted link correct. Gold 62 lost reach (9 → 5): heading containment no longer accepts on its own.
+> **2026-09-30, v5:** v4's R1/R2/R3 are gone. On the test topic 340, required links reached 11 → 18 of 23, 0 forbidden, accepted precision 0.92. Topic 357 (AI-drafted key): 8 → 20 of 20 required links, τ 1.00, 0 forbidden, every accepted link correct — but the process chain is reached only as pending suggestions (amendment 2); remediation needs a teacher to approve them. Gold 62 lost reach (9 → 5): heading containment no longer accepts on its own.
 
 Only R2 (section containment) fired on topics 340/357; **R1 never fired**.
 - **R1 is blind to the lessons' definition format.** PDFs define terms as a bold

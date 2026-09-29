@@ -96,3 +96,13 @@ class LinkReasonTests(SimpleTestCase):
             "Gas names Solid. The files present Solid and Gas side by side under one heading. Confidence 1.00.",
         )
 
+    def test_a_suggestion_from_the_files_alone_says_the_text_is_silent(self):
+        evidence = {"rule": "fusion", "confidence": 1.0, "semantic": True, "disagreement": False, "parallel": False,
+                    "votes": {"name": 0, "terms": 0, "meaning": 0, "heading": 0, "order": 1},
+                    "records": {"order": {"pdfs": 2, "agree": 2}}}
+
+        self.assertEqual(
+            link_reason(evidence, "Pollination", "Fertilization"),
+            "2 of 2 files teach Pollination first. The text says nothing either way. Confidence 1.00.",
+        )
+

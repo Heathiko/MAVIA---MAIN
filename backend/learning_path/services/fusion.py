@@ -4,7 +4,7 @@ What the text says (name, terms, meaning) and how the author organised it
 (heading, PDF order) fail for different reasons, so a link is trusted when the
 two agree -- the multi-view idea of co-training (Blum & Mitchell 1998). The
 three content clues all measure mentions, so they count once, as a family.
-Structure alone never makes a link.
+Structure alone is at most a suggestion for the teacher (spec amendment 2).
 """
 
 import math
@@ -30,11 +30,17 @@ def verdict(votes, semantic=True):
     content = family_direction(votes, CONTENT_CLUES)
     structure = family_direction(votes, STRUCTURE_CLUES)
     if not content:
+        # The text is silent. Several PDFs agreeing on the order is still worth a
+        # suggestion -- a process (pollination, then fertilization) is told by the
+        # lesson's sequence, not its wording -- but never a link on its own, and
+        # never between siblings (amendment 2).
+        if votes["order"] and votes["order"] == structure and not votes.get("parallel"):
+            return PENDING, structure
         return PARALLEL, 0
-    if votes.get("parallel"):
-        return PENDING, content
     if structure == -content:
         return PENDING, structure
+    if votes.get("parallel"):
+        return PENDING, content
     unanimous = all(votes[clue] == content for clue in CONTENT_CLUES)
     if semantic and (structure == content or unanimous):
         return ACCEPTED, content

@@ -54,8 +54,20 @@ class VerdictTests(SimpleTestCase):
         headings and PDFs put the parent first (Solid -> Matter on gold 62)."""
         self.assertEqual(verdict(votes(name=-1, terms=-1, heading=1)), (PENDING, 1))
 
-    def test_structure_alone_makes_no_link(self):
-        self.assertEqual(verdict(votes(heading=1, order=1))[0], PARALLEL)
+    def test_pdfs_agreeing_while_the_text_is_silent_is_only_a_suggestion(self):
+        """Amendment 2: the process chain (pollination -> fertilization) is known to
+        the files' order, not to the text; it reaches the teacher, never the path."""
+        self.assertEqual(verdict(votes(heading=1, order=1)), (PENDING, 1))
+        self.assertEqual(verdict(votes(order=-1)), (PENDING, -1))
+
+    def test_a_heading_alone_makes_no_link(self):
+        self.assertEqual(verdict(votes(heading=1))[0], PARALLEL)
+
+    def test_siblings_get_no_structure_only_suggestion(self):
+        self.assertEqual(verdict(votes(order=1, parallel=True))[0], PARALLEL)
+
+    def test_siblings_whose_text_disagrees_with_the_files_follow_the_files(self):
+        self.assertEqual(verdict(votes(meaning=-1, order=1, parallel=True)), (PENDING, 1))
 
     def test_siblings_are_at_most_pending(self):
         self.assertEqual(verdict(votes(name=1, terms=1, meaning=1, order=1, parallel=True)), (PENDING, 1))
