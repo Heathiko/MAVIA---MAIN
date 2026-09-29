@@ -231,13 +231,9 @@
   margin: 1.5rem auto 0;
   padding: clamp(2.5rem, 6vw, 5rem);
   border-radius: var(--mv-radius-lg);
-  background: radial-gradient(
-      120% 120% at 15% 0%,
-      var(--mv-brand-200) 0%,
-      var(--mv-brand-100) 38%,
-      #f3f7fc 78%
-    );
+  background: var(--mv-surface);
   overflow: hidden;
+  box-shadow: var(--mv-shadow-sm);
 }
 .mv-hero__grid {
   display: grid;
@@ -276,11 +272,7 @@
   aspect-ratio: 1;
   width: min(320px, 70%);
   border-radius: 50%;
-  background: linear-gradient(
-    160deg,
-    var(--mv-brand-500),
-    var(--mv-brand-800)
-  );
+  background: var(--mv-brand-600);
   display: grid;
   place-items: center;
   color: #fff;
@@ -344,12 +336,7 @@
   position: relative;
   padding: clamp(2.5rem, 5vw, 4rem);
   color: #fff;
-  background: linear-gradient(
-    155deg,
-    var(--mv-brand-950) 0%,
-    var(--mv-brand-700) 60%,
-    var(--mv-brand-600) 100%
-  );
+  background: var(--mv-dark);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -393,7 +380,7 @@
   background: var(--mv-page);
 }
 .mv-auth__card {
-  width: min(420px, 100%);
+  width: min(480px, 100%);
 }
 .mv-auth__card h1 {
   font-size: 1.65rem;
