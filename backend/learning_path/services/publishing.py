@@ -7,12 +7,14 @@ agreed with the teacher who reviewed the design:
 * **Only the latest path is kept.** A new publish replaces the steps.
 * **Teacher decisions are never overwritten.** Re-deriving replaces only the
   rows the criteria produced; ``approved`` and ``rejected`` rows stay.
-* **Prerequisite links win over document order.** The order respects every
-  ``accepted`` and ``approved`` link; wherever links say nothing, the topic's
-  merged document order decides.
+* **Prerequisite links win over document order.** Kahn's sort respects every
+  ``accepted`` and ``approved`` link; ties go to the concept building on the
+  latest step, then the merged document order.
 """
 
 import logging
+import math
+from collections import defaultdict
 
 from django.db import transaction
 from django.utils import timezone
@@ -20,7 +22,6 @@ from django.utils import timezone
 from ..models import ConceptPrerequisite, LearningPathStep
 from . import criteria
 from .concept_units import concepts_for_topic
-from .concepts import structural_role
 
 logger = logging.getLogger(__name__)
 
@@ -125,67 +126,134 @@ def path_links(node, concept_ids):
     ]
 
 
-_ROLE_RANK = {"lead": 0, None: 1, "examples": 2, "closing": 3}
+def _find_cycle(links):
+    """The links of one loop, or ``None`` when the links form no loop."""
+    successors = defaultdict(list)
+    for before, after in links:
+        successors[before].append(after)
+    state, stack = {}, []
+
+    def visit(concept_id):
+        state[concept_id] = "open"
+        stack.append(concept_id)
+        for following in sorted(successors[concept_id]):
+            if state.get(following) == "open":
+                loop = stack[stack.index(following):] + [following]
+                return list(zip(loop, loop[1:]))
+            if following not in state:
+                found = visit(following)
+                if found:
+                    return found
+        state[concept_id] = "done"
+        stack.pop()
+        return None
+
+    for concept_id in sorted(successors):
+        if concept_id not in state:
+            found = visit(concept_id)
+            if found:
+                return found
+    return None
 
 
-def order_with_links(concepts, links):
-    """Order concepts so every link is respected, otherwise keeping their order.
+def break_cycles(links, confidence=None):
+    """Drop the least confident derived link of each loop until none is left.
 
-    ``concepts`` arrive in the topic's merged document order; that order breaks
-    every tie the links leave open. Returns ``(ordered concepts, depth by id,
-    ignored links)``. A link is ignored only if links contradict each other in
-    a loop -- then the concept earliest in document order is taught first and
-    the links it could not satisfy are reported rather than silently dropped.
+    A link missing from ``confidence`` is the teacher's and outranks any
+    derived link, so a loop is always broken at something the criteria said.
+    """
+    confidence = confidence or {}
+    kept, ignored = set(links), []
+    while True:
+        loop = _find_cycle(kept)
+        if not loop:
+            return kept, ignored
+        weakest = min(loop, key=lambda link: (confidence.get(link, math.inf), link))
+        kept.discard(weakest)
+        ignored.append(weakest)
+
+
+def redundant_links(links):
+    """Links a longer chain already implies: A->C when A->B->C exists."""
+    links = set(links)
+    successors = defaultdict(set)
+    for before, after in links:
+        successors[before].add(after)
+    redundant = set()
+    for before, after in links:
+        seen, waiting = set(), [following for following in successors[before] if following != after]
+        while waiting:
+            current = waiting.pop()
+            if current == after:
+                redundant.add((before, after))
+                break
+            if current not in seen:
+                seen.add(current)
+                waiting.extend(successors[current])
+    return redundant
+
+
+def order_with_links(concepts, links, confidence=None, build_on_latest=True):
+    """Kahn's topological sort over the links; returns ``(ordered, depth by id, ignored links)``.
+
+    Loops are first broken at their least confident derived link. Among
+    concepts ready at the same time, the one building on the step placed most
+    recently goes first (keeps related material together), then the earliest
+    in the topic's merged PDF order.
     """
     position = {concept.id: index for index, concept in enumerate(concepts)}
-    role = {concept.id: structural_role(concept) for concept in concepts}
-
-    def rank(concept_id):
-        # An Introduction opens the path, Examples follow the concepts, a
-        # Summary closes it; everything else keeps document order between them.
-        return (_ROLE_RANK[role[concept_id]], position[concept_id])
-
+    kept, ignored = break_cycles(
+        {(before, after) for before, after in links if before in position and after in position},
+        confidence,
+    )
     successors = {concept.id: set() for concept in concepts}
-    indegree = {concept.id: 0 for concept in concepts}
-    for before, after in set(links):
-        if after not in successors[before]:
-            successors[before].add(after)
-            indegree[after] += 1
+    prerequisites = {concept.id: set() for concept in concepts}
+    for before, after in kept:
+        successors[before].add(after)
+        prerequisites[after].add(before)
+
+    placed_at = {}
+    remaining = {concept_id: len(prerequisites[concept_id]) for concept_id in position}
+
+    def priority(concept_id):
+        latest = max((placed_at[before] for before in prerequisites[concept_id]), default=-1)
+        return (latest if build_on_latest else -1, -position[concept_id])
 
     by_id = {concept.id: concept for concept in concepts}
-    ordered, placed, ignored = [], set(), []
+    ordered = []
     while len(ordered) < len(concepts):
-        ready = [cid for cid in indegree if cid not in placed and indegree[cid] == 0]
-        if not ready:
-            # A loop. Teach the earliest remaining concept and record which of
-            # its incoming links could not be honoured.
-            chosen = min((cid for cid in indegree if cid not in placed), key=rank)
-            ignored.extend(
-                (before, chosen) for before, afters in successors.items()
-                if chosen in afters and before not in placed
-            )
-        else:
-            chosen = min(ready, key=rank)
+        ready = [concept_id for concept_id, count in remaining.items() if count == 0 and concept_id not in placed_at]
+        chosen = max(ready, key=priority)
+        placed_at[chosen] = len(ordered)
         ordered.append(by_id[chosen])
-        placed.add(chosen)
-        for after in successors[chosen]:
-            indegree[after] -= 1
+        for following in successors[chosen]:
+            remaining[following] -= 1
 
-    placed_index = {concept.id: index for index, concept in enumerate(ordered)}
     depth = {concept.id: 0 for concept in ordered}
     for concept in ordered:
-        for after in successors[concept.id]:
-            if placed_index[after] > placed_index[concept.id]:
-                depth[after] = max(depth[after], depth[concept.id] + 1)
+        for following in successors[concept.id]:
+            depth[following] = max(depth[following], depth[concept.id] + 1)
     return ordered, depth, ignored
+
+
+def path_link_confidence(node, concept_ids):
+    """Confidence of each derived accepted link; approved links are absent, so never broken first."""
+    return {
+        (row.prerequisite_id, row.dependent_id): float((row.evidence or {}).get("confidence", 0.0))
+        for row in ConceptPrerequisite.objects.filter(
+            outline_node=node, status=ConceptPrerequisite.Status.ACCEPTED,
+        )
+        if row.prerequisite_id in concept_ids and row.dependent_id in concept_ids
+    }
 
 
 @transaction.atomic
 def save_learning_path(node, concepts=None):
     """Replace the topic's saved steps with the current link-respecting order."""
     concepts = list(concepts if concepts is not None else concepts_for_topic(node))
-    links = path_links(node, {concept.id for concept in concepts})
-    ordered, depth, ignored = order_with_links(concepts, links)
+    concept_ids = {concept.id for concept in concepts}
+    links = path_links(node, concept_ids)
+    ordered, depth, ignored = order_with_links(concepts, links, path_link_confidence(node, concept_ids))
 
     now = timezone.now()
     LearningPathStep.objects.filter(outline_node=node).delete()

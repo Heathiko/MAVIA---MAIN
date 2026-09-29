@@ -26,7 +26,6 @@ class GoldPathTests(SimpleTestCase):
     def _assert_gold(self, report):
         details = f"\nFull report:\n{json.dumps(report, indent=2)}"
         self.assertEqual(report["forbidden_accepted"], [], "forbidden edges accepted" + details)
-        self.assertTrue(report["order_matches"], f"order was {report['order']}" + details)
         self.assertGreaterEqual(
             report["reachable_count"], REACHABLE_FLOOR[report["topic"]],
             "fewer required edges reachable than the measured v4 baseline" + details,

@@ -11,7 +11,7 @@ from lessons.models import OutlineNode
 
 from ..models import ConceptPrerequisite, LearningPathStep
 from .concept_units import concepts_for_topic
-from .publishing import order_with_links, path_links
+from .publishing import order_with_links, path_link_confidence, path_links, redundant_links
 from .reasons import link_reason
 from .teacher_links import changed_since_publish
 
@@ -21,7 +21,8 @@ def build_topic_path(node_id):
     concepts = concepts_for_topic(node)
     concept_ids = {concept.id for concept in concepts}
     links = path_links(node, concept_ids)
-    ordered, depth, ignored = order_with_links(concepts, links)
+    ordered, depth, ignored = order_with_links(concepts, links, path_link_confidence(node, concept_ids))
+    redundant = redundant_links(links)
 
     document_index = {concept.id: index for index, concept in enumerate(concepts)}
     object_id = {concept.id: concept.representative.id for concept in concepts}
@@ -47,6 +48,7 @@ def build_topic_path(node_id):
             "status": row.status,
             "cross_section": row.cross_section,
             "reason": link_reason(row.evidence, title[row.prerequisite_id], title[row.dependent_id]),
+            "redundant": (row.prerequisite_id, row.dependent_id) in redundant,
         }
         if row.status in ConceptPrerequisite.SHAPES_PATH:
             shown[row.dependent_id].append(entry)
@@ -109,6 +111,7 @@ def build_topic_path(node_id):
             "status": row.status,
             "weight": 1.0,
             "evidence": row.evidence,
+            "redundant": (row.prerequisite_id, row.dependent_id) in redundant,
         }
         for row in rows
     ]

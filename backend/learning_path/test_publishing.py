@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from lessons.models import CourseGroup, LearningMaterial, LearningObject, LearningObjectGroup, OutlineNode
@@ -21,7 +21,8 @@ from lessons.models import CourseGroup, LearningMaterial, LearningObject, Learni
 from .models import ConceptPrerequisite, LearningPathStep
 from .services import publishing
 from .services.concept_units import concepts_for_topic
-from .services.publishing import order_with_links
+from .services.path_builder import build_topic_path
+from .services.publishing import break_cycles, order_with_links, path_link_confidence, redundant_links
 
 
 def decision(prerequisite, dependent, verdict, cross_section=False):
@@ -275,37 +276,72 @@ class ImportHandCheckTests(PublishingFixture):
         self.assertIn("no longer exists", out.getvalue())
 
 
-class StructuralOrderTests(TestCase):
-    def test_examples_come_last_even_when_the_document_puts_them_first(self):
-        concepts = [
-            SimpleNamespace(id=1, title="Everyday Examples"),
-            SimpleNamespace(id=2, title="Solid"),
-            SimpleNamespace(id=3, title="Gas"),
-        ]
+class CycleTests(SimpleTestCase):
+    def test_the_least_confident_link_in_a_loop_is_dropped(self):
+        kept, ignored = break_cycles({(1, 2), (2, 3), (3, 1)}, {(1, 2): 0.9, (2, 3): 0.4, (3, 1): 0.7})
 
-        ordered, _, _ = order_with_links(concepts, [])
+        self.assertEqual(ignored, [(2, 3)])
+        self.assertEqual(kept, {(1, 2), (3, 1)})
 
-        self.assertEqual([concept.id for concept in ordered], [2, 3, 1])
+    def test_a_teacher_link_stays_while_a_derived_one_can_go(self):
+        kept, ignored = break_cycles({(1, 2), (2, 1)}, {(2, 1): 0.99})
+
+        self.assertEqual(ignored, [(2, 1)])
+
+    def test_links_without_a_loop_are_all_kept(self):
+        self.assertEqual(break_cycles({(1, 2), (2, 3)}), ({(1, 2), (2, 3)}, []))
 
 
-    def test_an_introduction_comes_first_even_when_the_document_puts_it_later(self):
-        concepts = [
-            SimpleNamespace(id=1, title="Solid"),
-            SimpleNamespace(id=2, title="Introduction"),
-            SimpleNamespace(id=3, title="Gas"),
-        ]
+class RedundantLinkTests(SimpleTestCase):
+    def test_a_link_a_longer_chain_already_implies_is_redundant(self):
+        self.assertEqual(redundant_links({(1, 2), (2, 3), (1, 3)}), {(1, 3)})
 
-        ordered, _, _ = order_with_links(concepts, [])
+    def test_a_plain_chain_has_nothing_redundant(self):
+        self.assertEqual(redundant_links({(1, 2), (2, 3)}), set())
 
-        self.assertEqual([concept.id for concept in ordered], [2, 1, 3])
 
-    def test_a_summary_closes_the_path_after_the_examples(self):
-        concepts = [
-            SimpleNamespace(id=1, title="Summary: what to remember"),
-            SimpleNamespace(id=2, title="Solid"),
-            SimpleNamespace(id=3, title="Everyday Examples"),
-        ]
+class TieBreakTests(SimpleTestCase):
+    def setUp(self):
+        self.concepts = [SimpleNamespace(id=1, title="Solid"), SimpleNamespace(id=2, title="Changing"),
+                         SimpleNamespace(id=3, title="Examples")]
 
-        ordered, _, _ = order_with_links(concepts, [])
+    def test_a_concept_building_on_the_step_just_placed_comes_next(self):
+        ordered, _, _ = order_with_links(self.concepts, [(1, 3)])
 
-        self.assertEqual([concept.id for concept in ordered], [2, 3, 1])
+        self.assertEqual([concept.id for concept in ordered], [1, 3, 2])
+
+    def test_pdf_order_alone_when_the_rule_is_off(self):
+        ordered, _, _ = order_with_links(self.concepts, [(1, 3)], build_on_latest=False)
+
+        self.assertEqual([concept.id for concept in ordered], [1, 2, 3])
+
+    def test_a_loop_is_broken_at_its_weakest_link(self):
+        ordered, _, ignored = order_with_links(self.concepts, [(1, 2), (2, 1)], {(1, 2): 0.9, (2, 1): 0.2})
+
+        self.assertEqual(ignored, [(2, 1)])
+        self.assertEqual([concept.id for concept in ordered][:2], [1, 2])
+
+
+class StoredConfidenceTests(PublishingFixture):
+    def test_a_v4_row_without_confidence_reads_as_zero(self):
+        ConceptPrerequisite.objects.create(
+            outline_node=self.topic, prerequisite=self.groups["Matter"], dependent=self.groups["Solid"],
+            status="accepted", source="derived", evidence={"rule": "containment", "containment": {"heading": "matter"}},
+        )
+        ids = {group.id for group in self.groups.values()}
+
+        self.assertEqual(path_link_confidence(self.topic, ids), {(self.groups["Matter"].id, self.groups["Solid"].id): 0.0})
+
+    def test_a_redundant_prerequisite_is_flagged_for_the_screen(self):
+        for before, after in (("Matter", "Solid"), ("Solid", "Liquid"), ("Matter", "Liquid")):
+            ConceptPrerequisite.objects.create(
+                outline_node=self.topic, prerequisite=self.groups[before], dependent=self.groups[after],
+                status="approved", source="teacher",
+            )
+
+        with self._derive():
+            path = build_topic_path(self.topic.id)
+
+        liquid = next(step for step in path["steps"] if step["title"] == "Liquid")
+        flags = {entry["title"]: entry["redundant"] for entry in liquid["prerequisites"]}
+        self.assertEqual(flags, {"Matter": True, "Solid": False})
