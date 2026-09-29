@@ -1,0 +1,160 @@
+/* ==========================================================================
+   MAVIA — refresh layer
+   Loaded after mavia.css and pipeline.css, so it wins on order rather than by
+   piling up selectors. pipeline.css is 7,100 lines that grew their own
+   design; rather than edit it in a hundred places, the corrections that
+   belong to the new look live here, each with the reason it exists.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   Question bank BESIDE question tools.
+   Two attempts to place the panel's children by selector lost specificity
+   races to rules buried in pipeline.css, so the markup now has two wrapper
+   columns and this only has to lay out two boxes. Nothing left to lose to.
+   -------------------------------------------------------------------------- */
+.match-suggestion-panel.panel-aside.question-tools-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 2.5rem;
+  align-items: start;
+  /* pipeline.css forced `overflow-y: auto !important` on this whole panel,
+     which is where the unwanted scrollbar came from. The panel is not the
+     long thing; the bank inside it is. */
+  overflow: visible !important;
+}
+
+.qt-col {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  min-width: 0;
+}
+
+/* The divider said "add questions" under the bank, which only made sense when
+   the two were stacked. Side by side, each column has its own heading. */
+.question-source-divider {
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  .match-suggestion-panel.panel-aside.question-tools-panel {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2rem;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Scrollbars.
+   Where one is genuinely needed it should read as part of the surface rather
+   than an operating-system part bolted onto it: no track, no arrows, a thin
+   capsule that only darkens under the pointer.
+   -------------------------------------------------------------------------- */
+.mv-root *,
+.connection-review-panel,
+.saved-question-list {
+  scrollbar-width: thin;
+  scrollbar-color: var(--mv-border-strong) transparent;
+}
+
+.mv-root *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.mv-root *::-webkit-scrollbar-track,
+.mv-root *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.mv-root *::-webkit-scrollbar-thumb {
+  background: var(--mv-border-strong);
+  border-radius: 999px;
+  /* A transparent border inset by background-clip makes the thumb a narrow
+     capsule with air around it, rather than a bar wedged against the text. */
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+.mv-root *::-webkit-scrollbar-thumb:hover {
+  background: var(--mv-muted);
+  background-clip: content-box;
+}
+
+/* --------------------------------------------------------------------------
+   The workspace sidebar.
+   It was a pale panel against a pale page, which is the "outdated" look: two
+   near-white areas separated by a line. It is now the dark block of the
+   palette, which is also what makes it findable for a teacher who navigates
+   by region before they can read a label.
+   -------------------------------------------------------------------------- */
+.mv-side,
+.workspace-sidebar,
+.pipeline-sidebar,
+.lesson-sidebar {
+  background: var(--mv-dark);
+  color: #ffffff;
+  border: none;
+  border-radius: var(--mv-radius-lg);
+  box-shadow: none;
+}
+
+.mv-side h1,
+.mv-side h2,
+.mv-side h3,
+.mv-side strong,
+.workspace-sidebar h1,
+.workspace-sidebar h2,
+.workspace-sidebar h3,
+.workspace-sidebar strong,
+.pipeline-sidebar h1,
+.pipeline-sidebar h2,
+.pipeline-sidebar h3,
+.pipeline-sidebar strong,
+.lesson-sidebar strong {
+  color: #ffffff;
+}
+
+.mv-side p,
+.mv-side small,
+.mv-side span,
+.workspace-sidebar p,
+.workspace-sidebar small,
+.workspace-sidebar span,
+.pipeline-sidebar p,
+.pipeline-sidebar small,
+.pipeline-sidebar span,
+.lesson-sidebar p,
+.lesson-sidebar small {
+  color: #aab4c4;
+}
+
+/* The selected item is the one saturated thing in a dark column, so it needs
+   no border to be found. */
+.mv-side a,
+.workspace-sidebar a,
+.pipeline-sidebar a,
+.mv-side button,
+.workspace-sidebar button,
+.pipeline-sidebar button {
+  color: #dbe3ee;
+  border-color: transparent;
+}
+
+.mv-side a:hover,
+.workspace-sidebar a:hover,
+.pipeline-sidebar a:hover {
+  background: var(--mv-dark-soft);
+  color: #ffffff;
+}
+
+.mv-side a[aria-current],
+.mv-side .is-active,
+.workspace-sidebar .is-active,
+.pipeline-sidebar .is-active,
+.workspace-sidebar a[aria-current],
+.pipeline-sidebar a[aria-current] {
+  background: var(--mv-brand-600);
+  color: #ffffff;
+  border-radius: var(--mv-radius-pill);
+  border: none;
+}

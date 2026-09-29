@@ -1429,6 +1429,11 @@ function ManualQuestionPanel({
 
   return (
     <aside className="match-suggestion-panel panel-aside question-tools-panel" aria-labelledby="manual-question-panel-title">
+      {/* Two explicit columns rather than grid-placing the panel's children by
+          selector: the bank is one job and adding a question is the other, and
+          wrapping them says so in the markup instead of depending on which
+          rule happens to win. */}
+      <div className="qt-col qt-col--bank">
       <section className="saved-question-sidebar" aria-labelledby="saved-question-title">
         <div className="match-suggestion-heading">
           <div>
@@ -1471,8 +1476,9 @@ function ManualQuestionPanel({
           </div>
         )}
       </section>
+      </div>
 
-      <div className="question-source-divider" role="separator"><span>ADD QUESTIONS</span></div>
+      <div className="qt-col qt-col--tools">
       <div className="match-suggestion-heading">
         <div>
           <span className="connection-eyebrow">Question tools</span>
@@ -1608,6 +1614,7 @@ function ManualQuestionPanel({
           </div>
         </div>
       )}
+      </div>
     </aside>
   );
 }

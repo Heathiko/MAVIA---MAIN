@@ -6,6 +6,7 @@ import { AuthProvider } from "./auth";
 import "./styles/base.css";
 import "./styles/mavia.css";
 import "./styles/pipeline.css"; // legacy plain-CSS for the ported content-gen pages
+import "./styles/refresh.css"; // corrections that belong to the new look; must load last
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
