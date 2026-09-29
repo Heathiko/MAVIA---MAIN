@@ -1,11 +1,12 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useState } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { Redirect, Tabs, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { useAuth } from "@/auth/AuthContext";
 import { useNarration } from "@/hooks/useNarration";
-import { useGuideOnFirstLaunch } from "@/guide/useGuide";
+import { hasHeardGuide, useGuideOnFirstLaunch } from "@/guide/useGuide";
+import { GuideMenu } from "@/guide/GuideMenu";
 import { useBrailleKeypad } from "@/input/useBrailleKeypad";
 import { useVoiceCommands } from "@/voice/useVoiceCommands";
 import { SwipeToCourses } from "@/nav/SwipeToCourses";
@@ -30,6 +31,18 @@ export default function StudentLayout() {
   // lives at the layout rather than on a screen so that pressing minus works
   // wherever they are -- being lost is exactly when it is wanted.
   const guide = useGuideOnFirstLaunch(narration, { enabled: signedIn });
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  // Minus means "help me" both times, but it should not mean the same eight
+  // paragraphs twice. Never heard it: play the whole thing. Heard it: offer
+  // the four sections and read only the one asked for.
+  const openGuide = useCallback(() => {
+    setMenuOpen(false);
+    void hasHeardGuide().then((heard) => {
+      if (heard) setMenuOpen(true);
+      else guide.play();
+    });
+  }, [guide]);
 
   const goToCourses = useCallback(() => {
     guide.stop();
@@ -37,19 +50,32 @@ export default function StudentLayout() {
     router.push("/home");
   }, [guide, narration]);
 
+  // Divide is "back" everywhere, and back means the nearest thing to leave --
+  // not always a screen. Something talking at you is the thing you most want
+  // out of, so it is unwound first: stop the guide, then close the menu, and
+  // only then leave the screen. Without the ordering, pressing divide during
+  // the guide would navigate while it kept talking over the new screen.
   const goBack = useCallback(() => {
-    guide.stop();
+    if (guide.playing) {
+      guide.stop();
+      return;
+    }
+    if (menuOpen) {
+      setMenuOpen(false);
+      narration.stop();
+      return;
+    }
     narration.stop();
     if (router.canGoBack()) router.back();
     else router.replace("/home");
-  }, [guide, narration]);
+  }, [guide, menuOpen, narration]);
 
   // App-wide keys. Answer keys are deliberately not handled here: they belong
   // to whichever screen is asking a question, and the keypad hook is
   // refcounted so both listeners can be live at once.
   useBrailleKeypad(
     (action) => {
-      if (action.kind === "guide") guide.play();
+      if (action.kind === "guide") openGuide();
       if (action.kind === "back") goBack();
     },
     { enabled: signedIn }
@@ -57,7 +83,7 @@ export default function StudentLayout() {
 
   useVoiceCommands(
     {
-      playGuide: () => guide.play(),
+      playGuide: () => openGuide(),
       goBack: () => goBack(),
     },
     { enabled: signedIn }
@@ -80,6 +106,12 @@ export default function StudentLayout() {
   return (
     <SwipeToCourses onSwipe={goToCourses}>
       <View style={styles.fill}>
+        <GuideMenu
+          open={menuOpen}
+          narration={narration}
+          onPlaySection={guide.playSection}
+          onClose={() => setMenuOpen(false)}
+        />
         <Tabs
           screenOptions={{
             headerShown: false,

@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { GUIDE_PARTS, guidePart } from "./script";
+import { FIRST_RUN_PARTS, guideSection } from "./script";
 
 // Bumped when the guide's content changes enough that someone who heard the
 // old one should hear the new one. A plain boolean would leave every existing
@@ -80,7 +80,7 @@ export function useOneTimeGuidePart(id: string): { ready: boolean; take: () => s
         heard = true; // Storage trouble must never make it repeat forever.
       }
       if (cancelled) return;
-      pendingRef.current = heard ? "" : guidePart(id)?.text ?? "";
+      pendingRef.current = heard ? "" : guideSection(id)?.text ?? "";
       setReady(true);
     })();
     return () => {
@@ -105,8 +105,10 @@ type Narrator = {
 };
 
 export type GuideController = {
-  /** Play from the first part. Safe to call while already playing. */
+  /** Play the whole guide from the top. Safe to call while already playing. */
   play: () => void;
+  /** Play one section on its own -- what the minus-key menu hands back. */
+  playSection: (id: string) => void;
   /** Stop immediately, wherever it is. */
   stop: () => void;
   playing: boolean;
@@ -136,22 +138,39 @@ export function useGuide(narration: Narrator): GuideController {
 
     const speakFrom = (index: number) => {
       if (run !== runRef.current) return;
-      const part = GUIDE_PARTS[index];
-      if (!part) {
+      const text = FIRST_RUN_PARTS[index];
+      if (!text) {
         setPlaying(false);
         void markGuideHeard();
         return;
       }
-      narrationRef.current.speak(part.text, { onDone: () => speakFrom(index + 1) });
+      narrationRef.current.speak(text, { onDone: () => speakFrom(index + 1) });
     };
 
     speakFrom(0);
   }, []);
 
+  // One section, for the replay menu. Marks the guide heard too: a learner
+  // who is picking sections by letter has plainly already been through it.
+  const playSection = useCallback((id: string) => {
+    const section = guideSection(id);
+    if (!section) return;
+    runRef.current += 1;
+    const run = runRef.current;
+    setPlaying(true);
+    narrationRef.current.speak(section.text, {
+      onDone: () => {
+        if (run !== runRef.current) return;
+        setPlaying(false);
+      },
+    });
+    void markGuideHeard();
+  }, []);
+
   // A learner who leaves the screen mid-guide should not keep hearing it.
   useEffect(() => stop, [stop]);
 
-  return { play, stop, playing };
+  return { play, playSection, stop, playing };
 }
 
 /** Plays the guide once, the first time a learner ever opens the app.
