@@ -2873,13 +2873,12 @@ function LearningObjectConnections({
   return (
     <div className={`connection-review-layout ${["publish", "path"].includes(reviewStep) ? "" : "has-recommendations"}`.trim()}>
       {reviewStep === "objects" && (
-      <section
-        className="connection-review-panel"
-        aria-labelledby="connection-review-title"
-        ref={reviewPanelRef}
-        tabIndex={-1}
-      >
-      <div className="connection-review-heading">
+      <>
+      {/* The heading sits on the page, not inside the scrolling panel below
+          it: it names the whole section, so it should stay put while the list
+          it names is scrolled, and it should not be boxed in with the list's
+          own content. */}
+      <div className="connection-review-heading is-outside">
         <div>
           <span className="connection-eyebrow">Teacher review</span>
           <h3 id="connection-review-title">Related Concepts</h3>
@@ -2902,6 +2901,13 @@ function LearningObjectConnections({
           {confirmedSourceCount} confirmed source{confirmedSourceCount === 1 ? "" : "s"}
         </span>
       </div>
+
+      <section
+        className="connection-review-panel"
+        aria-labelledby="connection-review-title"
+        ref={reviewPanelRef}
+        tabIndex={-1}
+      >
 
       {!loading && (
         <div className={`regrouping-notice ${regroupChangedCount ? "has-changes" : ""}`.trim()}>
@@ -3254,6 +3260,7 @@ function LearningObjectConnections({
         </aside>
       )}
       </section>
+      </>
       )}
       {busyAction === "regroup-preview" && (
         <RegroupingBusy

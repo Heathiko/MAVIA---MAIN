@@ -7206,3 +7206,108 @@ button {
   display: grid;
   gap: 1rem;
 }
+
+/* --------------------------------------------------------------------------
+   Review screen, second pass — from a close-up of the real object card.
+   Three things survived the first pass and one was a specificity mistake.
+   -------------------------------------------------------------------------- */
+
+/* The teal edge came from `.connection-object-row:last-child`, which outranks
+   the plain class selector the first pass used, so the rule never applied.
+   Matched here at the same specificity. */
+.connection-object-row,
+.connection-object-row:last-child,
+.concept-bundle .connection-object-row,
+.concept-bundle .connection-object-row:last-child {
+  border: none;
+  border-left: none;
+  border-bottom: none;
+  background: transparent;
+}
+
+/* The object card itself: no outline, no tint, no inner card. What separates
+   one object from the next is the space between them. */
+.concept-bundle,
+.concept-bundle-list > li,
+.connection-object-list > li {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+}
+.concept-bundle {
+  padding: 0;
+}
+.concept-bundle-list {
+  display: grid;
+  gap: 1.75rem;
+  padding: 0;
+}
+.connection-object-list {
+  display: grid;
+  gap: 1.5rem;
+  padding: 0;
+}
+
+/* Breathing room, which was most of what "overwhelming" meant. */
+.connection-object-row {
+  padding: 0;
+  gap: 1rem;
+}
+.connection-object-copy {
+  display: grid;
+  gap: 0.6rem;
+}
+.connection-object-copy p {
+  line-height: 1.7;
+}
+/* The move/reorder controls are a footer to the object, set off by one
+   hairline and real space rather than by being in a box of their own. */
+.concept-bundle-actions {
+  margin-top: 1.1rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--mv-border);
+  gap: 1.5rem;
+}
+.concept-bundle-action-group.is-order {
+  border: none;
+  padding-left: 1.5rem;
+  border-left: 1px solid var(--mv-border);
+}
+
+/* The section heading now sits on the page above the scrolling panel. */
+.connection-review-heading.is-outside {
+  padding: 0 0.25rem 0.25rem;
+  background: transparent;
+  border: none;
+}
+
+/* --------------------------------------------------------------------------
+   Question bank beside question tools, not stacked on it. Reading the whole
+   bank before reaching "add a question" put the two furthest apart when they
+   are the two halves of one job.
+   -------------------------------------------------------------------------- */
+.question-tools-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 2rem;
+  align-items: start;
+}
+.question-tools-panel > .saved-question-sidebar {
+  grid-column: 1;
+  min-width: 0;
+}
+/* Everything that is not the bank is the tools column, stacked in order. */
+.question-tools-panel > *:not(.saved-question-sidebar) {
+  grid-column: 2;
+  min-width: 0;
+}
+@media (max-width: 1100px) {
+  .question-tools-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .question-tools-panel > .saved-question-sidebar,
+  .question-tools-panel > *:not(.saved-question-sidebar) {
+    grid-column: 1;
+  }
+}
