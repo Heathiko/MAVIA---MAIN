@@ -58,9 +58,10 @@ class NameVoteTests(SimpleTestCase):
         self.assertEqual(name_vote(pollination, stamen)[0], -1)
 
     def test_two_concepts_with_one_title_do_not_vote(self):
+        """Uneven on purpose: the one saying the shared title more must not win."""
         first, second = prepare([
-            concept(1, "Comparing the Three States", "Comparing the three states shows shape."),
-            concept(2, "Comparing the Three States", "Comparing the three states shows volume."),
+            concept(1, "Comparing the Three States", "Comparing the three states shows shape. Comparing the three states shows flow."),
+            concept(2, "Comparing the Three States", "Comparing the three states shows volume. The table lists each property."),
         ])
 
         self.assertEqual(name_vote(first, second)[0], 0)

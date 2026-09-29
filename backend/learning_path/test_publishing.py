@@ -345,3 +345,24 @@ class StoredConfidenceTests(PublishingFixture):
         liquid = next(step for step in path["steps"] if step["title"] == "Liquid")
         flags = {entry["title"]: entry["redundant"] for entry in liquid["prerequisites"]}
         self.assertEqual(flags, {"Matter": True, "Solid": False})
+
+
+class RedundantAcrossLoopTests(PublishingFixture):
+    def test_a_link_is_not_called_redundant_through_a_loop_that_gets_broken(self):
+        """Review finding: Matter -> Solid was hidden because the search walked
+        Matter -> Liquid -> Matter -> Solid through a loop Kahn then breaks."""
+        ConceptPrerequisite.objects.create(
+            outline_node=self.topic, prerequisite=self.groups["Matter"], dependent=self.groups["Solid"],
+            status="approved", source="teacher",
+        )
+        for before, after, confidence in (("Matter", "Liquid", 0.5), ("Liquid", "Matter", 0.6)):
+            ConceptPrerequisite.objects.create(
+                outline_node=self.topic, prerequisite=self.groups[before], dependent=self.groups[after],
+                status="accepted", source="derived", evidence={"rule": "fusion", "confidence": confidence},
+            )
+
+        with self._derive():
+            path = build_topic_path(self.topic.id)
+
+        solid = next(step for step in path["steps"] if step["title"] == "Solid")
+        self.assertEqual([entry["redundant"] for entry in solid["prerequisites"]], [False])

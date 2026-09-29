@@ -664,6 +664,10 @@
       "pending": [
         [
           "changing",
+          "changing_diagram"
+        ],
+        [
+          "changing",
           "comparing_detail"
         ],
         [
@@ -1170,15 +1174,11 @@
           "changing"
         ],
         [
-          "changing",
-          "changing_diagram"
-        ],
-        [
           "changing_diagram",
           "ice_example"
         ]
       ],
-      "reachable_count": 14,
+      "reachable_count": 15,
       "accepted_precision": 0.8636363636363636,
       "accepted_by_rule": {
         "fusion": 22

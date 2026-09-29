@@ -1,7 +1,7 @@
 {
   "calibration": "C:\\MAVIA\\backend\\learning_path\\calibration\\weights.json",
   "without": null,
-  "pdf_tiebreak": false,
+  "build_on_latest": false,
   "meaning_matches": 2,
   "reports": [
     {
@@ -198,12 +198,12 @@
         "solid",
         "liquid",
         "gas",
-        "examples",
         "comparing",
-        "changing"
+        "changing",
+        "examples"
       ],
-      "order_matches": false,
-      "kendall_tau": 0.8095238095238095,
+      "order_matches": true,
+      "kendall_tau": 1.0,
       "ignored_links": [],
       "unkeyed_concepts": 0,
       "gate_loss": [],
@@ -418,17 +418,17 @@
       },
       "order": [
         "reproduction",
-        "petals",
         "stamen",
         "pistil",
+        "petals",
         "pollination",
-        "fruit",
         "fertilization",
-        "examples",
-        "seed"
+        "seed",
+        "fruit",
+        "examples"
       ],
-      "order_matches": false,
-      "kendall_tau": 0.7222222222222222,
+      "order_matches": true,
+      "kendall_tau": 1.0,
       "ignored_links": [],
       "unkeyed_concepts": 0,
       "gate_loss": [],
@@ -643,11 +643,11 @@
         "matter",
         "solid",
         "liquid",
-        "comparing",
-        "changing",
         "gas",
         "examples",
-        "changing"
+        "comparing",
+        "changing",
+        "examples"
       ],
       "order_matches": false,
       "kendall_tau": 0.8095238095238095,

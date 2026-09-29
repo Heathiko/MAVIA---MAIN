@@ -38,6 +38,13 @@ class EmbedTests(SimpleTestCase):
 
         self.assertEqual(encoder.calls, [["a solid"]])
 
+    def test_an_unusable_cache_still_gives_vectors(self):
+        """Review finding: a locked or unwritable cache must not fail a publish."""
+        with self.assertLogs("learning_path.services.embeddings", level="WARNING"):
+            vectors = embeddings.embed(["a solid"], encoder=FakeEncoder(), cache_path=self.cache.parent)
+
+        self.assertEqual(vectors.tolist(), [[1.0, 0.0]])
+
     def test_no_sentences_give_an_empty_matrix(self):
         self.assertEqual(embeddings.embed([], encoder=FakeEncoder(), cache_path=self.cache).shape, (0, embeddings.DIMENSIONS))
 

@@ -772,6 +772,10 @@
       "pending": [
         [
           "changing",
+          "changing_diagram"
+        ],
+        [
+          "changing",
           "comparing_detail"
         ],
         [
@@ -1265,15 +1269,11 @@
           "changing"
         ],
         [
-          "changing",
-          "changing_diagram"
-        ],
-        [
           "changing_diagram",
           "ice_example"
         ]
       ],
-      "reachable_count": 17,
+      "reachable_count": 18,
       "accepted_precision": 0.9166666666666666,
       "accepted_by_rule": {
         "fusion": 24
@@ -1303,7 +1303,7 @@
       "clue_accuracy": {
         "name": {
           "right": 12,
-          "wrong": 4
+          "wrong": 3
         },
         "terms": {
           "right": 15,

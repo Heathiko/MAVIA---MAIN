@@ -34,6 +34,9 @@ def name_use(holder, target):
 
 
 def name_vote(prerequisite, dependent):
+    if prerequisite.name and set(prerequisite.name) == set(dependent.name):
+        # One title on two concepts (a split the grouping made) names neither over the other.
+        return 0, {"use": 0.0, "use_back": 0.0}
     use, use_back = name_use(dependent, prerequisite), name_use(prerequisite, dependent)
     return _sign(use - use_back), {"use": round(use, 3), "use_back": round(use_back, 3)}
 
@@ -173,7 +176,8 @@ def pair_votes(texts, term_owners, positions, related_cutoff, meaning_cutoff, se
                 "first": first,
                 "second": second,
                 "relatedness": score,
-                "related": (not semantic) or score >= related_cutoff,
+                # A concept with no full sentence has nothing to compare, with or without the encoder.
+                "related": bool(first.sentences and second.sentences) and ((not semantic) or score >= related_cutoff),
                 "votes": {
                     "name": name_vote(first, second)[0],
                     "terms": term_vote(first, second, term_owners)[0],

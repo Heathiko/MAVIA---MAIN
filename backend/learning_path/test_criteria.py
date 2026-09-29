@@ -72,6 +72,11 @@ class DecisionTests(SimpleTestCase):
 
         self.assertFalse(any(4 in pair for pair in decide(concepts)))
 
+    def test_without_the_encoder_a_concept_with_no_full_sentence_still_takes_part_in_no_link(self):
+        concepts = flower() + [concept(4, "Anther diagram", "Anther diagram")]
+
+        self.assertFalse(any(4 in pair for pair in decide(concepts, embed=no_encoder)))
+
     def test_votes_are_stored_for_prerequisite_first(self):
         row = decide(flower())[(1, 2)]
 

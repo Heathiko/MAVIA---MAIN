@@ -15,7 +15,7 @@ from .services.embeddings import EncoderUnavailable, load_encoder
 from .services.gold import gold_report, load_gold
 
 # Measured v5 values from docs/learning-path-v5-evaluation-2026-09-30.md.
-REACHABLE_FLOOR = {62: 5, 79: 3, 152: 10, 340: 17}
+REACHABLE_FLOOR = {62: 5, 79: 3, 152: 10, 340: 18}
 TAU_FLOOR = {62: 1.0, 79: 1.0, 152: 0.80, 340: 0.75}
 
 

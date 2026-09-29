@@ -22,7 +22,9 @@ def build_topic_path(node_id):
     concept_ids = {concept.id for concept in concepts}
     links = path_links(node, concept_ids)
     ordered, depth, ignored = order_with_links(concepts, links, path_link_confidence(node, concept_ids))
-    redundant = redundant_links(links)
+    # Only among links the order keeps: a loop Kahn breaks would otherwise make a
+    # real link look implied through it.
+    redundant = redundant_links(set(links) - set(ignored))
 
     document_index = {concept.id: index for index, concept in enumerate(concepts)}
     object_id = {concept.id: concept.representative.id for concept in concepts}

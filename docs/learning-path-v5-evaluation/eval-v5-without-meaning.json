@@ -571,6 +571,10 @@
       "pending": [
         [
           "changing",
+          "changing_diagram"
+        ],
+        [
+          "changing",
           "same_substance"
         ],
         [
@@ -1068,10 +1072,6 @@
           "comparing"
         ],
         [
-          "changing",
-          "changing_diagram"
-        ],
-        [
           "gas",
           "same_substance"
         ],
@@ -1080,7 +1080,7 @@
           "ice_example"
         ]
       ],
-      "reachable_count": 14,
+      "reachable_count": 15,
       "accepted_precision": 0.7777777777777778,
       "accepted_by_rule": {
         "fusion": 9
