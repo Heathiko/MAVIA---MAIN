@@ -7287,27 +7287,7 @@ button {
    bank before reaching "add a question" put the two furthest apart when they
    are the two halves of one job.
    -------------------------------------------------------------------------- */
-.question-tools-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-  gap: 2rem;
-  align-items: start;
-}
-.question-tools-panel > .saved-question-sidebar {
-  grid-column: 1;
-  min-width: 0;
-}
-/* Everything that is not the bank is the tools column, stacked in order. */
-.question-tools-panel > *:not(.saved-question-sidebar) {
-  grid-column: 2;
-  min-width: 0;
-}
-@media (max-width: 1100px) {
-  .question-tools-panel {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .question-tools-panel > .saved-question-sidebar,
-  .question-tools-panel > *:not(.saved-question-sidebar) {
-    grid-column: 1;
-  }
-}
+/* The grid for this panel lives in styles/refresh.css now. It used to place
+   the panel's children by selector, which stopped working the moment the bank
+   moved inside a wrapper: `*:not(.saved-question-sidebar)` then matched BOTH
+   columns and forced them into the same one. */

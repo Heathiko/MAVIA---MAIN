@@ -23,11 +23,39 @@
   overflow: visible !important;
 }
 
+/* Placed explicitly, not left to auto-flow, and specific enough to beat
+   anything that reaches these children from pipeline.css. */
+.question-tools-panel > .qt-col--bank {
+  grid-column: 1;
+}
+.question-tools-panel > .qt-col--tools {
+  grid-column: 2;
+}
+
+/* Each column is its own panel with its own surface, so the two jobs read as
+   two places rather than one long strip. The outer panel stops being a card
+   and becomes the tinted ground they sit on. */
 .qt-col {
   display: grid;
   gap: 1rem;
   align-content: start;
   min-width: 0;
+  background: var(--mv-surface);
+  border-radius: var(--mv-radius);
+  padding: 1.5rem;
+}
+
+.match-suggestion-panel.panel-aside.question-tools-panel {
+  background: var(--mv-panel);
+}
+
+/* The bank is the long half; it scrolls inside its own card rather than
+   stretching the column and dragging the form down with it. */
+.qt-col--bank .saved-question-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.35rem;
 }
 
 /* The divider said "add questions" under the bank, which only made sense when
@@ -39,7 +67,11 @@
 @media (max-width: 1100px) {
   .match-suggestion-panel.panel-aside.question-tools-panel {
     grid-template-columns: minmax(0, 1fr);
-    gap: 2rem;
+    gap: 1.5rem;
+  }
+  .question-tools-panel > .qt-col--bank,
+  .question-tools-panel > .qt-col--tools {
+    grid-column: 1;
   }
 }
 
