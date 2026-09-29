@@ -19,16 +19,27 @@ import { FIRST_RUN_PARTS, guideSection } from "./script";
 const SEEN_KEY = "mavia.guide.heard.v1";
 
 export async function hasHeardGuide(): Promise<boolean> {
+  if (heardThisSession) return true;
   try {
     return (await AsyncStorage.getItem(SEEN_KEY)) === "yes";
   } catch {
-    // Storage unavailable (rare, but it must never block the app): treat as
-    // heard, so a broken store cannot make the guide play on every launch.
-    return true;
+    // Storage unreadable: say they have NOT heard it, and offer the practice.
+    //
+    // This used to answer "heard", to stop a broken store replaying the guide
+    // on every launch. That is the wrong way round for the one learner this
+    // is built for: getting the guide twice is a nuisance, never getting it is
+    // an app they cannot work out how to use. A wrong "heard" is also silent
+    // and permanent, where a wrong "not heard" they can end with the E key.
+    return false;
   }
 }
 
+// Remembered in memory as well as on disk. If the write fails, or the read
+// later does, a learner at least does not get the guide twice in one sitting.
+let heardThisSession = false;
+
 export async function markGuideHeard(): Promise<void> {
+  heardThisSession = true;
   try {
     await AsyncStorage.setItem(SEEN_KEY, "yes");
   } catch {

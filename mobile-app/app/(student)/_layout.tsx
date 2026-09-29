@@ -9,6 +9,7 @@ import { hasHeardGuide, useGuideOnFirstLaunch } from "@/guide/useGuide";
 import { GuideMenu } from "@/guide/GuideMenu";
 import { useGuidePractice } from "@/guide/useGuidePractice";
 import { GuideActivityProvider } from "@/guide/GuideActivity";
+import { PracticeTapLayer } from "@/guide/PracticeTapLayer";
 import { useBrailleKeypad } from "@/input/useBrailleKeypad";
 import { useVoiceCommands } from "@/voice/useVoiceCommands";
 import { SwipeToCourses } from "@/nav/SwipeToCourses";
@@ -112,7 +113,7 @@ export default function StudentLayout() {
       // also answer a real question, and keys it is not waiting for are
       // swallowed so hunting for the right one sets nothing off.
       if (practice.running) {
-        if (action.kind === "answer") practice.feed({ kind: "letter", letter: action.letter });
+        if (action.kind === "answer") practice.feed({ kind: "letter", letter: action.letter, via: "key" });
         else if (action.kind === "repeat") practice.feed({ kind: "command", command: "repeat" });
         else if (action.kind === "next") practice.feed({ kind: "command", command: "next" });
         else if (action.kind === "back") goBack();
@@ -133,10 +134,10 @@ export default function StudentLayout() {
       goBack: () => goBack(),
       // Spoken letters count during practice, so a learner can rehearse the
       // voice path as well as the keys.
-      chooseA: () => practice.feed({ kind: "letter", letter: "a" }),
-      chooseB: () => practice.feed({ kind: "letter", letter: "b" }),
-      chooseC: () => practice.feed({ kind: "letter", letter: "c" }),
-      chooseD: () => practice.feed({ kind: "letter", letter: "d" }),
+      chooseA: () => practice.feed({ kind: "letter", letter: "a", via: "voice" }),
+      chooseB: () => practice.feed({ kind: "letter", letter: "b", via: "voice" }),
+      chooseC: () => practice.feed({ kind: "letter", letter: "c", via: "voice" }),
+      chooseD: () => practice.feed({ kind: "letter", letter: "d", via: "voice" }),
     },
     { enabled: signedIn }
   );
@@ -187,6 +188,13 @@ export default function StudentLayout() {
             />
           ))}
         </Tabs>
+        {/* Last child on purpose: later siblings paint on top, and this has to
+            be above the tab navigator to receive a tap at all. */}
+        <PracticeTapLayer
+          active={practice.awaitingTap}
+          narration={narration}
+          onLetter={(letter) => practice.feed({ kind: "letter", letter, via: "tap" })}
+        />
       </View>
     </SwipeToCourses>
     </GuideActivityProvider>

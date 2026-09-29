@@ -17,11 +17,17 @@
 import type { AnswerLetter } from "@/input/brailleKeypad";
 import { ANSWER_KEYS, COMMAND_KEYS } from "./script";
 
-/** What a drill is waiting for. Anything else is ignored while it waits. */
+/** How an answer was given. A drill that teaches one way of answering has to
+ *  be able to tell it apart from the others, or "tap three times for C" would
+ *  be satisfied by pressing the C key and the learner would never have tapped. */
+export type InputSource = "key" | "voice" | "tap";
+
+/** What a drill is waiting for. Anything else is ignored while it waits.
+ *  A letter drill with no `via` accepts the letter however it arrives. */
 export type ExpectedInput =
   | { kind: "swipe" }
   | { kind: "command"; command: "repeat" | "back" | "next" }
-  | { kind: "letter"; letter: AnswerLetter };
+  | { kind: "letter"; letter: AnswerLetter; via?: InputSource };
 
 export type Drill = {
   id: string;
@@ -63,15 +69,30 @@ export const DRILLS: Drill[] = [
     success: `Good. The ${COMMAND_KEYS.repeat} key repeats whatever is playing, wherever you are.`,
     nudge: `Find the ${COMMAND_KEYS.repeat} key on your keypad and press it.`,
   },
+  // Answering has three ways, and they get three drills. Read out together
+  // they were a mouthful nobody could hold -- and a learner who only ever
+  // pressed a key never found out that tapping works at all.
   {
-    id: "answer",
+    id: "answer-tap",
     prompt:
       "Now a question, the way your lessons will ask them. " +
       "Which of these is a solid? A, water. B, air. C, ice. D, steam. " +
-      `Answer C. Say it, press the key marked ${ANSWER_KEYS.c}, or tap the screen three times.`,
-    expects: { kind: "letter", letter: "c" },
-    success: "Correct. Ice is a solid. That is how every question is answered.",
-    nudge: `Ice was the third one. Say ${ANSWER_KEYS.c}, or press that key.`,
+      "Ice is the third one, so the answer is C. " +
+      "First, let us try answering by tapping. Tap anywhere on the screen three times.",
+    expects: { kind: "letter", letter: "c", via: "tap" },
+    success: "Correct, three taps for C. I say each letter as you tap, so you can hear where you are.",
+    nudge: "Tap the screen three times, one tap for each letter up to C.",
+  },
+  {
+    id: "answer-key",
+    prompt:
+      "Now the same answer with a key. " +
+      `Press the key marked ${ANSWER_KEYS.c}.`,
+    expects: { kind: "letter", letter: "c", via: "key" },
+    success:
+      `Correct. The four keys are marked ${ANSWER_KEYS.a}, ${ANSWER_KEYS.b}, ${ANSWER_KEYS.c} and ${ANSWER_KEYS.d}. ` +
+      "Questions are answered by key or by tapping -- saying the letter is for choosing a course or a lesson, not for answering.",
+    nudge: `Find the key marked ${ANSWER_KEYS.c} and press it.`,
   },
   {
     id: "back",

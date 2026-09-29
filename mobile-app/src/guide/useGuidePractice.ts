@@ -23,13 +23,14 @@ import {
   PRACTICE_SKIP,
   PRACTICE_WELCOME,
   type ExpectedInput,
+  type InputSource,
 } from "./practice";
 import { markGuideHeard } from "./useGuide";
 
 export type PracticeInput =
   | { kind: "swipe" }
   | { kind: "command"; command: "repeat" | "back" | "next" }
-  | { kind: "letter"; letter: AnswerLetter };
+  | { kind: "letter"; letter: AnswerLetter; via: InputSource };
 
 // Roughly how long a prompt takes to read, used only as a floor for the
 // watchdog below -- the same ~11 chars/sec useNarration estimates with, plus
@@ -49,7 +50,12 @@ function trace(...parts: unknown[]) {
 
 function matches(expected: ExpectedInput, got: PracticeInput): boolean {
   if (expected.kind !== got.kind) return false;
-  if (expected.kind === "letter" && got.kind === "letter") return expected.letter === got.letter;
+  if (expected.kind === "letter" && got.kind === "letter") {
+    if (expected.letter !== got.letter) return false;
+    // A drill teaching one way of answering only accepts that way; one with no
+    // `via` takes the letter however it arrives.
+    return expected.via === undefined || expected.via === got.via;
+  }
   if (expected.kind === "command" && got.kind === "command") return expected.command === got.command;
   return true;
 }
@@ -61,6 +67,10 @@ type Narrator = {
 
 export type Practice = {
   running: boolean;
+  /** True only while a drill is waiting to be answered by tapping. The screen
+   *  puts a tap-catching layer up for exactly that long -- any longer and it
+   *  would swallow the swipe drill and every real control underneath. */
+  awaitingTap: boolean;
   /** Hand it an input. Returns true if practice used it -- the caller must
    *  then not act on that input itself. */
   feed: (input: PracticeInput) => boolean;
@@ -71,6 +81,7 @@ export type Practice = {
 
 export function useGuidePractice(narration: Narrator): Practice {
   const [running, setRunning] = useState(false);
+  const [awaitingTap, setAwaitingTap] = useState(false);
 
   // Same guard as useGuide: a run counter, so a speech callback that fires
   // after the run ended (or was restarted) does nothing instead of advancing
@@ -97,6 +108,7 @@ export function useGuidePractice(narration: Narrator): Practice {
     runRef.current += 1;
     clearTimer();
     waitingRef.current = false;
+    setAwaitingTap(false);
     setRunning(false);
   }, [clearTimer]);
 
@@ -141,6 +153,7 @@ export function useGuidePractice(narration: Narrator): Practice {
       stepRef.current = index;
       nudgesRef.current = 0;
       waitingRef.current = false;
+      setAwaitingTap(false);
       clearTimer();
 
       const drill = DRILLS[index];
@@ -159,6 +172,7 @@ export function useGuidePractice(narration: Narrator): Practice {
       const beginWaiting = () => {
         if (run !== runRef.current || waitingRef.current) return;
         waitingRef.current = true;
+        setAwaitingTap(drill.expects.kind === "letter" && drill.expects.via === "tap");
         trace("waiting for", drill.id, JSON.stringify(drill.expects));
         armNudge(run, index);
       };
@@ -223,14 +237,19 @@ export function useGuidePractice(narration: Narrator): Practice {
 
       const run = runRef.current;
       waitingRef.current = false;
+      setAwaitingTap(false);
       clearTimer();
       trace("PASSED", drill.id);
-      narrationRef.current.speak(drill.success, {
-        onDone: () => {
-          if (run !== runRef.current) return;
-          runStepRef.current(stepRef.current + 1);
-        },
-      });
+      const goOn = () => {
+        if (run !== runRef.current) return;
+        runStepRef.current(stepRef.current + 1);
+      };
+      narrationRef.current.speak(drill.success, { onDone: goOn });
+      // Watchdog, for the same reason the prompt has one: if anything cancels
+      // this utterance its onDone never arrives, and the run would stop dead
+      // on a drill the learner has already passed.
+      clearTimer();
+      timerRef.current = setTimeout(goOn, promptTimeoutMs(drill.success));
       return true;
     },
     [clearTimer]
@@ -241,5 +260,5 @@ export function useGuidePractice(narration: Narrator): Practice {
     clearTimer();
   }, [clearTimer]);
 
-  return { running, feed, start, quit };
+  return { running, awaitingTap, feed, start, quit };
 }
