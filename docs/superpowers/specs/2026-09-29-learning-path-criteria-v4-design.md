@@ -192,7 +192,8 @@ For each ordered pair after the vetoes:
 }
 ```
 
-Only the keys that apply are present. `cross_section` is still computed and stored as today.
+Only the keys that apply are present. A `conflict` row carries `"forward"` and `"backward"`
+instead, each being `{"rule": "definition" | "containment", ...that rule's detail}`. `cross_section` is still computed and stored as today.
 
 ## 7. Components and interfaces
 
