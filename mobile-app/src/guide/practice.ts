@@ -1,0 +1,101 @@
+// The first run is a practice run, not a lecture.
+//
+// Hearing "swipe right to reach your courses" and having swiped right are
+// different things, and only the second one is still true tomorrow. So each
+// drill below teaches one move in a sentence, asks for it, and waits: nothing
+// advances until the learner has actually done it. They get told they got it
+// right, which is the part a blind learner otherwise has no way to know.
+//
+// The stage is deliberately fake. The four items and the practice question are
+// hardcoded here, so a learner can get a letter wrong without it opening a
+// real lesson, and so the drill reads the same on a phone with no courses on
+// it at all -- including on a stage, being demonstrated.
+//
+// Keep every line short. This is the one part of the app a learner cannot skip
+// past on their first visit, so it earns its length or it loses them.
+
+import type { AnswerLetter } from "@/input/brailleKeypad";
+import { ANSWER_KEYS, COMMAND_KEYS } from "./script";
+
+/** What a drill is waiting for. Anything else is ignored while it waits. */
+export type ExpectedInput =
+  | { kind: "swipe" }
+  | { kind: "command"; command: "repeat" | "back" | "next" }
+  | { kind: "letter"; letter: AnswerLetter };
+
+export type Drill = {
+  id: string;
+  /** Teaches the move and asks for it, in one breath. */
+  prompt: string;
+  expects: ExpectedInput;
+  /** Said the moment they get it right. */
+  success: string;
+  /** Said if they stall, shorter than the prompt -- a reminder, not a repeat. */
+  nudge: string;
+};
+
+export const DRILLS: Drill[] = [
+  {
+    id: "swipe",
+    prompt:
+      "Let us try each one. First, finding a lesson. " +
+      "Put a finger anywhere on the screen and slide it to the right. Go ahead.",
+    expects: { kind: "swipe" },
+    success: "That is it. A swipe to the right always takes you to your courses.",
+    nudge: "Slide one finger across the screen, from left to right.",
+  },
+  {
+    id: "letter",
+    prompt:
+      "Now, choosing. I read four things out, each with a letter. " +
+      "A, Science. B, Maths. C, English. D, History. " +
+      `Choose Maths. Say B, or press ${ANSWER_KEYS.b}.`,
+    expects: { kind: "letter", letter: "b" },
+    success: "Correct, B was Maths. Courses and lessons are always chosen that way.",
+    nudge: `Maths was the second one. Say B, or press ${ANSWER_KEYS.b}.`,
+  },
+  {
+    id: "repeat",
+    prompt:
+      "If anything is ever read too quickly, you can hear it again. " +
+      `Press the ${COMMAND_KEYS.repeat} key now.`,
+    expects: { kind: "command", command: "repeat" },
+    success: `Good. The ${COMMAND_KEYS.repeat} key repeats whatever is playing, wherever you are.`,
+    nudge: `Find the ${COMMAND_KEYS.repeat} key on your keypad and press it.`,
+  },
+  {
+    id: "answer",
+    prompt:
+      "Now a question, the way your lessons will ask them. " +
+      "Which of these is a solid? A, water. B, air. C, ice. D, steam. " +
+      `Answer C: say C, press ${ANSWER_KEYS.c}, or tap the screen three times.`,
+    expects: { kind: "letter", letter: "c" },
+    success: "Correct. Ice is a solid. That is how every question is answered.",
+    nudge: `Ice was the third one. Say C, or press ${ANSWER_KEYS.c}.`,
+  },
+  {
+    id: "back",
+    prompt:
+      "Last one. To leave anything at all, go back. " +
+      `Press the ${COMMAND_KEYS.back} key now.`,
+    expects: { kind: "command", command: "back" },
+    success: `That is everything. The ${COMMAND_KEYS.back} key gets you out of anywhere.`,
+    nudge: `Find the ${COMMAND_KEYS.back} key on your keypad and press it.`,
+  },
+];
+
+export const PRACTICE_WELCOME =
+  "Welcome to MAVIA. Rather than tell you how this works, let us practise it. " +
+  "There are five short things to try, and I will tell you when you get each one right.";
+
+export const PRACTICE_CLOSING =
+  `Well done, that is all of it. Press the ${COMMAND_KEYS.guide} key any time to hear a part of it again. ` +
+  "Swipe right to begin.";
+
+/** Said after enough stalls that the learner is plainly stuck, before moving
+ *  on anyway. Being trapped on step one is worse than missing a drill. */
+export const PRACTICE_SKIP = "Not to worry, we can come back to that one. Moving on.";
+
+/** How long to wait before nudging, and how many nudges before moving on. */
+export const NUDGE_AFTER_MS = 11000;
+export const MAX_NUDGES = 2;

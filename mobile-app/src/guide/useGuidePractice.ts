@@ -1,0 +1,206 @@
+// Runs the practice drills: say one, wait for the learner to do it, confirm,
+// go on.
+//
+// The whole point is the waiting, so this owns the learner's input while it
+// runs. `feed` returns true when a drill consumed something, and the screen
+// that called it must then do nothing else with that press -- otherwise the
+// divide drill would also navigate away, and the letter drill would answer a
+// real question. Everything not being waited for is swallowed too: a learner
+// pressing keys to find the right one should not set anything else off.
+//
+// Nothing here can strand anyone. A drill that goes unanswered nudges, then
+// nudges once more, then gives up and moves on -- being stuck on step one
+// with no way past is a worse failure than missing a drill.
+
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import type { AnswerLetter } from "@/input/brailleKeypad";
+import {
+  DRILLS,
+  MAX_NUDGES,
+  NUDGE_AFTER_MS,
+  PRACTICE_CLOSING,
+  PRACTICE_SKIP,
+  PRACTICE_WELCOME,
+  type ExpectedInput,
+} from "./practice";
+import { markGuideHeard } from "./useGuide";
+
+export type PracticeInput =
+  | { kind: "swipe" }
+  | { kind: "command"; command: "repeat" | "back" | "next" }
+  | { kind: "letter"; letter: AnswerLetter };
+
+function matches(expected: ExpectedInput, got: PracticeInput): boolean {
+  if (expected.kind !== got.kind) return false;
+  if (expected.kind === "letter" && got.kind === "letter") return expected.letter === got.letter;
+  if (expected.kind === "command" && got.kind === "command") return expected.command === got.command;
+  return true;
+}
+
+type Narrator = {
+  speak: (text: string, options?: { onDone?: () => void }) => void;
+  stop: () => void;
+};
+
+export type Practice = {
+  running: boolean;
+  /** Hand it an input. Returns true if practice used it -- the caller must
+   *  then not act on that input itself. */
+  feed: (input: PracticeInput) => boolean;
+  start: () => void;
+  /** Abandon the run. The guide still counts as heard: they sat through it. */
+  quit: () => void;
+};
+
+export function useGuidePractice(narration: Narrator): Practice {
+  const [running, setRunning] = useState(false);
+
+  // Same guard as useGuide: a run counter, so a speech callback that fires
+  // after the run ended (or was restarted) does nothing instead of advancing
+  // a drill that is no longer on screen.
+  const runRef = useRef(0);
+  const stepRef = useRef(0);
+  const nudgesRef = useRef(0);
+  // Only true between "the prompt has finished" and "they got it right".
+  // Input arriving while the prompt is still being read is ignored rather
+  // than counted, because the microphone hears the prompt's own letters.
+  const waitingRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const narrationRef = useRef(narration);
+  narrationRef.current = narration;
+
+  const clearTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  const finish = useCallback(() => {
+    runRef.current += 1;
+    clearTimer();
+    waitingRef.current = false;
+    setRunning(false);
+  }, [clearTimer]);
+
+  // Declared as a ref so runStep and feed can call each other without either
+  // being defined first.
+  const runStepRef = useRef<(index: number) => void>(() => {});
+
+  const armNudge = useCallback(
+    (run: number, index: number) => {
+      clearTimer();
+      timerRef.current = setTimeout(() => {
+        if (run !== runRef.current || !waitingRef.current) return;
+        const drill = DRILLS[index];
+        if (!drill) return;
+        nudgesRef.current += 1;
+        if (nudgesRef.current > MAX_NUDGES) {
+          waitingRef.current = false;
+          narrationRef.current.speak(PRACTICE_SKIP, {
+            onDone: () => {
+              if (run !== runRef.current) return;
+              runStepRef.current(index + 1);
+            },
+          });
+          return;
+        }
+        narrationRef.current.speak(drill.nudge, {
+          onDone: () => {
+            if (run !== runRef.current) return;
+            armNudge(run, index);
+          },
+        });
+      }, NUDGE_AFTER_MS);
+    },
+    [clearTimer]
+  );
+
+  const runStep = useCallback(
+    (index: number) => {
+      const run = runRef.current;
+      stepRef.current = index;
+      nudgesRef.current = 0;
+      waitingRef.current = false;
+      clearTimer();
+
+      const drill = DRILLS[index];
+      if (!drill) {
+        narrationRef.current.speak(PRACTICE_CLOSING, {
+          onDone: () => {
+            if (run !== runRef.current) return;
+            finish();
+          },
+        });
+        void markGuideHeard();
+        return;
+      }
+
+      narrationRef.current.speak(drill.prompt, {
+        onDone: () => {
+          if (run !== runRef.current) return;
+          waitingRef.current = true;
+          armNudge(run, index);
+        },
+      });
+    },
+    [armNudge, clearTimer, finish]
+  );
+  runStepRef.current = runStep;
+
+  const start = useCallback(() => {
+    runRef.current += 1;
+    const run = runRef.current;
+    setRunning(true);
+    nudgesRef.current = 0;
+    narrationRef.current.speak(PRACTICE_WELCOME, {
+      onDone: () => {
+        if (run !== runRef.current) return;
+        runStepRef.current(0);
+      },
+    });
+  }, []);
+
+  const quit = useCallback(() => {
+    narrationRef.current.stop();
+    void markGuideHeard();
+    finish();
+  }, [finish]);
+
+  // feed is called from key handlers bound once, so it must not go stale.
+  const runningRef = useRef(running);
+  runningRef.current = running;
+
+  const feed = useCallback(
+    (input: PracticeInput) => {
+      if (!runningRef.current) return false;
+      // Swallow anything arriving while a prompt is still being read, so a
+      // stray press does not act on the app behind the practice.
+      if (!waitingRef.current) return true;
+
+      const drill = DRILLS[stepRef.current];
+      if (!drill) return true;
+      if (!matches(drill.expects, input)) return true;
+
+      const run = runRef.current;
+      waitingRef.current = false;
+      clearTimer();
+      narrationRef.current.speak(drill.success, {
+        onDone: () => {
+          if (run !== runRef.current) return;
+          runStepRef.current(stepRef.current + 1);
+        },
+      });
+      return true;
+    },
+    [clearTimer]
+  );
+
+  useEffect(() => () => {
+    runRef.current += 1;
+    clearTimer();
+  }, [clearTimer]);
+
+  return { running, feed, start, quit };
+}

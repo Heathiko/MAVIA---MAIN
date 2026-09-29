@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { Redirect, Tabs, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -7,6 +7,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { useNarration } from "@/hooks/useNarration";
 import { hasHeardGuide, useGuideOnFirstLaunch } from "@/guide/useGuide";
 import { GuideMenu } from "@/guide/GuideMenu";
+import { useGuidePractice } from "@/guide/useGuidePractice";
 import { useBrailleKeypad } from "@/input/useBrailleKeypad";
 import { useVoiceCommands } from "@/voice/useVoiceCommands";
 import { SwipeToCourses } from "@/nav/SwipeToCourses";
@@ -30,8 +31,24 @@ export default function StudentLayout() {
   // the minus key and the "how does this work" commands forever after. It
   // lives at the layout rather than on a screen so that pressing minus works
   // wherever they are -- being lost is exactly when it is wanted.
-  const guide = useGuideOnFirstLaunch(narration, { enabled: signedIn });
+  const guide = useGuideOnFirstLaunch(narration, { enabled: signedIn, autoPlay: false });
+  const practice = useGuidePractice(narration);
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // First time in, the learner practises rather than listens: each move is
+  // asked for and confirmed. Afterwards minus offers the sections to re-hear.
+  useEffect(() => {
+    if (!signedIn) return;
+    let cancelled = false;
+    void hasHeardGuide().then((heard) => {
+      if (!cancelled && !heard) practice.start();
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Only ever on the transition into being signed in; practice.start is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedIn]);
 
   // Minus means "help me" both times, but it should not mean the same eight
   // paragraphs twice. Never heard it: play the whole thing. Heard it: offer
@@ -40,15 +57,17 @@ export default function StudentLayout() {
     setMenuOpen(false);
     void hasHeardGuide().then((heard) => {
       if (heard) setMenuOpen(true);
-      else guide.play();
+      else practice.start();
     });
-  }, [guide]);
+  }, [practice]);
 
   const goToCourses = useCallback(() => {
+    // During practice a swipe is the drill, not a navigation.
+    if (practice.feed({ kind: "swipe" })) return;
     guide.stop();
     narration.stop();
     router.push("/home");
-  }, [guide, narration]);
+  }, [guide, narration, practice]);
 
   // Divide is "back" everywhere, and back means the nearest thing to leave --
   // not always a screen. Something talking at you is the thing you most want
@@ -56,6 +75,12 @@ export default function StudentLayout() {
   // only then leave the screen. Without the ordering, pressing divide during
   // the guide would navigate while it kept talking over the new screen.
   const goBack = useCallback(() => {
+    if (practice.running) {
+      // The back key is itself the last drill, so practice gets first refusal.
+      // Only once it is over does divide mean "leave" again.
+      practice.feed({ kind: "command", command: "back" });
+      return;
+    }
     if (guide.playing) {
       guide.stop();
       return;
@@ -68,13 +93,23 @@ export default function StudentLayout() {
     narration.stop();
     if (router.canGoBack()) router.back();
     else router.replace("/home");
-  }, [guide, menuOpen, narration]);
+  }, [guide, menuOpen, narration, practice]);
 
   // App-wide keys. Answer keys are deliberately not handled here: they belong
   // to whichever screen is asking a question, and the keypad hook is
   // refcounted so both listeners can be live at once.
   useBrailleKeypad(
     (action) => {
+      // While practice runs it owns every key: a drill expecting 8 must not
+      // also answer a real question, and keys it is not waiting for are
+      // swallowed so hunting for the right one sets nothing off.
+      if (practice.running) {
+        if (action.kind === "answer") practice.feed({ kind: "letter", letter: action.letter });
+        else if (action.kind === "repeat") practice.feed({ kind: "command", command: "repeat" });
+        else if (action.kind === "next") practice.feed({ kind: "command", command: "next" });
+        else if (action.kind === "back") goBack();
+        return;
+      }
       if (action.kind === "guide") openGuide();
       if (action.kind === "back") goBack();
     },
@@ -85,6 +120,12 @@ export default function StudentLayout() {
     {
       playGuide: () => openGuide(),
       goBack: () => goBack(),
+      // Spoken letters count during practice, so a learner can rehearse the
+      // voice path as well as the keys.
+      chooseA: () => practice.feed({ kind: "letter", letter: "a" }),
+      chooseB: () => practice.feed({ kind: "letter", letter: "b" }),
+      chooseC: () => practice.feed({ kind: "letter", letter: "c" }),
+      chooseD: () => practice.feed({ kind: "letter", letter: "d" }),
     },
     { enabled: signedIn }
   );

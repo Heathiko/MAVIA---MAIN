@@ -177,14 +177,20 @@ export function useGuide(narration: Narrator): GuideController {
  *
  *  Returns the same controller, so the caller can also bind it to the minus
  *  key and to the "how does this work" voice command. */
-export function useGuideOnFirstLaunch(narration: Narrator, { enabled = true } = {}): GuideController {
+export function useGuideOnFirstLaunch(
+  narration: Narrator,
+  // autoPlay false keeps the controller (minus key, sections) but leaves the
+  // first-run behaviour to the caller -- the layout runs the practice drills
+  // there instead of narrating the guide at someone.
+  { enabled = true, autoPlay = true }: { enabled?: boolean; autoPlay?: boolean } = {}
+): GuideController {
   const guide = useGuide(narration);
   const startedRef = useRef(false);
   const playRef = useRef(guide.play);
   playRef.current = guide.play;
 
   useEffect(() => {
-    if (!enabled || startedRef.current) return;
+    if (!enabled || !autoPlay || startedRef.current) return;
     startedRef.current = true;
     let cancelled = false;
     void hasHeardGuide().then((heard) => {
@@ -193,7 +199,7 @@ export function useGuideOnFirstLaunch(narration: Narrator, { enabled = true } = 
     return () => {
       cancelled = true;
     };
-  }, [enabled]);
+  }, [enabled, autoPlay]);
 
   return guide;
 }
