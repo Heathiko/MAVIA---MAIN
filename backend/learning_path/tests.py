@@ -341,7 +341,7 @@ class TeacherLinkTests(TopicFixture):
         concepts = {c.title: c for c in publishing.concepts_for_topic(self.topic)}
         rerun = [{
             "prerequisite": concepts["Matter"], "dependent": concepts["Solid"], "verdict": "accepted",
-            "votes": {}, "cross_section": False,
+            "evidence": {}, "cross_section": False,
         }]
         with patch.object(publishing.criteria, "decide_pairs", return_value=rerun):
             publishing.publish_learning_path(self.topic)

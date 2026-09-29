@@ -29,7 +29,7 @@ def decision(prerequisite, dependent, verdict, cross_section=False):
         "prerequisite": prerequisite,
         "dependent": dependent,
         "verdict": verdict,
-        "votes": {"temporal_order": 1, "semantic_reference": 1, "inbound_outbound": 1},
+        "evidence": {"rule": "containment", "containment": {"heading": "matter"}},
         "cross_section": cross_section,
     }
 
