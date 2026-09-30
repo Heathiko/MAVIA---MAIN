@@ -288,4 +288,13 @@ def publish_learning_path(node, runtime_instance=None):
         node.id, saved["steps"], saved["links"], link_counts["accepted"],
         link_counts["pending"], link_counts["teacher_decided"], saved["moved"],
     )
-    return {**saved, **link_counts}
+    # Cross-topic links follow the topic's new concepts. A failure here must not
+    # undo a publish the teacher already sees as done.
+    from . import course_links
+
+    try:
+        course_counts = course_links.refresh_course_links(node.course)
+    except Exception as exc:  # noqa: BLE001 -- logged; the topic path is already saved
+        logger.warning("[Learning path topic %s] course links not refreshed: %s", node.id, exc)
+        course_counts = None
+    return {**saved, **link_counts, "course_links": course_counts}
