@@ -1,68 +1,74 @@
-# Prerequisite link criteria (v5)
+# Prerequisite link criteria (v6)
 
-**Status (2026-09-30):** implemented on branch `learning-path-graph-screen`.
-Design: `docs/superpowers/specs/2026-09-30-learning-path-evidence-fusion-design.md`
-(§14 and §15 = the amendments that are what the code does).
-Measurements: `docs/learning-path-v5-evaluation-2026-09-30.md`. Numbers live there, not here.
+**Status (2026-09-30):** implemented on branch `learning-path-graph-screen` (not merged).
+Design: `docs/superpowers/specs/2026-09-30-learning-path-v6-reference-order-design.md`.
+Plan: `docs/superpowers/plans/2026-09-30-learning-path-v6-reference-order.md`.
+Measurements: `docs/learning-path-v6-evaluation-2026-09-30.md` and
+`docs/learning-path-v6-evaluation/`. Numbers live there, not here.
 
 **Scope:** one path per **topic**, whose steps are **concepts** (grouping's concept bundles
 across every PDF of the topic, `services/concept_units.py`). Grouping and extraction are read,
 never changed.
 
-## The six steps
+**The idea:** two questions, two kinds of evidence. **Whether** a link exists comes from the text
+(a name, terms one concept explains, a heading). **Which way** it points comes from the lesson's
+order. A text link nothing contradicts is accepted; a contradicted one goes to the teacher.
+
+## The steps
 
 | Step | Code | What it does |
 |---|---|---|
 | 0 Prepare | `concept_text.py`, `embeddings.py` | Sentences (≥ 4 words) with their PDF, Porter-stemmed terms (general English stopwords only), sentence vectors from our own loader of the pinned `all-MiniLM-L6-v2`, each PDF's order of concepts. |
-| 1 Relatedness | `relatedness.py` | Symmetric best-match average of sentence similarity. Pairs below `related_cutoff` get no link. |
-| 2 Clues | `clues.py` | Five votes per pair: +1 first-before-second, −1, or 0; plus a `parallel` flag. |
-| 3 Verdict | `fusion.py`, `criteria.py` | Two evidence families must agree for a link to be accepted. |
-| 4 Clean-up | `publishing.py` | Loops broken at the least confident derived link; links a longer chain implies are flagged `redundant` (hidden on the graph). |
-| 5 Order | `publishing.order_with_links` | Kahn's topological sort; ties go to the topic's merged PDF order. |
+| 1 Facts | `clues.py` | Per pair, read as earlier/later in the PDF(s) both appear in (the topic's merged order when they share none): name use and owned-term use each way, heading containment, 2+ PDF agreement, `parallel` flag, figure or not. |
+| 2 Verdict | `fusion.reference_verdict`, `criteria.py` | The table below. |
+| 3 Clean-up | `publishing.py` | Loops broken at the least confident derived link; links a longer chain implies are flagged `redundant` (hidden on the graph). |
+| 4 Order | `publishing.order_with_links` | Kahn's topological sort; ties go to the topic's merged PDF order. |
+
+Relatedness (`relatedness.py`) and the meaning clue are **recorded, not counted**. Without the
+encoder the verdicts are the same; only those two numbers are missing.
 
 The adaptive engine then walks the saved path and detours through the nearest prerequisite
 (`adaptive/services.py`), unchanged.
 
-## The clues
+## The evidence
 
-| Clue | Family | Votes "A first" when | Known failure |
-|---|---|---|---|
-| name | content | B's sentences contain all of A's name stems more than the reverse | lessons refer to a concept by its parts ("anther", not "stamen") |
-| terms | content | B's passages use terms A owns (Dunning G² ≥ 3.84) more than the reverse | an overview uses its children's terms |
-| meaning | content | more of B's sentences have a close match (above `meaning_cutoff`) in A than the reverse | at chance on direction in the development set; kept for its family vote |
-| heading | structure | B sits under a heading whose stems contain A's name | word matching on headings; silent when headings are missing |
-| PDF order | structure | two or more PDFs teach both and all put A first | silent for single-PDF pairs |
-| `parallel` flag | structure | — both sit under one heading that names neither | — |
-
-Cutoffs come from pairs of concepts in topics of **different subjects** (95th percentile), so no
-answer key is read: `python manage.py calibrate_learning_path --topics … --unrelated 62:79 …`
-writes `calibration/weights.json` (committed; shared by the group). The file also reports each
-clue's agreement with the others; those weights do **not** decide verdicts.
+| Evidence | Reads | Known failure |
+|---|---|---|
+| name | a concept's sentences containing all of the other's name stems | lessons refer to a concept by its parts ("anther", not "stamen"); sentence titles have no name |
+| terms | a concept's passages using terms the other owns (Dunning G² ≥ 3.84) | an overview uses its children's terms |
+| heading | a concept under a heading whose stems contain the other's name | word matching; silent when headings are missing |
+| PDF order | positions in every PDF teaching both | a figure's position (extraction puts it first); a merged order across PDFs is a guess |
+| `parallel` | both under one heading naming neither | depends on section headings |
 
 ## The verdict
 
-Content = sign of name + terms + meaning. Structure = sign of heading + order.
+| # | Situation | Verdict | Direction |
+|---|---|---|---|
+| 1 | `parallel` flag | no link | — |
+| 2 | text silent, 2+ PDFs agree on order | pending | the PDFs' order |
+| 3 | text silent, otherwise | no link | — |
+| 4 | heading containment | **accepted** | the heading's |
+| 5 | the later concept refers to the earlier (name or owned terms), no contradiction | **accepted** | earlier → later |
+| 6 | any other text reference | pending | see below |
 
-| Situation | Verdict, direction |
-|---|---|
-| content silent, ≥ 2 PDFs agree on the order, structure agrees, not siblings | pending, the files' direction (amendment 2) |
-| content silent or cancelling, otherwise | no link |
-| structure disagrees with content | pending, structure's direction (`disagreement: true`) |
-| `parallel` flag | pending, content's direction |
-| structure agrees with content | **accepted** |
-| all three content clues agree, structure silent | **accepted** |
-| otherwise | pending, content's direction |
+Contradictions: `reverse_name` (the earlier names the later more than the reverse), `figure`
+(either is a figure), `no_shared_pdf`, `pdfs_disagree`, `backward_only` (only the earlier refers).
+A suggestion's direction: a figure after the text its description refers to, else the order;
+across PDFs the name clue's direction if it has one, else the merged order; otherwise the order.
 
-Without the encoder (model not downloaded, offline) nothing is accepted: every link the other
-clues find is pending, and the reason says the meaning check was unavailable.
+Each stored link's `evidence` holds `rule: "reference-order"`, `direction_from` (`heading`,
+`pdf_order`, `figure`, `name`, `merged_order`, `pdf_agreement`), `contradictions`, the clue votes
+(oriented prerequisite-first), each clue's numbers, `relatedness`, `confidence` (share of the
+deciding clues that agree; used to break teacher-made loops) and `semantic`.
+`reasons.link_reason` turns that into one sentence for the review screen.
 
-Each stored link's `evidence` holds the votes (oriented prerequisite-first), each clue's numbers,
-`confidence` (share of voting clues that agree), `relatedness`, `parallel`, `disagreement` and
-`semantic`. `reasons.link_reason` turns that into one sentence for the review screen.
+Consequence: derived links follow the PDF order, so the automatic order is the PDF order except
+where a heading moves a concept. What v6 adds is the prerequisite graph the adaptive engine detours
+through.
 
 ## Edge status and teacher control
 
-Unchanged from v4. `ConceptPrerequisite` rows: `accepted` and `pending` come from the criteria and
+Unchanged since v4. `ConceptPrerequisite` rows: `accepted` and `pending` come from the criteria and
 are replaced on every derivation; `approved` and `rejected` come from a teacher and are never
 overwritten. Only `accepted` and `approved` shape the order. Loops made of teacher links are
 refused (`services/teacher_links.py`). Screen: `docs/superpowers/specs/2026-09-29-learning-path-graph-screen-design.md`.
@@ -82,15 +88,18 @@ accepted/approved earlier-topic prerequisites (hand-off: `docs/handoff-course-pr
 
 ```bash
 python manage.py evaluate_gold_paths --topics 62 79 152 340 357 --by-clue
-python manage.py evaluate_gold_paths --topics 340 --without meaning      # ablation
-python manage.py evaluate_gold_paths --topics 62 79 152 --build-on-latest
+python manage.py evaluate_gold_paths --topics 62 79 152 340 357 --baseline order   # order-only baseline
+python manage.py evaluate_gold_paths --topics 340 --without terms                  # ablation
 python manage.py test learning_path.test_gold_paths
 ```
 
-Development set: gold 62, 79, 152, plus 340 and 357 (AI-drafted keys; measured after several
-design changes, so no longer clean test topics). Test set (from 2026-09-30): 341, 343, 347, 348
-(AI-drafted keys from `docs/learning-path-<id>-snapshot-2026-09-30.md`, drafted before any design
-work). Never tune on the test set.
+Headline numbers: **covered** (required links reached by accepted links, directly or through a
+chain) together with **accepted precision** and forbidden links accepted. The order-only baseline
+covers every forward link by construction, so it is compared on precision (spec §5).
+
+Development set: gold 62, 79, 152, plus 340 and 357 (AI-drafted keys). Test set: 341, 343, 347,
+348 (AI-drafted keys from `docs/learning-path-<id>-snapshot-2026-09-30.md`, drafted before any
+design work), scored once with the rules frozen. Never tune on the test set.
 
 ## History
 
@@ -101,4 +110,8 @@ work). Never tune on the test set.
 - v4 (R1 definition, R2 heading containment, R3 reference; accepted by R1/R2):
   `docs/superpowers/specs/2026-09-29-learning-path-criteria-v4-design.md`. Retired because only
   heading containment ever accepted a link and every rule was string matching.
-- v5 (this document), 2026-09-30.
+- v5 (relatedness gate + two evidence families):
+  `docs/superpowers/specs/2026-09-30-learning-path-evidence-fusion-design.md`. Retired because
+  text-only links stayed pending, suggestions piled up (62 on topic 340) and the meaning clue was
+  at chance on direction.
+- v6 (this document), 2026-09-30.
