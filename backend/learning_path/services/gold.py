@@ -23,6 +23,9 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 def load_gold(topic_id):
     """``(map data, concepts)`` for a fixture, in the order it was written.
 
+    The file is ``gold_topic_<topic_id>.json``; ``topic_id`` may be a string
+    such as ``"348alt"`` for a second key on one topic.
+
     Two fixture shapes load through here. In the older one (topics 62 and 79)
     every concept is one of the teacher's, and its ``key`` is unique. In the
     newer one (topic 152, written by ``export_live_concepts``) the concepts are
@@ -95,6 +98,47 @@ def kendall_tau(order, expected):
     return (concordant - discordant) / (concordant + discordant)
 
 
+def covered_links(data, concepts, decisions):
+    """The key's required links a learner can be sent back through.
+
+    A required link is covered when accepted links lead from a concept carrying
+    its first key to one carrying its second, directly or through a chain --
+    the adaptive engine walks chains, so a direct link is not needed. Chains may
+    pass through unkeyed concepts and either half of a split concept.
+    """
+    successors = defaultdict(set)
+    for row in decisions:
+        if row["verdict"] == criteria.ACCEPTED:
+            successors[row["prerequisite"].id].add(row["dependent"].id)
+    key = {concept.id: concept.key for concept in concepts}
+
+    def reached_from(start):
+        seen, waiting = set(), [start]
+        while waiting:
+            for following in successors[waiting.pop()]:
+                if following not in seen:
+                    seen.add(following)
+                    waiting.append(following)
+        return seen
+
+    reach = {concept.id: reached_from(concept.id) for concept in concepts}
+    return [
+        [before, after] for before, after in data["required"]
+        if any(key[reached] == after
+               for concept in concepts if concept.key == before
+               for reached in reach[concept.id])
+    ]
+
+
+def order_only_decisions(concepts):
+    """Baseline: each concept after the one just before it in the topic's order; no text read."""
+    return [
+        {"prerequisite": before, "dependent": after, "verdict": criteria.ACCEPTED,
+         "evidence": {"rule": "order-only", "confidence": 1.0}, "cross_section": False}
+        for before, after in zip(concepts, concepts[1:])
+    ]
+
+
 def gold_report(data, concepts, decisions, build_on_latest=False):
     key = {concept.id: concept.key for concept in concepts}
     by_key = {concept.key: concept for concept in concepts if concept.key}
@@ -148,6 +192,7 @@ def gold_report(data, concepts, decisions, build_on_latest=False):
         if index == 0 or name != sequence[index - 1]
     ]
     accepted_set = set(accepted)
+    covered = covered_links(data, concepts, decisions)
     reachable = accepted_set | set(pending)
     missing_required = [edge for edge in required if edge not in accepted_set]
     unreachable = [edge for edge in required if edge not in reachable]
@@ -166,6 +211,8 @@ def gold_report(data, concepts, decisions, build_on_latest=False):
         "extra_accepted": [list(edge) for edge in accepted if edge not in required and not forbidden(edge)],
         "unreachable": [list(edge) for edge in unreachable],
         "reachable_count": len(required) - len(unreachable),
+        "covered": covered,
+        "covered_count": len(covered),
         "accepted_precision": (
             sum(1 for edge in accepted if edge in implied) / len(accepted) if accepted else None
         ),

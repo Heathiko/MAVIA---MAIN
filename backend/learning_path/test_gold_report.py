@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from django.test import SimpleTestCase
 
-from .services.gold import gold_report
+from .services.gold import covered_links, gold_report, order_only_decisions
 
 
 def concept(id, key, order):
@@ -125,3 +125,41 @@ class ClueMeasureTests(SimpleTestCase):
             lost = gate_loss(self.data, self.concepts, self.calibration)
 
         self.assertEqual(lost, [["stamen", "weather"]])
+
+
+class CoveredTests(SimpleTestCase):
+    def setUp(self):
+        self.matter, self.solid, self.comparing, self.unkeyed = (
+            concept(1, "matter", 0), concept(2, "solid", 1),
+            concept(3, "comparing", 2), concept(4, None, 3),
+        )
+        self.concepts = [self.matter, self.solid, self.comparing, self.unkeyed]
+        self.data = {"topic_id": 999, "required": [["matter", "solid"], ["matter", "comparing"]],
+                     "parallel": [], "structural": [], "forbidden": [],
+                     "expected_order": ["matter", "solid", "comparing"]}
+
+    def test_a_chain_of_accepted_links_covers_a_required_link(self):
+        decisions = [decision(self.matter, self.solid, "accepted"), decision(self.solid, self.comparing, "accepted")]
+
+        self.assertEqual(covered_links(self.data, self.concepts, decisions), [["matter", "solid"], ["matter", "comparing"]])
+
+    def test_a_chain_through_an_unkeyed_concept_still_covers(self):
+        decisions = [decision(self.matter, self.unkeyed, "accepted"), decision(self.unkeyed, self.comparing, "accepted")]
+
+        self.assertEqual(covered_links(self.data, self.concepts, decisions), [["matter", "comparing"]])
+
+    def test_pending_links_cover_nothing(self):
+        decisions = [decision(self.matter, self.solid, "pending")]
+
+        self.assertEqual(covered_links(self.data, self.concepts, decisions), [])
+
+    def test_the_report_carries_the_covered_count(self):
+        report = gold_report(self.data, self.concepts, [decision(self.matter, self.solid, "accepted")])
+
+        self.assertEqual(report["covered_count"], 1)
+
+    def test_the_order_only_baseline_links_each_concept_to_the_one_before(self):
+        rows = order_only_decisions(self.concepts)
+
+        self.assertEqual([(row["prerequisite"].id, row["dependent"].id) for row in rows], [(1, 2), (2, 3), (3, 4)])
+        self.assertEqual({row["verdict"] for row in rows}, {"accepted"})

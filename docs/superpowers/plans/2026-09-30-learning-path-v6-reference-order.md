@@ -1173,7 +1173,7 @@ Run each command **once**. Do not re-run after reading the results.
 1. Frozen rule version (hash from Step 2); sets and key sources.
 2. Development table: per topic, v5 / order-only / v6 — required, reachable, covered, τ, forbidden accepted, accepted, accepted precision, pending. From the three `*-dev.json` files.
 3. Test table: the same columns from the three `*-test.json` files.
-4. Reading it: does v6 clearly beat the order-only baseline on covered and forbidden? If not, say that the text rules add nothing measurable. Any forbidden link on the test set, listed with its evidence.
+4. Reading it: is v6 clearly more precise (accepted precision) than the order-only baseline at a comparable covered count, with no more forbidden links? (The baseline covers every forward link by construction — spec §5.) If not, say that the text rules add nothing measurable. Any forbidden link on the test set, listed with its evidence.
 5. The Task 6 figure-direction decision and its two totals.
 6. Stated scope (spec §5): grade-school science lessons from one course, one lesson template, AI-drafted keys; test text was read before design (spec §7); the rules found on 340 (spec §7).
 7. If a second key exists: agreement between the two keys (shared required links / union) and v6's numbers against each.

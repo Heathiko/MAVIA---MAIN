@@ -136,9 +136,14 @@ The option "trust the order, fix figures only" measured 61 covered but 6 forbidd
 
 **Guards against overfitting** (added 2026-09-30 at the user's request):
 - **Order-only baseline.** Every report shows, next to v5 and v6, a baseline that links each
-  concept to the one just before it in PDF order (figures included, no text used). If v6 does not
-  clearly beat it on covered links and forbidden links, the text rules add nothing, and the report
-  says so.
+  concept to the one just before it in PDF order (figures included, no text used). A chain through
+  every concept covers every required link that follows the PDF order by construction, so covered
+  alone cannot separate the two: the comparison is **accepted precision** (share of accepted links
+  that are in the key or implied by it — the detours a learner would actually be sent on) together
+  with covered and forbidden links. If v6 is not clearly more precise than the baseline at a
+  comparable covered count, the text rules add nothing, and the report says so. (Amended
+  2026-09-30 during implementation, before any test-set run: the first smoke run of the baseline
+  covered 10 of 10 on topic 62.)
 - **Rules frozen before the test run.** The commit that runs the test set records the rule
   version; §3 is not changed after that run. Any later idea is a new version, measured on a new
   unseen topic.
