@@ -1,0 +1,42 @@
+<!--
+  MAVIA mark — the braille cell that draws its own letter.
+
+  From the sketch. A braille cell is six positions, two columns by three rows,
+  and M is dots 1, 3 and 4:
+
+      ● 1    ● 4
+      ○ 2    ○ 5
+      ● 3    ○ 6
+
+  The V runs between the two raised dots at the top, and that is what makes
+  the figure work: the left column becomes the letter's stem, the V becomes
+  its middle, and the whole thing reads as M to a sighted eye while staying a
+  correct braille M to a reader's finger. Neither reading is bolted onto the
+  other -- the V is drawn between dots that were already there.
+
+  The three unraised positions are kept as open rings so the cell is legible
+  AS a cell. On paper they would be blank; here they are what tells you this
+  is braille rather than three dots and a tick.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="MAVIA">
+  <title>MAVIA</title>
+  <circle cx="256" cy="256" r="256" fill="#1D5FD6"/>
+
+  <!-- the unraised positions: 2, 5, 6 -->
+  <g fill="none" stroke="#FFFFFF" stroke-width="13" opacity="0.5">
+    <circle cx="176" cy="256" r="36"/>
+    <circle cx="336" cy="256" r="36"/>
+    <circle cx="336" cy="360" r="36"/>
+  </g>
+
+  <!-- the V, drawn behind the dots so they stay whole circles -->
+  <path d="M176 152 L256 292 L336 152" fill="none" stroke="#FFFFFF" stroke-width="30"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- the raised dots: 1, 4, 3 -->
+  <g fill="#FFFFFF">
+    <circle cx="176" cy="152" r="42"/>
+    <circle cx="336" cy="152" r="42"/>
+    <circle cx="176" cy="360" r="42"/>
+  </g>
+</svg>
