@@ -329,10 +329,8 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: colors.surface,
     borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.md,
-    gap: spacing.sm,
+    padding: spacing.lg,
+    gap: spacing.md,
   },
   counter: {
     fontSize: 11,
@@ -341,7 +339,7 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     color: colors.faint,
   },
-  prompt: { fontSize: 16, fontWeight: "700", color: colors.ink },
+  prompt: { fontSize: 20, fontWeight: "700", lineHeight: 27, color: colors.ink },
   note: { fontSize: 13, color: colors.muted, fontStyle: "italic" },
   options: { gap: spacing.sm },
   option: {
@@ -351,7 +349,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.panel,
     borderRadius: radii.sm,
     borderWidth: 2,
-    borderColor: colors.border,
+    borderColor: "transparent",
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },

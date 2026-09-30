@@ -149,6 +149,7 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: radii.lg,
     borderBottomRightRadius: radii.lg,
   },
+  heroFlat: { backgroundColor: colors.brand600 },
   heroTopRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -156,11 +157,12 @@ const styles = StyleSheet.create({
   },
   heroTitle: {
     marginTop: spacing.lg,
-    fontSize: 26,
+    fontSize: 32,
     fontWeight: "800",
+    letterSpacing: -0.6,
     color: colors.white,
   },
-  heroSubtitle: { marginTop: 4, fontSize: 14, color: "rgba(255,255,255,0.78)" },
+  heroSubtitle: { marginTop: 6, fontSize: 15, color: "rgba(255,255,255,0.82)" },
   heroPlay: {
     position: "absolute",
     right: spacing.lg,
