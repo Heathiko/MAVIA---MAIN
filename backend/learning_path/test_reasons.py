@@ -106,3 +106,23 @@ class LinkReasonTests(SimpleTestCase):
             "2 of 2 files teach Pollination first. The text says nothing either way. Confidence 1.00.",
         )
 
+    def test_a_course_link_that_follows_the_outline(self):
+        evidence = {"rule": "course", "confidence": 1.0, "semantic": True, "contradicts_outline": False,
+                    "votes": {"name": 1, "terms": 1, "meaning": 0, "outline": 1},
+                    "records": {"terms": {"owned": ["anther"]}}}
+
+        self.assertEqual(
+            link_reason(evidence, "Stamen", "Pollination"),
+            "Pollination uses terms Stamen explains (anther). Pollination names Stamen. "
+            "This follows your outline. Confidence 1.00.",
+        )
+
+    def test_a_course_link_against_the_outline_says_so(self):
+        evidence = {"rule": "course", "confidence": 0.67, "semantic": True, "contradicts_outline": True,
+                    "votes": {"name": 1, "terms": 1, "meaning": 0, "outline": -1}, "records": {}}
+
+        self.assertEqual(
+            link_reason(evidence, "Stamen", "Pollination"),
+            "Pollination uses terms Stamen explains. Pollination names Stamen. "
+            "This contradicts your outline: Stamen's topic comes later. Confidence 0.67.",
+        )

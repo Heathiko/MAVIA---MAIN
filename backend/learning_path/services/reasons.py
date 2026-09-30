@@ -45,11 +45,36 @@ def _fused_reason(evidence, a, b):
     return " ".join(parts)
 
 
+def _course_reason(evidence, a, b):
+    votes = evidence.get("votes") or {}
+    records = evidence.get("records") or {}
+    parts = []
+    if votes.get("terms") == 1:
+        owned = (records.get("terms") or {}).get("owned") or []
+        listed = f" ({', '.join(owned[:3])})" if owned else ""
+        parts.append(f"{b} uses terms {a} explains{listed}.")
+    if votes.get("meaning") == 1:
+        parts.append(f"{b}'s sentences refer to {a}'s ideas.")
+    if votes.get("name") == 1:
+        parts.append(f"{b} names {a}.")
+    if evidence.get("contradicts_outline"):
+        parts.append(f"This contradicts your outline: {a}'s topic comes later.")
+    else:
+        parts.append("This follows your outline.")
+    if evidence.get("semantic") is False:
+        parts.append("The meaning check was unavailable.")
+    if evidence.get("confidence") is not None:
+        parts.append(f"Confidence {evidence['confidence']:.2f}.")
+    return " ".join(parts)
+
+
 def link_reason(evidence, prerequisite_title, dependent_title):
     a, b = prerequisite_title, dependent_title
     evidence = evidence or {}
     rule = evidence.get("rule")
 
+    if rule == "course":
+        return _course_reason(evidence, a, b)
     if rule == "fusion":
         return _fused_reason(evidence, a, b)
     if rule == "definition":
