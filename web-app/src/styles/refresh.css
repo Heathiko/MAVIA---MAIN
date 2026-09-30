@@ -27,7 +27,11 @@
   max-width: none !important;
   display: flex !important;
   flex-direction: row !important;
-  align-items: flex-start;
+  /* Stretch, not flex-start: the two columns are halves of one job, and a
+     short bank beside a tall form read as one finished panel and one that had
+     been cut off. The bank's list takes up the slack rather than the card
+     ending early. */
+  align-items: stretch;
   gap: 2rem;
   /* pipeline.css forced `overflow-y: auto !important` on this whole panel,
      which is where the unwanted scrollbar came from. The panel is not the
@@ -59,10 +63,23 @@
   background: var(--mv-panel);
 }
 
-/* The bank is the long half; it scrolls inside its own card rather than
-   stretching the column and dragging the form down with it. */
+/* The bank is the long half, so it is the part that scrolls -- but it scrolls
+   to FILL its column rather than to a fixed height. A 46vh cap made the card
+   end wherever that landed, which is what left it shorter than the form
+   beside it. */
+.qt-col--bank {
+  display: flex;
+  flex-direction: column;
+}
+.qt-col--bank .saved-question-sidebar {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
 .qt-col--bank .saved-question-list {
-  max-height: 46vh;
+  flex: 1;
+  min-height: 12rem;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 0.35rem;
@@ -144,13 +161,28 @@
    seam between them is what kept looking bolted together.
    So: the shell is dark and rounded, the sidebar inside it is transparent and
    simply sits on that dark, and <main> becomes the inset light panel. */
+/* The page itself does not scroll. Ever.
+   `min-height: 100vh` only sets a floor, so any inner region that outgrew it
+   pushed the whole document taller and left a band of empty ground under the
+   shell -- which is what kept coming back. A fixed `height` with `overflow:
+   hidden` removes the possibility instead of correcting it afterwards: the
+   shell is exactly the window, and whatever is too long scrolls inside its own
+   panel, where the header and sidebar stay put beside it. */
+.app-shell:has(.topic-workspace-shell) {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .topic-workspace-shell {
   background: var(--mv-dark);
   padding: 0.85rem;
   gap: 0;
-  min-height: 100vh;
-  /* With content-box the 100vh and the padding ADD, so the shell is always
-     taller than the viewport and the page scrolls by exactly its padding. */
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  /* With content-box the 100vh and the padding ADD, so the shell would always
+     be taller than the window by exactly its own padding. */
   box-sizing: border-box;
   align-items: stretch;
 }
@@ -183,13 +215,14 @@
   width: 100%;
   max-width: none;
   margin: 0;
-  /* No min-height of its own. The shell is already a 100vh grid and its rows
-     stretch, so the panel fills the height for free -- asking for 100vh here
-     as well made the two add up, which is the band of empty white that
-     appeared under short content. */
+  /* The panel is the one thing that scrolls. It takes the height the shell
+     gives it and no more, so a long review list or question bank runs inside
+     it while the sidebar and the page header stay where they are. */
   min-height: 0;
+  height: 100%;
   box-sizing: border-box;
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* The sidebar sticks within the shell rather than being a 100vh column of its
@@ -375,4 +408,157 @@
   color: #ffffff;
   border-radius: var(--mv-radius-pill);
   border: none;
+}
+
+/* ===========================================================================
+   The window is the window, on every screen.
+
+   The band of empty ground under the content kept coming back because the fix
+   was always per-screen: one shell was pinned to the viewport, the next one
+   still used `min-height: 100vh`, which is only a floor. Anything that grew
+   past it pushed the whole document taller, and the overshoot showed as bare
+   canvas below the app -- white, because the root element's own background
+   (#ffffff, from base.css) paints the canvas and body's page-grey only paints
+   body's own box.
+
+   So the contract moves up to the document, once, for everything:
+
+     - html and body are exactly the window and never scroll.
+     - #root is the window, and is the only scroller a page-length screen has.
+       A long dashboard or landing page scrolls inside it exactly as it used to
+       scroll the document; nothing about those screens changes except which
+       box owns the scrollbar.
+     - html carries the page grey, so even if something did overshoot, what
+       shows is the app's own ground and not a white void.
+
+   Screens that must not scroll at all then simply take `height: 100%` -- they
+   are the window because #root is, with no viewport unit anywhere to drift
+   from it. */
+html {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--mv-page);
+}
+
+body {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--mv-page);
+}
+
+#root {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The workspace shells are the window itself: they fill #root exactly and
+   whatever is long scrolls inside their own panel. `100%` rather than `100vh`
+   so a shell can never be taller than the box it sits in. */
+.app-shell:has(.topic-workspace-shell) {
+  height: 100%;
+}
+
+.topic-workspace-shell {
+  height: 100%;
+}
+
+.app-shell:has(.dag-workspace) {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dag-workspace {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* --- The two graph screens ------------------------------------------------
+   `.pg-canvas` was a fixed `70vh`, so the header above it plus the shell's own
+   4rem bottom padding always added up to more than one window: every visit to
+   a learning path began with a scrollbar and ended in empty ground. The canvas
+   now takes whatever height is left over instead of naming its own. */
+.app-shell:has(.learning-path-page),
+.app-shell:has(.cp-layout) {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem 0;
+}
+
+/* The heading card keeps its height; only the graph below it flexes. */
+.app-shell:has(.cp-layout) > .card {
+  flex: 0 0 auto;
+}
+
+.app-shell > .learning-path-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.app-shell > .cp-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 0;
+}
+
+.app-shell > .cp-layout > .pg-canvas {
+  height: 100%;
+  min-height: 0;
+}
+
+/* The arrow panel is a column beside a full-height canvas, so it scrolls in
+   place rather than stretching the row to the length of its link list. */
+.cp-layout > .cp-panel {
+  align-self: stretch;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Inside the learning-path page the canvas is nested a few levels down, so it
+   keeps a height of its own -- but a bounded one, sized to leave the header
+   and the notes above it visible without the panel scrolling on arrival. */
+.learning-path-page .pg-canvas {
+  height: min(62vh, 620px);
+  min-height: 360px;
+}
+
+/* One scrollbar treatment for the new scrollers, matching the panels that
+   already had it. */
+#root::-webkit-scrollbar,
+.dag-workspace::-webkit-scrollbar,
+.app-shell > .learning-path-page::-webkit-scrollbar,
+.cp-layout > .cp-panel::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+#root::-webkit-scrollbar-thumb,
+.dag-workspace::-webkit-scrollbar-thumb,
+.app-shell > .learning-path-page::-webkit-scrollbar-thumb,
+.cp-layout > .cp-panel::-webkit-scrollbar-thumb {
+  background: rgba(20, 24, 31, 0.18);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+#root::-webkit-scrollbar-track,
+.dag-workspace::-webkit-scrollbar-track,
+.app-shell > .learning-path-page::-webkit-scrollbar-track,
+.cp-layout > .cp-panel::-webkit-scrollbar-track {
+  background: transparent;
 }
