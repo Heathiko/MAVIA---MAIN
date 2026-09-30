@@ -11,7 +11,10 @@ from django.core.management import call_command
 from django.test import SimpleTestCase
 
 from .services.calibration import DEFAULTS, load_calibration
-from .services.fusion import ACCEPTED, PARALLEL, PENDING, confidence, learn_weights, verdict
+from .services.fusion import (
+    ACCEPTED, DECIDING_CLUES, DISAGREE, NONE_SHARED, PARALLEL, PENDING,
+    Decision, PairFacts, confidence, learn_weights, reference_verdict,
+)
 from .testing import word_vectors
 
 
@@ -36,44 +39,95 @@ class LearnWeightTests(SimpleTestCase):
         self.assertEqual(learn_weights(rows)[0]["name"], 0.0)
 
 
-class VerdictTests(SimpleTestCase):
-    """Two families: what the text says (name, terms, meaning) and how the author
-    organised it (heading, order). Agreement accepts; structure alone links nothing."""
+class ReferenceVerdictTests(SimpleTestCase):
+    """Spec section 3: the text decides whether a link exists, the order which way."""
 
-    def test_text_and_structure_agreeing_is_accepted(self):
-        self.assertEqual(verdict(votes(name=1, heading=1)), (ACCEPTED, 1))
+    def test_the_later_concept_referring_to_the_earlier_is_accepted_in_order(self):
+        decision = reference_verdict(PairFacts(later_uses_earlier_terms=0.5))
 
-    def test_all_three_content_clues_with_structure_silent_is_accepted(self):
-        self.assertEqual(verdict(votes(name=-1, terms=-1, meaning=-1)), (ACCEPTED, -1))
+        self.assertEqual(decision, Decision(ACCEPTED, 1, "pdf_order", ()))
 
-    def test_text_alone_that_is_not_unanimous_is_pending(self):
-        self.assertEqual(verdict(votes(terms=1)), (PENDING, 1))
+    def test_a_name_reference_alone_is_enough(self):
+        self.assertEqual(reference_verdict(PairFacts(later_names_earlier=0.2)).verdict, ACCEPTED)
 
-    def test_text_against_the_structure_is_pending_in_the_structures_direction(self):
-        """An overview names its children, so the text reads child-first while the
-        headings and PDFs put the parent first (Solid -> Matter on gold 62)."""
-        self.assertEqual(verdict(votes(name=-1, terms=-1, heading=1)), (PENDING, 1))
+    def test_siblings_get_no_link_even_when_they_refer_to_each_other(self):
+        facts = PairFacts(later_names_earlier=0.5, later_uses_earlier_terms=1.0, parallel=True)
 
-    def test_pdfs_agreeing_while_the_text_is_silent_is_only_a_suggestion(self):
-        """Amendment 2: the process chain (pollination -> fertilization) is known to
-        the files' order, not to the text; it reaches the teacher, never the path."""
-        self.assertEqual(verdict(votes(heading=1, order=1)), (PENDING, 1))
-        self.assertEqual(verdict(votes(order=-1)), (PENDING, -1))
+        self.assertEqual(reference_verdict(facts).verdict, PARALLEL)
 
-    def test_a_heading_alone_makes_no_link(self):
-        self.assertEqual(verdict(votes(heading=1))[0], PARALLEL)
+    def test_silent_text_makes_no_link(self):
+        self.assertEqual(reference_verdict(PairFacts()).verdict, PARALLEL)
 
-    def test_siblings_get_no_structure_only_suggestion(self):
-        self.assertEqual(verdict(votes(order=1, parallel=True))[0], PARALLEL)
+    def test_silent_text_with_files_agreeing_is_only_a_suggestion(self):
+        """v5 amendment 2: a process told by the files' order, not by shared words."""
+        self.assertEqual(reference_verdict(PairFacts(pdf_agreement=1)), Decision(PENDING, 1, "pdf_agreement", ()))
 
-    def test_siblings_whose_text_disagrees_with_the_files_follow_the_files(self):
-        self.assertEqual(verdict(votes(meaning=-1, order=1, parallel=True)), (PENDING, 1))
+    def test_siblings_get_no_suggestion_from_the_files_either(self):
+        self.assertEqual(reference_verdict(PairFacts(pdf_agreement=1, parallel=True)).verdict, PARALLEL)
 
-    def test_siblings_are_at_most_pending(self):
-        self.assertEqual(verdict(votes(name=1, terms=1, meaning=1, order=1, parallel=True)), (PENDING, 1))
+    def test_a_heading_decides_the_direction_even_against_the_order(self):
+        facts = PairFacts(earlier_names_later=0.5, heading=-1)
 
-    def test_without_the_encoder_nothing_is_accepted(self):
-        self.assertEqual(verdict(votes(name=1, heading=1), semantic=False), (PENDING, 1))
+        self.assertEqual(reference_verdict(facts), Decision(ACCEPTED, -1, "heading", ()))
+
+    def test_the_earlier_naming_the_later_more_is_a_suggestion_in_order(self):
+        """An overview names its parts; the order was right 14 times to 4 (spec section 1)."""
+        facts = PairFacts(later_uses_earlier_terms=0.5, earlier_names_later=0.4, later_names_earlier=0.1)
+
+        self.assertEqual(reference_verdict(facts), Decision(PENDING, 1, "pdf_order", ("reverse_name",)))
+
+    def test_only_the_earlier_referring_is_a_suggestion_in_order(self):
+        facts = PairFacts(earlier_uses_later_terms=0.5)
+
+        self.assertEqual(reference_verdict(facts), Decision(PENDING, 1, "pdf_order", ("backward_only",)))
+
+    def test_a_figure_follows_the_text_its_description_refers_to(self):
+        """Extraction puts a page's figure first, so its position means nothing."""
+        facts = PairFacts(earlier_uses_later_terms=0.6, earlier_is_figure=True)
+
+        self.assertEqual(
+            reference_verdict(facts),
+            Decision(PENDING, -1, "figure", ("figure", "backward_only")),
+        )
+
+    def test_a_figure_placed_later_that_refers_back_is_still_only_suggested(self):
+        facts = PairFacts(later_uses_earlier_terms=0.6, later_is_figure=True)
+
+        self.assertEqual(reference_verdict(facts), Decision(PENDING, 1, "figure", ("figure",)))
+
+    def test_a_figure_whose_description_refers_to_nothing_follows_the_order(self):
+        facts = PairFacts(later_uses_earlier_terms=0.6, earlier_is_figure=True)
+
+        self.assertEqual(reference_verdict(facts), Decision(PENDING, 1, "pdf_order", ("figure",)))
+
+    def test_two_figures_are_suggested_in_order(self):
+        facts = PairFacts(later_uses_earlier_terms=0.6, earlier_is_figure=True, later_is_figure=True)
+
+        self.assertEqual(reference_verdict(facts), Decision(PENDING, 1, "pdf_order", ("figure",)))
+
+    def test_concepts_from_different_files_follow_the_name_when_it_points(self):
+        facts = PairFacts(later_uses_earlier_terms=0.5, earlier_names_later=0.3, pdf_order=NONE_SHARED)
+
+        self.assertEqual(
+            reference_verdict(facts),
+            Decision(PENDING, -1, "name", ("reverse_name", "no_shared_pdf")),
+        )
+
+    def test_concepts_from_different_files_otherwise_follow_the_merged_order(self):
+        facts = PairFacts(later_uses_earlier_terms=0.5, pdf_order=NONE_SHARED)
+
+        self.assertEqual(reference_verdict(facts), Decision(PENDING, 1, "merged_order", ("no_shared_pdf",)))
+
+    def test_files_disagreeing_on_the_order_is_a_suggestion(self):
+        facts = PairFacts(later_uses_earlier_terms=0.5, pdf_order=DISAGREE)
+
+        self.assertEqual(reference_verdict(facts), Decision(PENDING, 1, "merged_order", ("pdfs_disagree",)))
+
+    def test_confidence_can_count_only_the_deciding_clues(self):
+        votes = {"name": 1, "terms": 1, "meaning": -1, "heading": 0, "order": 0}
+
+        self.assertAlmostEqual(confidence(votes, 1), 2 / 3)
+        self.assertAlmostEqual(confidence(votes, 1, DECIDING_CLUES), 1.0)
 
     def test_confidence_is_the_share_of_voting_clues_that_agree(self):
         self.assertAlmostEqual(confidence(votes(name=1, terms=1, meaning=-1, order=1), 1), 0.75)

@@ -108,7 +108,7 @@ The option "trust the order, fix figures only" measured 61 covered but 6 forbidd
 
 - `ConceptPrerequisite.evidence` (no schema change): `rule: "reference-order"`; the clue votes and
   records as in v5 (name, terms, heading, order); `direction_from` (`heading`, `pdf_order`,
-  `figure`, `merged_order`, `pdf_agreement`); `contradictions` (list, empty when accepted);
+  `figure`, `name`, `merged_order`, `pdf_agreement`); `contradictions` (list, empty when accepted);
   `relatedness` and the meaning numbers, **recorded only**; `confidence` (share of voting clues
   that agree, kept for `break_cycles`, which still meets teacher-made loops).
 - `reasons.link_reason`: one sentence from the same parts, e.g. "Gas uses terms Solid explains
