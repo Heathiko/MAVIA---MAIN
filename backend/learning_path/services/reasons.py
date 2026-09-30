@@ -76,16 +76,24 @@ _CONTRADICTION_SENTENCES = {
 
 
 def _reference_order_reason(evidence, a, b):
+    """``records`` are oriented prerequisite-first, so every sentence reads from them.
+
+    The stored ``contradictions`` name the PDF's earlier and later concept, which
+    is the dependent when a figure or the names reversed the order; only the
+    orientation-free ones (figure, files) are read from that list.
+    """
     votes = evidence.get("votes") or {}
     records = evidence.get("records") or {}
+    names = records.get("name") or {}
+    terms = records.get("terms") or {}
     contradictions = evidence.get("contradictions") or []
     parts = []
     if votes.get("heading") == 1:
         parts.append(f"{b} sits under a heading naming {a}.")
-    if votes.get("name") == 1:
+    if names.get("use", 0) > 0:
         parts.append(f"{b} names {a}.")
-    if votes.get("terms") == 1:
-        owned = (records.get("terms") or {}).get("owned") or []
+    if terms.get("use", 0) > 0:
+        owned = terms.get("owned") or []
         listed = f" ({', '.join(owned[:3])})" if owned else ""
         parts.append(f"{b} uses terms {a} explains{listed}.")
     source = evidence.get("direction_from")
@@ -95,12 +103,16 @@ def _reference_order_reason(evidence, a, b):
         parts.append(f"{a} comes first in the topic's combined order.")
     elif source == "figure":
         parts.append(f"The figure's description refers to {a}.")
+    elif source == "name":
+        parts.append(f"The names put {a} first; the files do not settle the order.")
     elif source == "pdf_agreement":
         order = records.get("order") or {}
         parts.append(f"{order.get('agree')} of {order.get('pdfs')} files teach {a} first; the text says nothing either way.")
-    if "reverse_name" in contradictions:
+    if names.get("use_back", 0) > names.get("use", 0):
         parts.append(f"But {a}'s text names {b} more than the reverse.")
-    if "backward_only" in contradictions:
+    refers = names.get("use", 0) > 0 or terms.get("use", 0) > 0
+    refers_back = names.get("use_back", 0) > 0 or terms.get("use_back", 0) > 0
+    if refers_back and not refers and votes.get("heading") != 1:
         parts.append(f"But only {a}'s text refers to {b}.")
     parts.extend(_CONTRADICTION_SENTENCES[key] for key in _CONTRADICTION_SENTENCES if key in contradictions)
     return " ".join(parts)

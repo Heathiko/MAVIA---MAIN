@@ -56,16 +56,30 @@ class LinkReasonTests(SimpleTestCase):
     def test_an_accepted_v6_link_names_its_words_and_the_order(self):
         evidence = {"rule": "reference-order", "direction_from": "pdf_order", "contradictions": [],
                     "votes": {"name": 0, "terms": 1, "meaning": 1, "heading": 0, "order": 0},
-                    "records": {"terms": {"owned": ["particle", "vibrate"]}}}
+                    "records": {"name": {"use": 0.0, "use_back": 0.0},
+                                "terms": {"owned": ["particle", "vibrate"], "use": 0.5, "use_back": 0.0}}}
 
         self.assertEqual(
             link_reason(evidence, "Solid", "Gas"),
             "Gas uses terms Solid explains (particle, vibrate). Solid comes first in the lesson.",
         )
 
+    def test_an_accepted_v6_link_mentions_words_used_both_ways(self):
+        """The net vote is 0 when both use each other's terms equally; the reference is still real."""
+        evidence = {"rule": "reference-order", "direction_from": "pdf_order", "contradictions": [],
+                    "votes": {"name": 0, "terms": 0, "heading": 0},
+                    "records": {"name": {"use": 0.0, "use_back": 0.0},
+                                "terms": {"owned": ["mixture"], "use": 1.0, "use_back": 1.0}}}
+
+        self.assertEqual(
+            link_reason(evidence, "Uniform mixtures", "Air"),
+            "Air uses terms Uniform mixtures explains (mixture). Uniform mixtures comes first in the lesson.",
+        )
+
     def test_a_v6_link_by_heading_and_name(self):
         evidence = {"rule": "reference-order", "direction_from": "heading", "contradictions": [],
-                    "votes": {"name": 1, "terms": 0, "heading": 1}, "records": {}}
+                    "votes": {"name": 1, "terms": 0, "heading": 1},
+                    "records": {"name": {"use": 0.5, "use_back": 0.0}, "terms": {"use": 0.0, "use_back": 0.0}}}
 
         self.assertEqual(
             link_reason(evidence, "Matter", "Solid"),
@@ -75,7 +89,8 @@ class LinkReasonTests(SimpleTestCase):
     def test_a_v6_suggestion_says_what_stands_against_it(self):
         evidence = {"rule": "reference-order", "direction_from": "pdf_order",
                     "contradictions": ["reverse_name", "backward_only"],
-                    "votes": {"name": -1, "terms": 0, "heading": 0}, "records": {}}
+                    "votes": {"name": -1, "terms": 0, "heading": 0},
+                    "records": {"name": {"use": 0.0, "use_back": 0.5}, "terms": {"use": 0.0, "use_back": 0.0}}}
 
         self.assertEqual(
             link_reason(evidence, "Matter", "Solid"),
@@ -83,10 +98,13 @@ class LinkReasonTests(SimpleTestCase):
             "But only Matter's text refers to Solid.",
         )
 
-    def test_a_v6_figure_suggestion(self):
-        evidence = {"rule": "reference-order", "direction_from": "figure", "contradictions": ["figure"],
+    def test_a_v6_figure_suggestion_placed_before_its_text_reads_the_right_way(self):
+        """Stored contradictions are about the PDF's earlier/later; here the figure came first
+        and the link points back, so "backward_only" must not be read as Solid's."""
+        evidence = {"rule": "reference-order", "direction_from": "figure", "contradictions": ["figure", "backward_only"],
                     "votes": {"name": 0, "terms": 1, "heading": 0},
-                    "records": {"terms": {"owned": ["particle"]}}}
+                    "records": {"name": {"use": 0.0, "use_back": 0.0},
+                                "terms": {"owned": ["particle"], "use": 0.6, "use_back": 0.0}}}
 
         self.assertEqual(
             link_reason(evidence, "Solid", "Particles in a solid"),
@@ -95,10 +113,24 @@ class LinkReasonTests(SimpleTestCase):
             "One of them is a figure, so its place in the file does not give the order.",
         )
 
+    def test_a_v6_suggestion_directed_by_the_names_reads_the_right_way(self):
+        evidence = {"rule": "reference-order", "direction_from": "name",
+                    "contradictions": ["reverse_name", "no_shared_pdf"],
+                    "votes": {"name": 1, "terms": -1, "heading": 0},
+                    "records": {"name": {"use": 0.3, "use_back": 0.0},
+                                "terms": {"owned": [], "use": 0.0, "use_back": 0.5}}}
+
+        self.assertEqual(
+            link_reason(evidence, "Stamen", "Pollination"),
+            "Pollination names Stamen. The names put Stamen first; the files do not settle the order. "
+            "They come from different files, so their order is a guess.",
+        )
+
     def test_v6_suggestions_from_different_or_disagreeing_files(self):
         evidence = {"rule": "reference-order", "direction_from": "merged_order",
                     "contradictions": ["no_shared_pdf"], "votes": {"terms": 1},
-                    "records": {"terms": {"owned": []}}}
+                    "records": {"name": {"use": 0.0, "use_back": 0.0},
+                                "terms": {"owned": [], "use": 0.5, "use_back": 0.0}}}
 
         self.assertEqual(
             link_reason(evidence, "Stamen", "Pollination"),

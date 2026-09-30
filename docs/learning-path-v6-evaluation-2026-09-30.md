@@ -70,9 +70,11 @@ scored later at `b42b364`.
    defect v6 was built for, and it is confirmed on topics v5 never saw.
 2. **v6 covers 20 of 41 required links on the test set, with no forbidden link, and its accepted
    links are right 68 % of the time** (19 of 28), against 19 % (6 of 32) for the order-only chain.
-   So the text rules add something measurable: the order alone would send learners on mostly
-   wrong detours. v6 is not at a comparable covered count, though — it reaches half of what the
-   chain reaches by construction.
+   The comparison fixed in advance (spec §5) asks for higher precision **at a comparable covered
+   count**, and that condition is **not met**: the chain covers 41 by construction, v6 covers 20.
+   So the pre-registered test is **inconclusive**. What the numbers do show is that the order
+   alone would send learners on mostly wrong detours, while v6's accepted links are mostly right
+   and cover about half of the required links.
 3. **Suggestions drop from 86 to 35** on the test set (151 → 85 on the development set).
 4. **Where v6 fails (348: covered 3 of 18, precision 0.33).** The key links "Why Mixtures Can Be
    Separated" (one sentence) to every technique, and the techniques to "Choosing the Right
