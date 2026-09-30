@@ -142,6 +142,37 @@ def order_vote(prerequisite, dependent, positions):
     return 0, record
 
 
+
+def shared_pdf_order(first, second, positions):
+    """``(direction, pdfs)`` from every PDF teaching both concepts.
+
+    +1 when all of them put ``first`` earlier, -1 when all put ``second``
+    earlier, 0 when they disagree, ``None`` when no PDF teaches both.
+    Unlike ``order_vote``, one PDF is enough: v6 takes direction from the
+    lesson's own order (spec section 3).
+    """
+    shared = [spots for spots in positions.values() if first.id in spots and second.id in spots]
+    if not shared:
+        return None, 0
+    first_count = sum(1 for spots in shared if spots[first.id] < spots[second.id])
+    if first_count == len(shared):
+        return 1, len(shared)
+    if first_count == 0:
+        return -1, len(shared)
+    return 0, len(shared)
+
+
+def reference_uses(earlier, later, term_owners):
+    """How much each concept refers to the other, by name and by owned terms."""
+    same_name = bool(earlier.name) and set(earlier.name) == set(later.name)
+    return {
+        # One title on two concepts (a split the grouping made) names neither.
+        "later_names_earlier": 0.0 if same_name else name_use(later, earlier),
+        "earlier_names_later": 0.0 if same_name else name_use(earlier, later),
+        "later_uses_earlier_terms": term_use(later, earlier, term_owners),
+        "earlier_uses_later_terms": term_use(earlier, later, term_owners),
+    }
+
 def heading_stems(text):
     """The stems of every heading the concept's members sit under."""
     members = getattr(text.concept, "members", None) or ()

@@ -17,6 +17,8 @@ from .services.clues import (
     order_vote,
     pair_votes,
     presented_in_parallel,
+    reference_uses,
+    shared_pdf_order,
     term_vote,
 )
 from .services.concept_text import prepare, terms
@@ -178,3 +180,60 @@ class HeadingTests(SimpleTestCase):
 
         self.assertEqual(pair["votes"]["heading"], 1)
         self.assertFalse(pair["votes"]["parallel"])
+
+
+class SharedPdfOrderTests(SimpleTestCase):
+    first, second = SimpleNamespace(id=1), SimpleNamespace(id=2)
+
+    def test_one_pdf_teaching_both_gives_its_order(self):
+        self.assertEqual(shared_pdf_order(self.first, self.second, {10: {1: 0, 2: 1}}), (1, 1))
+        self.assertEqual(shared_pdf_order(self.second, self.first, {10: {1: 0, 2: 1}}), (-1, 1))
+
+    def test_no_pdf_teaching_both_gives_no_order(self):
+        self.assertEqual(shared_pdf_order(self.first, self.second, {10: {1: 0}, 11: {2: 0}}), (None, 0))
+
+    def test_pdfs_that_disagree_give_zero(self):
+        positions = {10: {1: 0, 2: 1}, 11: {1: 1, 2: 0}}
+
+        self.assertEqual(shared_pdf_order(self.first, self.second, positions), (0, 2))
+
+
+class ReferenceUseTests(SimpleTestCase):
+    def test_uses_are_read_each_way(self):
+        stamen, pollination = prepare([
+            concept(1, "Stamen", "The stamen makes pollen grains."),
+            concept(2, "Pollination", "Pollen leaves the stamen on the wind."),
+        ])
+
+        uses = reference_uses(stamen, pollination, {})
+
+        self.assertEqual(uses["later_names_earlier"], 1.0)
+        self.assertEqual(uses["earlier_names_later"], 0.0)
+        self.assertEqual(set(uses), {
+            "later_names_earlier", "earlier_names_later",
+            "later_uses_earlier_terms", "earlier_uses_later_terms",
+        })
+
+    def test_two_concepts_with_one_title_do_not_name_each_other(self):
+        """A grouping split: the shared title must not read as a reference either way."""
+        first, second = prepare([
+            concept(1, "Comparing the Three States", "Comparing the three states shows shape. Comparing the three states shows flow."),
+            concept(2, "Comparing the Three States", "Comparing the three states shows volume. The table lists each property."),
+        ])
+
+        uses = reference_uses(first, second, {})
+
+        self.assertEqual((uses["later_names_earlier"], uses["earlier_names_later"]), (0.0, 0.0))
+
+    def test_owned_terms_count_as_a_reference(self):
+        texts = prepare([
+            concept(1, "Stamen", "The anther makes pollen grains. " * 8),
+            concept(2, "Pollination", "Pollen travels from an anther to a stigma."),
+            # A third concept gives the statistic an outside to compare against.
+            concept(3, "Pistil", "The stigma is sticky and holds the style. " * 8),
+        ])
+
+        uses = reference_uses(texts[0], texts[1], find_term_owners(texts))
+
+        self.assertGreater(uses["later_uses_earlier_terms"], 0)
+        self.assertEqual(uses["earlier_uses_later_terms"], 0.0)
