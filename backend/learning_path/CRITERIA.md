@@ -87,8 +87,10 @@ python manage.py evaluate_gold_paths --topics 62 79 152 --build-on-latest
 python manage.py test learning_path.test_gold_paths
 ```
 
-Development set: gold 62, 79, 152. Test set: 340 and 357 (AI-drafted keys).
-Never tune on the test set.
+Development set: gold 62, 79, 152, plus 340 and 357 (AI-drafted keys; measured after several
+design changes, so no longer clean test topics). Test set (from 2026-09-30): 341, 343, 347, 348
+(AI-drafted keys from `docs/learning-path-<id>-snapshot-2026-09-30.md`, drafted before any design
+work). Never tune on the test set.
 
 ## History
 
