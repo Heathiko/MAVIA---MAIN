@@ -1,8 +1,8 @@
 """One plain sentence explaining a prerequisite link, for the review screen.
 
 Built from the evidence ``criteria.decide_pairs`` stores on each derived row;
-v4 rows keep their older wording until re-derived. A row with no evidence was made
-by the teacher.
+rows from older versions (v4, v5) keep their wording until re-derived. A row
+with no evidence was made by the teacher.
 """
 
 
@@ -68,6 +68,44 @@ def _course_reason(evidence, a, b):
     return " ".join(parts)
 
 
+_CONTRADICTION_SENTENCES = {
+    "figure": "One of them is a figure, so its place in the file does not give the order.",
+    "no_shared_pdf": "They come from different files, so their order is a guess.",
+    "pdfs_disagree": "The files put them in different orders.",
+}
+
+
+def _reference_order_reason(evidence, a, b):
+    votes = evidence.get("votes") or {}
+    records = evidence.get("records") or {}
+    contradictions = evidence.get("contradictions") or []
+    parts = []
+    if votes.get("heading") == 1:
+        parts.append(f"{b} sits under a heading naming {a}.")
+    if votes.get("name") == 1:
+        parts.append(f"{b} names {a}.")
+    if votes.get("terms") == 1:
+        owned = (records.get("terms") or {}).get("owned") or []
+        listed = f" ({', '.join(owned[:3])})" if owned else ""
+        parts.append(f"{b} uses terms {a} explains{listed}.")
+    source = evidence.get("direction_from")
+    if source == "pdf_order":
+        parts.append(f"{a} comes first in the lesson.")
+    elif source == "merged_order":
+        parts.append(f"{a} comes first in the topic's combined order.")
+    elif source == "figure":
+        parts.append(f"The figure's description refers to {a}.")
+    elif source == "pdf_agreement":
+        order = records.get("order") or {}
+        parts.append(f"{order.get('agree')} of {order.get('pdfs')} files teach {a} first; the text says nothing either way.")
+    if "reverse_name" in contradictions:
+        parts.append(f"But {a}'s text names {b} more than the reverse.")
+    if "backward_only" in contradictions:
+        parts.append(f"But only {a}'s text refers to {b}.")
+    parts.extend(_CONTRADICTION_SENTENCES[key] for key in _CONTRADICTION_SENTENCES if key in contradictions)
+    return " ".join(parts)
+
+
 def link_reason(evidence, prerequisite_title, dependent_title):
     a, b = prerequisite_title, dependent_title
     evidence = evidence or {}
@@ -75,6 +113,8 @@ def link_reason(evidence, prerequisite_title, dependent_title):
 
     if rule == "course":
         return _course_reason(evidence, a, b)
+    if rule == "reference-order":
+        return _reference_order_reason(evidence, a, b)
     if rule == "fusion":
         return _fused_reason(evidence, a, b)
     if rule == "definition":
