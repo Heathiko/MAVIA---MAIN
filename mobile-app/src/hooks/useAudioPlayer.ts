@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useFocusEffect } from "expo-router";
 import { AudioPlayer, AudioStatus, createAudioPlayer, setAudioModeAsync } from "expo-audio";
 
 type PlayerState = {
@@ -89,6 +90,14 @@ export function useAudioPlayer(onFinish?: () => void) {
     playerRef.current = null;
     setState({ ...INITIAL });
   }, []);
+
+  // Same rule as narration: leaving the screen ends its sound. A lesson track
+  // is an audio FILE, which expo-speech knows nothing about, so stopping the
+  // voice does not stop this -- going back mid-track left the mp3 playing
+  // under the next screen.
+  useFocusEffect(
+    useCallback(() => () => stop(), [stop])
+  );
 
   const play = useCallback(async () => {
     playerRef.current?.play();

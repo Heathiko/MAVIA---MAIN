@@ -163,13 +163,36 @@ export default function CourseListScreen() {
               accessibilityRole="button"
               accessibilityLabel={`${item.title}. ${item.subtitle}`}
             >
-              <View style={styles.courseBanner} />
+              <View style={styles.courseBanner}>
+                <Ionicons
+                  name="school"
+                  size={150}
+                  color="rgba(255,255,255,0.14)"
+                  style={styles.courseGlyph}
+                />
+                <View style={styles.coursePill}>
+                  <Text style={styles.coursePillText}>
+                    {item.lessonCount} lesson{item.lessonCount === 1 ? "" : "s"}
+                  </Text>
+                </View>
+              </View>
               <View style={styles.courseBody}>
                 <Text style={styles.courseTitle} numberOfLines={2}>
                   {item.title}
                 </Text>
                 <Text style={styles.courseMeta} numberOfLines={1}>
                   {item.subtitle}
+                </Text>
+                <View style={styles.progressTrack}>
+                  <View
+                    style={[
+                      styles.progressFill,
+                      { width: `${Math.max(4, Math.min(100, item.progressPercent))}%` },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.progressLabel}>
+                  {item.progressPercent > 0 ? `${item.progressPercent}% complete` : "Not started"}
                 </Text>
               </View>
             </Pressable>
@@ -223,10 +246,38 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     ...shadow.card,
   },
-  courseBanner: { height: 104, backgroundColor: colors.brand600 },
-  courseBody: { padding: spacing.lg, gap: 6 },
-  courseTitle: { fontSize: 20, fontWeight: "800", letterSpacing: -0.3, color: colors.ink },
+  courseBanner: {
+    height: 132,
+    backgroundColor: colors.brand600,
+    justifyContent: "flex-end",
+    padding: spacing.lg,
+    overflow: "hidden",
+  },
+  // A watermark rather than an illustration: it gives the block something to
+  // be without pretending we have artwork we do not have.
+  // Bled off ONE edge, not cropped by a corner: a shape leaving the frame
+  // reads as deliberate where a shape clipped twice reads as a bug.
+  courseGlyph: { position: "absolute", right: -26, bottom: -30 },
+  coursePill: {
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(255,255,255,0.22)",
+    borderRadius: radii.pill,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 5,
+  },
+  coursePillText: { fontSize: 13, fontWeight: "700", color: colors.white },
+  courseBody: { padding: spacing.lg, gap: 8 },
+  courseTitle: { fontSize: 22, fontWeight: "800", letterSpacing: -0.4, color: colors.ink },
   courseMeta: { fontSize: 14, color: colors.muted },
+  progressTrack: {
+    height: 8,
+    borderRadius: radii.pill,
+    backgroundColor: colors.panel,
+    overflow: "hidden",
+    marginTop: 6,
+  },
+  progressFill: { height: "100%", borderRadius: radii.pill, backgroundColor: colors.brand600 },
+  progressLabel: { fontSize: 13, fontWeight: "600", color: colors.faint },
   columnWrap: { gap: spacing.md },
   gridItem: { flex: 1 },
 });

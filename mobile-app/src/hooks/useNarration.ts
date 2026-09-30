@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useFocusEffect } from "expo-router";
 import * as Speech from "expo-speech";
 
 type SpeakOptions = {
@@ -49,6 +50,23 @@ export function useNarration() {
     speakingTextRef.current = null;
     setSpeakingText(null);
   }, [clearFallbackTimeout]);
+
+  // Leaving a screen silences it. A screen navigated away from stays mounted
+  // in the router stack, so without this its narration carried on over the
+  // screen that replaced it -- and on the way back the two overlapped. Unmount
+  // alone is not enough: expo-speech is global and `speak` only cancels the
+  // PREVIOUS utterance, never a later one.
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        clearFallbackTimeout();
+        Speech.stop();
+        speakingTextRef.current = null;
+        setSpeakingText(null);
+      },
+      [clearFallbackTimeout]
+    )
+  );
 
   const speak = useCallback(
     (text: string, options?: SpeakOptions) => {
