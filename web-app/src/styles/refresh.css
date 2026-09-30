@@ -27,7 +27,11 @@
   max-width: none !important;
   display: flex !important;
   flex-direction: row !important;
-  align-items: flex-start;
+  /* Stretch, not flex-start: the two columns are halves of one job, and a
+     short bank beside a tall form read as one finished panel and one that had
+     been cut off. The bank's list takes up the slack rather than the card
+     ending early. */
+  align-items: stretch;
   gap: 2rem;
   /* pipeline.css forced `overflow-y: auto !important` on this whole panel,
      which is where the unwanted scrollbar came from. The panel is not the
@@ -59,10 +63,23 @@
   background: var(--mv-panel);
 }
 
-/* The bank is the long half; it scrolls inside its own card rather than
-   stretching the column and dragging the form down with it. */
+/* The bank is the long half, so it is the part that scrolls -- but it scrolls
+   to FILL its column rather than to a fixed height. A 46vh cap made the card
+   end wherever that landed, which is what left it shorter than the form
+   beside it. */
+.qt-col--bank {
+  display: flex;
+  flex-direction: column;
+}
+.qt-col--bank .saved-question-sidebar {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
 .qt-col--bank .saved-question-list {
-  max-height: 46vh;
+  flex: 1;
+  min-height: 12rem;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 0.35rem;
