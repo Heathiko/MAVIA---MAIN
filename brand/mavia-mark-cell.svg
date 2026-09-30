@@ -1,42 +1,36 @@
 <!--
   MAVIA mark — the braille cell that draws its own letter.
 
-  From the sketch. A braille cell is six positions, two columns by three rows,
-  and M is dots 1, 3 and 4:
+  Braille M is dots 1, 3 and 4. The V runs between the two raised dots at the
+  top, so the left column reads as the letter's stem and the V as its middle:
+  M to a sighted eye, a correct braille M under a finger, and no shape added
+  that the cell did not already have a position for.
 
-      ● 1    ● 4
-      ○ 2    ○ 5
-      ● 3    ○ 6
+  Drawn loose on purpose. The first version of this was tight and awkward for
+  three reasons, all fixed here:
 
-  The V runs between the two raised dots at the top, and that is what makes
-  the figure work: the left column becomes the letter's stem, the V becomes
-  its middle, and the whole thing reads as M to a sighted eye while staying a
-  correct braille M to a reader's finger. Neither reading is bolted onto the
-  other -- the V is drawn between dots that were already there.
-
-  The three unraised positions are kept as open rings so the cell is legible
-  AS a cell. On paper they would be blank; here they are what tells you this
-  is braille rather than three dots and a tick.
+    - The V had to squeeze past the open rings at positions 2 and 5. Those
+      rings are gone, so the V drops into empty space instead of threading a
+      gap. The 2-by-3 footprint still reads as a cell from the three dots.
+    - Everything sat in a small cluster inside a large disc. The cell is wider
+      and taller now (184 apart, not 160) and the dots are bigger, so the mark
+      fills the circle rather than floating in the middle of it.
+    - The stroke was thinner than the dots were wide, which made the V look
+      like a different object that had wandered in. At 36 against a 50 radius
+      it now reads as the same hand.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="MAVIA">
   <title>MAVIA</title>
   <circle cx="256" cy="256" r="256" fill="#1D5FD6"/>
 
-  <!-- the unraised positions: 2, 5, 6 -->
-  <g fill="none" stroke="#FFFFFF" stroke-width="13" opacity="0.5">
-    <circle cx="176" cy="256" r="36"/>
-    <circle cx="336" cy="256" r="36"/>
-    <circle cx="336" cy="360" r="36"/>
-  </g>
-
-  <!-- the V, drawn behind the dots so they stay whole circles -->
-  <path d="M176 152 L256 292 L336 152" fill="none" stroke="#FFFFFF" stroke-width="30"
+  <!-- The V, behind the dots so they stay whole circles. -->
+  <path d="M164 146 L256 302 L348 146" fill="none" stroke="#FFFFFF" stroke-width="36"
         stroke-linecap="round" stroke-linejoin="round"/>
 
-  <!-- the raised dots: 1, 4, 3 -->
+  <!-- Dots 1, 4 and 3. -->
   <g fill="#FFFFFF">
-    <circle cx="176" cy="152" r="42"/>
-    <circle cx="336" cy="152" r="42"/>
-    <circle cx="176" cy="360" r="42"/>
+    <circle cx="164" cy="146" r="50"/>
+    <circle cx="348" cy="146" r="50"/>
+    <circle cx="164" cy="366" r="50"/>
   </g>
 </svg>
