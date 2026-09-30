@@ -848,6 +848,15 @@ media without Range support, so audio cannot be seeked (pre-existing).
 **Decisions I made:** see the ledger rulings in the final report — notably Kahn ties by PDF order (build-on-latest measured worse), and meaning clue kept despite being at chance on direction.
 **Not done / watch out:** topic 357's key encoded from the user's AI recommendation and measured (8 → 20 of 20 after amendment 2 — the chain as pending suggestions; 0 forbidden); calibration now uses 62/79/152/340/357. 340 shows 62 pending suggestions — a lot for one screen. First v5 build accepted forbidden links (overviews read backwards); spec §14 records the fix. A `git stash pop` mistake briefly applied the user's `stash@{0}` (LATEST-with-bugs) here; the four touched files were restored to HEAD and the stash is intact.
 
+### 2026-09-30 — Claude Code (Opus 5.5) — Course-level learning path (cross-topic links)
+
+**Branch / commits:** learning-path-graph-screen, c32ed57 (spec), f9be5b7 (plan), 1fd4789..HEAD. Not pushed.
+**Tests:** backend full suite 1277/1277 OK; web-app vitest 22/22, build OK.
+**Changed:** `CourseConceptLink` model (migration 0009); `course_criteria.py` (outline order as structure, stricter accept bar); `course_links.py` (refresh, roll-up, approve/reject/undo); three endpoints under `/api/learning-path/courses/<id>/`; `course_prerequisites` per published step; course links refreshed on topic publish (failure never breaks a publish); Course path page (`/courses/:courseId/path`) + button on the course page; `export_course_pairs` + `course_gold_report`; hand-off note for the adaptive engine.
+**Live database:** untouched (read-only snapshot of 340/357 only). Migration 0009 not applied to the live DB — run `python manage.py migrate` before opening the new page.
+**Decisions I made:** course refresh on publish runs in a savepoint (PostgreSQL safety); skipped the live browser check (would need a login token / test account in the live DB, and opening the page writes derived links) — the user should look at the page.
+**Not done / watch out:** evaluation (plan Task 13) waits for 341 and 345 to be uploaded and grouped. `adaptive/` is the groupmate's: nothing there uses `course_prerequisites` yet.
+
 ---
 
 ## Open threads

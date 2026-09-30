@@ -383,3 +383,23 @@ class CourseRefreshOnPublishTests(PublishingFixture):
 
         self.assertIsNone(summary["course_links"])
         self.assertEqual(summary["steps"], 4)
+
+    def test_the_course_refresh_runs_in_its_own_savepoint(self):
+        """On PostgreSQL a failed statement aborts the whole transaction; a
+        savepoint lets a caller's transaction survive a failed course refresh
+        (for example before the course-link table exists). SQLite cannot show
+        the abort itself, so this checks the savepoint."""
+        from django.db import connection, transaction
+
+        seen = {}
+
+        def record_savepoints(course):
+            seen["savepoints"] = len(connection.savepoint_ids)
+            return {"accepted": 0, "pending": 0, "teacher_decided": 0}
+
+        with transaction.atomic():
+            outer = len(connection.savepoint_ids)
+            with self._derive(), patch("learning_path.services.course_links.refresh_course_links", side_effect=record_savepoints):
+                publishing.publish_learning_path(self.topic)
+
+        self.assertGreater(seen["savepoints"], outer)

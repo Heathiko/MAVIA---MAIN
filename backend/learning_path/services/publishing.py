@@ -293,7 +293,10 @@ def publish_learning_path(node, runtime_instance=None):
     from . import course_links
 
     try:
-        course_counts = course_links.refresh_course_links(node.course)
+        # A savepoint: on PostgreSQL a failed statement would otherwise abort a
+        # caller's whole transaction, even though the error is caught here.
+        with transaction.atomic():
+            course_counts = course_links.refresh_course_links(node.course)
     except Exception as exc:  # noqa: BLE001 -- logged; the topic path is already saved
         logger.warning("[Learning path topic %s] course links not refreshed: %s", node.id, exc)
         course_counts = None
