@@ -221,3 +221,51 @@ def clue_accuracy(data, concepts, calibration):
             if vote:
                 counts[clue]["right" if vote == truth else "wrong"] += 1
     return counts
+
+
+def load_course_gold(first_topic, second_topic):
+    """``(map data, [concepts of first, concepts of second])`` from a frozen course fixture."""
+    data = json.loads(
+        (FIXTURES / f"gold_course_{first_topic}_{second_topic}.json").read_text(encoding="utf-8")
+    )
+    topics, next_id = [], 1
+    for topic_id in data["topics"]:
+        concepts = []
+        for index, row in enumerate(data["concepts"][str(topic_id)]):
+            members = tuple(SimpleNamespace(**member) for member in row["members"])
+            text = "\n".join(member.content for member in members)
+            concepts.append(SimpleNamespace(
+                id=next_id, key=row["key"], title=row["title"], content=text, member_text=text,
+                section_title=row["section_title"], kind=row.get("kind", "text"), order=index, members=members,
+            ))
+            next_id += 1
+        topics.append(concepts)
+    return data, topics
+
+
+def course_gold_report(data, topic_concepts, decisions):
+    """How cross-topic decisions measure up against a course key (course spec section 7)."""
+    key = {concept.id: concept.key for topic in topic_concepts for concept in topic}
+    required = {tuple(edge) for edge in data["required"]}
+
+    def keyed(row):
+        return key.get(row["prerequisite"].id), key.get(row["dependent"].id)
+
+    accepted = [keyed(row) for row in decisions if row["verdict"] == criteria.ACCEPTED]
+    pending = [keyed(row) for row in decisions if row["verdict"] == criteria.PENDING]
+    flags = {"right": 0, "wrong": 0}
+    for row in decisions:
+        if (row.get("evidence") or {}).get("contradicts_outline"):
+            flags["right" if keyed(row) in required else "wrong"] += 1
+    reachable = required & (set(accepted) | set(pending))
+    return {
+        "accepted": [list(edge) for edge in accepted],
+        "pending": [list(edge) for edge in pending],
+        "accepted_precision": (
+            sum(1 for edge in accepted if edge in required) / len(accepted) if accepted else None
+        ),
+        "reachable_count": len(reachable),
+        "required_count": len(required),
+        "unrelated_accepted": len(accepted) if data.get("unrelated") else 0,
+        "outline_flags": flags,
+    }
