@@ -5,44 +5,68 @@
    ========================================================================== */
 
 :root {
-  /* Brand — deep navy through bright blue */
-  --mv-brand-950: #071b33;
-  --mv-brand-900: #0b2a4a;
-  --mv-brand-800: #123a63;
-  --mv-brand-700: #17497c;
-  --mv-brand-600: #1e5fa8;
-  --mv-brand-500: #2f7dd1;
-  --mv-brand-400: #5fa0e0;
-  --mv-brand-300: #93c1ec;
-  --mv-brand-200: #c4def6;
-  --mv-brand-100: #dfecfa;
-  --mv-brand-50: #eef5fc;
+  /* Blue is the only saturated colour in the system, and it is used as a
+     BLOCK rather than a tint. A teacher who is hard of seeing navigates by
+     "the blue region" and "the dark region" long before they can read a
+     label, so a screen is built from a few large areas of flat colour with
+     generous space between them, not from many small tinted accents.
 
-  --mv-ink: #12212f;
-  --mv-muted: #5c6b7c;
-  --mv-faint: #8a97a5;
+     Two fills carry text, and both are checked:
+       600 with white  — 5.7:1
+       100 with ink    — 14.7:1
+     Nothing else in the ramp is a background for text. */
+  --mv-brand-950: #0a1b3d;
+  --mv-brand-900: #10275a;
+  --mv-brand-800: #163578;
+  --mv-brand-700: #1a47a8;
+  --mv-brand-600: #1d5fd6;
+  --mv-brand-500: #3c81f0;
+  --mv-brand-400: #6ba3f6;
+  --mv-brand-300: #9cc4fa;
+  --mv-brand-200: #c3dcfc;
+  --mv-brand-100: #dce8fd;
+  --mv-brand-50: #eff4fe;
+
+  /* Near-black, not navy. The ink has to be colourless for a blue block to
+     read as a region rather than as more of the same. */
+  --mv-ink: #14161a;
+  --mv-muted: #5a6472;
+  --mv-faint: #8c95a3;
+
   --mv-surface: #ffffff;
-  --mv-panel: #f4f7fb;
-  --mv-page: #ffffff;
-  --mv-border: #dde5ee;
-  --mv-border-strong: #c6d2e0;
+  --mv-panel: #eef1f5;
+  /* The page itself is tinted so that white cards float on it. A white page
+     with white cards needs borders to separate them; a tinted one does not. */
+  --mv-page: #eef1f5;
+  --mv-dark: #14181f;
+  --mv-dark-soft: #1e242e;
+  --mv-border: #e2e7ee;
+  --mv-border-strong: #cbd3de;
 
-  --mv-success: #1f7a55;
-  --mv-warning: #9a5b00;
-  --mv-danger: #c0392b;
+  --mv-success: #157a4f;
+  --mv-success-bg: #d8f0e4;
+  --mv-warning: #8a5200;
+  --mv-warning-bg: #fbead2;
+  --mv-danger: #b5271b;
+  --mv-danger-bg: #fbe3e0;
 
-  --mv-radius-sm: 10px;
-  --mv-radius: 16px;
-  --mv-radius-lg: 26px;
+  /* Large radii and near-invisible shadows: the separation between areas is
+     done by colour and space, so a card does not also need a hard edge. */
+  --mv-radius-sm: 14px;
+  --mv-radius: 22px;
+  --mv-radius-lg: 32px;
   --mv-radius-pill: 999px;
 
-  --mv-shadow-sm: 0 4px 14px rgba(11, 42, 74, 0.06);
-  --mv-shadow: 0 18px 45px rgba(11, 42, 74, 0.12);
-  --mv-shadow-lg: 0 30px 70px rgba(11, 42, 74, 0.18);
+  --mv-shadow-sm: 0 2px 10px rgba(20, 24, 31, 0.04);
+  --mv-shadow: 0 10px 34px rgba(20, 24, 31, 0.07);
+  --mv-shadow-lg: 0 24px 60px rgba(20, 24, 31, 0.1);
 
-  --mv-font: "Source Sans 3", Inter, ui-sans-serif, system-ui, -apple-system,
-    "Segoe UI", sans-serif;
-  --mv-font-display: "Fraunces", "Source Sans 3", Georgia, serif;
+  --mv-font: "Plus Jakarta Sans", Inter, ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", sans-serif;
+  /* One family throughout. A display serif beside a grotesk reads as two
+     designs; weight and size carry the hierarchy instead. */
+  --mv-font-display: "Plus Jakarta Sans", Inter, ui-sans-serif, system-ui,
+    sans-serif;
 }
 
 .mv-root {
@@ -61,9 +85,9 @@
 /* ---------- Typography helpers ---------- */
 .mv-display {
   font-family: var(--mv-font-display);
-  font-weight: 600;
-  line-height: 1.08;
-  letter-spacing: -0.01em;
+  font-weight: 800;
+  line-height: 1.04;
+  letter-spacing: -0.035em;
 }
 .mv-eyebrow {
   font-size: 0.72rem;
@@ -94,7 +118,7 @@
   line-height: 1;
   transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease,
     filter 0.12s ease;
-  box-shadow: var(--mv-shadow-sm);
+  box-shadow: none;
 }
 .mv-btn:hover {
   filter: brightness(1.05);
@@ -207,13 +231,9 @@
   margin: 1.5rem auto 0;
   padding: clamp(2.5rem, 6vw, 5rem);
   border-radius: var(--mv-radius-lg);
-  background: radial-gradient(
-      120% 120% at 15% 0%,
-      var(--mv-brand-200) 0%,
-      var(--mv-brand-100) 38%,
-      #f3f7fc 78%
-    );
+  background: var(--mv-surface);
   overflow: hidden;
+  box-shadow: var(--mv-shadow-sm);
 }
 .mv-hero__grid {
   display: grid;
@@ -252,11 +272,7 @@
   aspect-ratio: 1;
   width: min(320px, 70%);
   border-radius: 50%;
-  background: linear-gradient(
-    160deg,
-    var(--mv-brand-500),
-    var(--mv-brand-800)
-  );
+  background: var(--mv-brand-600);
   display: grid;
   place-items: center;
   color: #fff;
@@ -320,12 +336,7 @@
   position: relative;
   padding: clamp(2.5rem, 5vw, 4rem);
   color: #fff;
-  background: linear-gradient(
-    155deg,
-    var(--mv-brand-950) 0%,
-    var(--mv-brand-700) 60%,
-    var(--mv-brand-600) 100%
-  );
+  background: var(--mv-dark);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -369,7 +380,7 @@
   background: var(--mv-page);
 }
 .mv-auth__card {
-  width: min(420px, 100%);
+  width: min(480px, 100%);
 }
 .mv-auth__card h1 {
   font-size: 1.65rem;
@@ -494,14 +505,10 @@
 .mv-side {
   position: sticky;
   top: 1.25rem;
-  background: linear-gradient(
-    180deg,
-    var(--mv-brand-950),
-    var(--mv-brand-800)
-  );
+  background: var(--mv-dark);
   color: #fff;
-  border-radius: var(--mv-radius);
-  padding: 1.5rem 1.1rem;
+  border-radius: var(--mv-radius-lg);
+  padding: 1.75rem 1.25rem;
   min-height: 70vh;
   display: flex;
   flex-direction: column;
@@ -570,9 +577,9 @@
 
 .mv-card {
   background: var(--mv-surface);
-  border: 1px solid var(--mv-border);
+  border: 1px solid transparent;
   border-radius: var(--mv-radius);
-  padding: 1.4rem;
+  padding: 1.6rem;
   box-shadow: var(--mv-shadow-sm);
 }
 .mv-card__title {
@@ -617,10 +624,19 @@
 }
 .mv-stat {
   background: var(--mv-surface);
-  border: 1px solid var(--mv-border);
-  border-radius: var(--mv-radius-sm);
-  padding: 1.1rem 1.2rem;
+  border: 1px solid transparent;
+  border-radius: var(--mv-radius);
+  padding: 1.4rem 1.5rem;
   box-shadow: var(--mv-shadow-sm);
+}
+/* The number is the point of a stat, so it is the size of one. */
+.mv-stat strong,
+.mv-stat b {
+  display: block;
+  font-size: clamp(2rem, 4vw, 2.75rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
 }
 .mv-stat__value {
   font-size: 1.7rem;

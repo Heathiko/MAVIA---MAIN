@@ -14,7 +14,7 @@ export default function Card({ children, style, tint }: Props) {
     <View
       style={[
         styles.card,
-        tint && { backgroundColor: colors.brand50, borderColor: colors.brand100 },
+        tint && { backgroundColor: colors.brand50 },
         style,
       ]}
     >
@@ -27,9 +27,7 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: colors.surface,
     borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.lg,
+    padding: spacing.lg + 4,
     width: "100%",
     ...shadow.card,
   },

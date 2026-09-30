@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { FlatList, StyleSheet, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
@@ -9,6 +9,9 @@ import GradientTile from "@/components/GradientTile";
 import ListRow from "@/components/ListRow";
 import EmptyState from "@/components/EmptyState";
 import { Course, Lesson, fetchCourse, fetchLessons } from "@/data/library";
+import { useNarration } from "@/hooks/useNarration";
+import { useListPicker } from "@/nav/useListPicker";
+import { useGuideBusy } from "@/guide/GuideActivity";
 import { colors, gradients, radii, shadow, spacing } from "@/theme";
 
 export default function CourseDetailScreen() {
@@ -38,9 +41,25 @@ export default function CourseDetailScreen() {
   const title = course?.title ?? "Course";
   const subtitle = course?.subtitle ?? "";
 
-  function openLesson(lesson: Lesson) {
-    router.push(`/home/${courseId}/${lesson.id}`);
-  }
+  const openLesson = useCallback(
+    (lesson: Lesson) => {
+      router.push(`/home/${courseId}/${lesson.id}`);
+    },
+    [router, courseId]
+  );
+
+  // The same four-at-a-time reading as the course list, so the two steps of
+  // "which course, then which lesson" feel like one flow with one set of keys.
+  const narration = useNarration();
+  const guideBusy = useGuideBusy();
+  useListPicker<Lesson>({
+    items: lessons,
+    labelOf: (lesson) => lesson.title,
+    question: `Which lesson in ${title}?`,
+    narration,
+    onPick: openLesson,
+    enabled: !loading && lessons.length > 0 && !guideBusy,
+  });
 
   return (
     <View style={styles.screen}>
@@ -130,6 +149,7 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: radii.lg,
     borderBottomRightRadius: radii.lg,
   },
+  heroFlat: { backgroundColor: colors.brand600 },
   heroTopRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -137,11 +157,12 @@ const styles = StyleSheet.create({
   },
   heroTitle: {
     marginTop: spacing.lg,
-    fontSize: 26,
+    fontSize: 32,
     fontWeight: "800",
+    letterSpacing: -0.6,
     color: colors.white,
   },
-  heroSubtitle: { marginTop: 4, fontSize: 14, color: "rgba(255,255,255,0.78)" },
+  heroSubtitle: { marginTop: 6, fontSize: 15, color: "rgba(255,255,255,0.82)" },
   heroPlay: {
     position: "absolute",
     right: spacing.lg,

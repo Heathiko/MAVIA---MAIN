@@ -107,10 +107,6 @@ export function register(
   });
 }
 
-export function verifyEmail(token: string): Promise<{ message: string }> {
-  return request(`/auth/verify-email/${encodeURIComponent(token)}/`);
-}
-
 export function resendVerification(email: string): Promise<{ message: string }> {
   return request("/auth/resend-verification/", {
     method: "POST",

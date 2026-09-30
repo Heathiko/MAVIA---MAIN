@@ -31,10 +31,10 @@ export default function EmptyState({ icon, title, body }: Props) {
 const styles = StyleSheet.create({
   wrap: {
     alignItems: "center",
-    paddingVertical: spacing.xl,
+    paddingVertical: spacing.xl + spacing.md,
     paddingHorizontal: spacing.lg,
-    gap: 6,
+    gap: 10,
   },
-  title: { fontSize: 14, fontWeight: "700", color: colors.muted, textAlign: "center" },
-  body: { fontSize: 13, color: colors.faint, textAlign: "center" },
+  title: { fontSize: 19, fontWeight: "700", color: colors.ink, textAlign: "center" },
+  body: { fontSize: 15, lineHeight: 22, color: colors.muted, textAlign: "center" },
 });

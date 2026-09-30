@@ -6,7 +6,6 @@
 import {
   ApiCourse,
   ApiLesson,
-  fetchLessonPackage,
   fetchMyCourseLessons,
   fetchMyCourses,
 } from "@/api/client";
@@ -69,18 +68,6 @@ export async function fetchLessons(courseId: string): Promise<Lesson[]> {
     return rows.map((lesson) => toLesson(courseId, lesson));
   } catch {
     return [];
-  }
-}
-
-export async function fetchLesson(
-  courseId: string,
-  lessonId: string
-): Promise<Lesson | null> {
-  try {
-    const pkg = await fetchLessonPackage(lessonId);
-    return toLesson(courseId, pkg);
-  } catch {
-    return null;
   }
 }
 

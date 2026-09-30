@@ -55,13 +55,11 @@ export default function Button({
 
 const styles = StyleSheet.create({
   base: {
-    minHeight: 50,
+    minHeight: 56,
     borderRadius: radii.pill,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: spacing.lg,
-    borderWidth: 1,
-    borderColor: "transparent",
+    paddingHorizontal: spacing.xl,
   },
   pressed: {
     opacity: 0.85,

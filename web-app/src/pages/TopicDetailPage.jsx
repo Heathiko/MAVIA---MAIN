@@ -331,9 +331,6 @@ function ObjectPairsPanel({
         <strong>Object pairs</strong>
       </div>
 
-      <p className="match-suggestion-intro">
-        Review one pair at a time. Accept if both teach the same concept; decline if they do not.
-      </p>
       {!suggestions.length ? (
         <div className="review-queue-empty">No learning-object pairs need review.</div>
       ) : (
@@ -363,12 +360,6 @@ function ObjectPairsPanel({
                     <strong>{Math.round(suggestion.similarity_score * 100)}%</strong>
                     <em>{suggestion.confidence} confidence</em>
                   </div>
-                  {(suggestion.source_extra_ids?.length > 0 || suggestion.candidate_extra_ids?.length > 0) && (
-                    <p className="muted-text">
-                      Accepting puts every object on both sides into one concept. Each keeps its own
-                      text, and you can move any of them back out afterwards.
-                    </p>
-                  )}
                   <div className="match-suggestion-pair">
                     <div className="match-source-card">
                       <div className="match-source-label">
@@ -832,11 +823,6 @@ function VersionReviewPanel({
         <div>
           <span className="connection-eyebrow">Review queue</span>
           <h3 id="version-review-title">Review content versions</h3>
-          <p>
-            Gemma automatically assigns every existing PDF variant to Normal, Simplified, Elaborated,
-            or Extra. You can change a source's role, then generate missing versions individually or all
-            at once.
-          </p>
         </div>
         <div className="version-review-heading-actions">
           {staleVersionCount > 0 && (
@@ -1226,7 +1212,6 @@ function QuestionGenerationTool({
         <div>
           <span className="connection-eyebrow">AI question generator</span>
           <h4>Learning objects</h4>
-          <p>Generate questions from one concept's Normal version, or generate one question bank for every concept.</p>
         </div>
         <button type="button" className="btn btn-primary" disabled={Boolean(generatingKey) || !learningObjects.some((item) => item.canGenerate)} onClick={handleGenerateAll}>
           {generatingKey === "all" ? "Generating all…" : "Generate all questions"}
@@ -1430,6 +1415,11 @@ function ManualQuestionPanel({
 
   return (
     <aside className="match-suggestion-panel panel-aside question-tools-panel" aria-labelledby="manual-question-panel-title">
+      {/* Two explicit columns rather than grid-placing the panel's children by
+          selector: the bank is one job and adding a question is the other, and
+          wrapping them says so in the markup instead of depending on which
+          rule happens to win. */}
+      <div className="qt-col qt-col--bank">
       <section className="saved-question-sidebar" aria-labelledby="saved-question-title">
         <div className="match-suggestion-heading">
           <div>
@@ -1438,7 +1428,6 @@ function ManualQuestionPanel({
           </div>
           <span>{pdfQuestions.length}</span>
         </div>
-        <p className="question-source-prompt">Extracted from uploaded question papers. Generated questions appear under their concept.</p>
         {!pdfQuestions.length ? <div className="review-queue-empty">No questions were extracted from an uploaded PDF.</div> : (
           <div className="saved-question-list is-sidebar">
             {pdfQuestions.map((question) => {
@@ -1472,8 +1461,9 @@ function ManualQuestionPanel({
           </div>
         )}
       </section>
+      </div>
 
-      <div className="question-source-divider" role="separator"><span>ADD QUESTIONS</span></div>
+      <div className="qt-col qt-col--tools">
       <div className="match-suggestion-heading">
         <div>
           <span className="connection-eyebrow">Question tools</span>
@@ -1609,6 +1599,7 @@ function ManualQuestionPanel({
           </div>
         </div>
       )}
+      </div>
     </aside>
   );
 }
@@ -1810,10 +1801,6 @@ ${question.prompt}`,
         <div>
           <span className="connection-eyebrow">Final review</span>
           <h3 id="publish-panel-title">Content and questions</h3>
-          <p>
-            Check every concept's three versions and the questions generated from it.
-            The learning path is reviewed next, and publishing happens after that.
-          </p>
         </div>
         <span className="connection-source-count">
           {groups.length} concept{groups.length === 1 ? "" : "s"}
@@ -2874,13 +2861,12 @@ function LearningObjectConnections({
   return (
     <div className={`connection-review-layout ${["publish", "path"].includes(reviewStep) ? "" : "has-recommendations"}`.trim()}>
       {reviewStep === "objects" && (
-      <section
-        className="connection-review-panel"
-        aria-labelledby="connection-review-title"
-        ref={reviewPanelRef}
-        tabIndex={-1}
-      >
-      <div className="connection-review-heading">
+      <>
+      {/* The heading sits on the page, not inside the scrolling panel below
+          it: it names the whole section, so it should stay put while the list
+          it names is scrolled, and it should not be boxed in with the list's
+          own content. */}
+      <div className="connection-review-heading is-outside">
         <div>
           <span className="connection-eyebrow">Teacher review</span>
           <h3 id="connection-review-title">Related Concepts</h3>
@@ -2892,17 +2878,18 @@ function LearningObjectConnections({
               Grouping changed, so this topic was unpublished. Republish when you are ready.
             </p>
           )}
-          <p>
-            Each concept shows one block per PDF: everything that file teaches about it, in the
-            file’s own order. If an object is in the wrong concept, give it a concept of its own
-            or move it into another one. The arrows only change the order inside that file’s
-            block — they never move an object between concepts.
-          </p>
         </div>
         <span className="connection-source-count">
           {confirmedSourceCount} confirmed source{confirmedSourceCount === 1 ? "" : "s"}
         </span>
       </div>
+
+      <section
+        className="connection-review-panel"
+        aria-labelledby="connection-review-title"
+        ref={reviewPanelRef}
+        tabIndex={-1}
+      >
 
       {!loading && (
         <div className={`regrouping-notice ${regroupChangedCount ? "has-changes" : ""}`.trim()}>
@@ -3255,6 +3242,7 @@ function LearningObjectConnections({
         </aside>
       )}
       </section>
+      </>
       )}
       {busyAction === "regroup-preview" && (
         <RegroupingBusy

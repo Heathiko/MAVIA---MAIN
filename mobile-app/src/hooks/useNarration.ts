@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useFocusEffect } from "expo-router";
+
+import { registerSilencer } from "./audioBus";
 import * as Speech from "expo-speech";
 
 type SpeakOptions = {
@@ -50,6 +53,33 @@ export function useNarration() {
     setSpeakingText(null);
   }, [clearFallbackTimeout]);
 
+  // Anything that ends a screen can silence this instance without holding a
+  // reference to it -- the back key lives in the layout and cannot otherwise
+  // reach a screen's narrator.
+  useEffect(() => registerSilencer(() => {
+    clearFallbackTimeout();
+    Speech.stop();
+    speakingTextRef.current = null;
+    setSpeakingText(null);
+  }), [clearFallbackTimeout]);
+
+  // Leaving a screen silences it. A screen navigated away from stays mounted
+  // in the router stack, so without this its narration carried on over the
+  // screen that replaced it -- and on the way back the two overlapped. Unmount
+  // alone is not enough: expo-speech is global and `speak` only cancels the
+  // PREVIOUS utterance, never a later one.
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        clearFallbackTimeout();
+        Speech.stop();
+        speakingTextRef.current = null;
+        setSpeakingText(null);
+      },
+      [clearFallbackTimeout]
+    )
+  );
+
   const speak = useCallback(
     (text: string, options?: SpeakOptions) => {
       if (!text) return;
@@ -89,5 +119,3 @@ export function useNarration() {
 
   return { speak, stop, isSpeaking: speakingText !== null, speakingText };
 }
-
-export type NarrationController = ReturnType<typeof useNarration>;

@@ -11,6 +11,8 @@ import QuestionCard, { SubmitResult } from "@/components/QuestionCard";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
 import { useNarration } from "@/hooks/useNarration";
 import { useVoiceCommands } from "@/voice/useVoiceCommands";
+import { useBrailleKeypad } from "@/input/useBrailleKeypad";
+import { useGuideBusy } from "@/guide/GuideActivity";
 import {
   ApiSubmitResult,
   Variant,
@@ -168,7 +170,18 @@ export default function LessonPlayerScreen() {
   // never the two at once. A version with no generated audio is read aloud by
   // the device and then hands on exactly as finished audio would, so a
   // missing mp3 stalls nobody.
+  // A lesson never plays underneath the guide. expo-speech has one voice and
+  // the audio player is a second sound source, so a practice drill speaking
+  // while a real lesson narrates leaves a learner listening to both at once --
+  // reported from a real run. The guide wins; the lesson picks up the moment
+  // it stops, because this effect re-runs when guideBusy clears.
+  const guideBusy = useGuideBusy();
   useEffect(() => {
+    if (guideBusy) {
+      stopNarration();
+      stopAudio();
+      return;
+    }
     if (phase !== "audio" || !track) return;
     const line = pendingAnnouncement.current;
     pendingAnnouncement.current = null;
@@ -204,7 +217,7 @@ export default function LessonPlayerScreen() {
       stopNarration();
       stopAudio();
     };
-  }, [phase, trackIndex, track?.audio_ready, track?.audio_url, track?.text, load, speak, stopNarration, stopAudio, topicReplay]);
+  }, [guideBusy, phase, trackIndex, track?.audio_ready, track?.audio_url, track?.text, load, speak, stopNarration, stopAudio, topicReplay]);
 
   // Belt and braces for the phases that have no audio effect of their own:
   // QuestionCard starts narrating from its own mount effect, which React runs
@@ -245,6 +258,24 @@ export default function LessonPlayerScreen() {
         if (phase === "questions") setQuestionRepeat((n) => n + 1);
         else if (phase === "audio" && canGrade) goToQuestions();
       },
+    },
+    { enabled: !loading && !error }
+  );
+
+  // The multiply key is "say that again" in physical form: the same thing the
+  // repeat-the-lesson / repeat-the-question commands do, for a learner who
+  // would rather press than speak -- or whose voice the recognizer is having a
+  // bad day with. Which of the two it means follows the phase, so one key does
+  // the right thing without the learner having to decide which.
+  // The answer keys are QuestionCard's, and back / guide are the layout's.
+  useBrailleKeypad(
+    (action) => {
+      if (action.kind !== "repeat") return;
+      if (phase === "questions") setQuestionRepeat((n) => n + 1);
+      else if (phase !== "done") {
+        setState((prev) => ({ ...prev, phase: "audio", trackIndex: prev.pathStep ? 0 : prev.trackIndex }));
+        setTopicReplay((n) => n + 1);
+      }
     },
     { enabled: !loading && !error }
   );
@@ -338,13 +369,13 @@ export default function LessonPlayerScreen() {
 
         {phase === "audio" && track && (
           <>
-            <View style={styles.artWrap}>
-              <GradientTile size={220} radius={radii.lg} icon="headset" />
-            </View>
-
             <Text style={styles.trackTitle} numberOfLines={2} accessibilityRole="header">
               {track.title}
             </Text>
+
+            <View style={styles.artWrap}>
+              <GradientTile size={248} radius={124} icon="headset" />
+            </View>
             {!inPathMode && (
               <Text style={styles.trackMeta}>
                 Track {trackIndex + 1} of {tracks.length}
@@ -494,7 +525,15 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     gap: spacing.sm,
   },
-  headerTitle: { flex: 1, textAlign: "center", fontSize: 15, fontWeight: "800", color: colors.ink },
+  headerTitle: {
+    flex: 1,
+    textAlign: "center",
+    fontSize: 13,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: colors.faint,
+  },
   body: { flexGrow: 1, paddingBottom: spacing.xl, gap: spacing.xs },
   notice: {
     flexDirection: "row",
@@ -507,49 +546,65 @@ const styles = StyleSheet.create({
     alignSelf: "center",
   },
   noticeReview: { backgroundColor: colors.brand100 },
-  noticeVariant: { backgroundColor: colors.brand50, borderWidth: 1, borderColor: colors.brand200 },
-  noticeText: { fontSize: 13, fontWeight: "700", color: colors.brand600 },
+  noticeVariant: { backgroundColor: colors.brand50 },
+  noticeText: { fontSize: 14, fontWeight: "700", color: colors.brand600 },
   conceptHeader: {
-    marginTop: spacing.lg,
+    marginTop: spacing.xl,
+    marginBottom: spacing.md,
     alignItems: "center",
-    gap: spacing.xs,
+    gap: spacing.md,
   },
-  conceptTitle: { fontSize: 18, fontWeight: "800", color: colors.ink, textAlign: "center" },
+  // The concept being taught is the subject of the screen, so it is the size
+  // of one -- not a caption above the controls.
+  conceptTitle: {
+    fontSize: 28,
+    fontWeight: "800",
+    letterSpacing: -0.5,
+    lineHeight: 34,
+    color: colors.ink,
+    textAlign: "center",
+  },
   thinkingTag: {
-    paddingVertical: 4,
-    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+    paddingHorizontal: spacing.md,
     borderRadius: radii.pill,
-    backgroundColor: colors.panel,
-    borderWidth: 1,
-    borderColor: colors.border,
+    backgroundColor: colors.brand50,
   },
   thinkingTagText: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: "800",
     letterSpacing: 0.5,
     textTransform: "uppercase",
     color: colors.muted,
   },
-  artWrap: { alignItems: "center", marginTop: spacing.lg },
-  trackTitle: { marginTop: spacing.lg, fontSize: 20, fontWeight: "800", color: colors.ink, textAlign: "center" },
+  artWrap: { alignItems: "center", marginTop: spacing.xl },
+  trackTitle: {
+    marginTop: spacing.xl,
+    fontSize: 27,
+    lineHeight: 33,
+    fontWeight: "800",
+    letterSpacing: -0.5,
+    color: colors.ink,
+    textAlign: "center",
+  },
   trackMeta: { marginTop: 4, fontSize: 12, color: colors.faint, textAlign: "center" },
   warn: { marginTop: spacing.sm, fontSize: 12, color: colors.warning, textAlign: "center" },
   progressTrack: {
-    marginTop: spacing.lg,
-    height: 6,
+    marginTop: spacing.xl,
+    height: 4,
     borderRadius: radii.pill,
     backgroundColor: colors.brand100,
     overflow: "hidden",
   },
   progressFill: { height: "100%", backgroundColor: colors.brand600 },
-  times: { flexDirection: "row", justifyContent: "space-between", marginTop: 6 },
-  timeText: { fontSize: 11, color: colors.faint, fontVariant: ["tabular-nums"] },
+  times: { flexDirection: "row", justifyContent: "space-between", marginTop: 10 },
+  timeText: { fontSize: 13, color: colors.faint, fontVariant: ["tabular-nums"] },
   transport: {
-    marginTop: spacing.lg,
+    marginTop: spacing.xl,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: spacing.sm,
+    gap: spacing.lg,
   },
   narration: {
     marginTop: spacing.lg,
@@ -566,7 +621,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     borderRadius: radii.sm,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: "transparent",
     backgroundColor: colors.surface,
   },
   playlistItemActive: { borderColor: colors.brand500, backgroundColor: colors.brand50 },

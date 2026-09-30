@@ -33,6 +33,34 @@ try {
   Keys = null;
 }
 
+// Listening is global to the app, but more than one screen wants keys at once:
+// the student layout binds the command keys (back, guide) while a question
+// binds the answer keys. Each hook used to call stopListening() on unmount,
+// which stopped listening for everyone -- so closing a question silently
+// killed the layout's keys too. Counting mounts fixes that: the native
+// listener starts on the first and stops only on the last.
+let listeners = 0;
+
+function acquire(keys: KeyEventModule) {
+  listeners += 1;
+  if (listeners > 1) return;
+  try {
+    keys.startListening();
+  } catch {
+    // No activity to attach to (app backgrounded): nothing to listen with.
+  }
+}
+
+function release(keys: KeyEventModule) {
+  listeners = Math.max(0, listeners - 1);
+  if (listeners > 0) return;
+  try {
+    keys.stopListening();
+  } catch {
+    // Already detached.
+  }
+}
+
 /** Returns whether keypad input is available in this build. */
 export function useBrailleKeypad(
   onAction: (action: KeypadAction) => void,
@@ -53,19 +81,11 @@ export function useBrailleKeypad(
       const action = keypadActionFor(event);
       if (action) onActionRef.current(action);
     });
-    try {
-      keys.startListening();
-    } catch {
-      // No activity to attach to (app backgrounded): nothing to listen with.
-    }
+    acquire(keys);
 
     return () => {
       subscription.remove();
-      try {
-        keys.stopListening();
-      } catch {
-        // Already detached.
-      }
+      release(keys);
     };
   }, [enabled]);
 

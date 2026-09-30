@@ -7,6 +7,8 @@ const NAV = [
   { to: "/admin/courses", label: "Courses", icon: "▦" },
   { to: "/admin/adaptive-weights", label: "Adaptive weights", icon: "⚖" },
   { to: "/admin/settings", label: "Settings", icon: "⚙" },
+  // Preview of the guardian view, which has no role or backend of its own yet.
+  { to: "/guardian", label: "Guardian view", icon: "☍" },
 ];
 
 const STATS = [
