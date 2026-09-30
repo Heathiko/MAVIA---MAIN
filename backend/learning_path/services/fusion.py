@@ -110,28 +110,6 @@ def confidence(votes, direction, clues=CLUES):
     return sum(1 for clue in voting if votes[clue] == direction) / len(voting)
 
 
-# v5's verdict, kept only until criteria.py moves to reference_verdict (plan Task 3).
-def family_direction(votes, family):
-    total = sum(votes[clue] for clue in family)
-    return (total > 0) - (total < 0)
-
-
-def verdict(votes, semantic=True):
-    content = family_direction(votes, CONTENT_CLUES)
-    structure = family_direction(votes, STRUCTURE_CLUES)
-    if not content:
-        if votes["order"] and votes["order"] == structure and not votes.get("parallel"):
-            return PENDING, structure
-        return PARALLEL, 0
-    if structure == -content:
-        return PENDING, structure
-    if votes.get("parallel"):
-        return PENDING, content
-    unanimous = all(votes[clue] == content for clue in CONTENT_CLUES)
-    if semantic and (structure == content or unanimous):
-        return ACCEPTED, content
-    return PENDING, content
-
 
 def _log_odds(agreement):
     if agreement <= 0.5:
