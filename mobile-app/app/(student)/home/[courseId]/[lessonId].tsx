@@ -369,13 +369,13 @@ export default function LessonPlayerScreen() {
 
         {phase === "audio" && track && (
           <>
-            <View style={styles.artWrap}>
-              <GradientTile size={220} radius={radii.lg} icon="headset" />
-            </View>
-
             <Text style={styles.trackTitle} numberOfLines={2} accessibilityRole="header">
               {track.title}
             </Text>
+
+            <View style={styles.artWrap}>
+              <GradientTile size={248} radius={124} icon="headset" />
+            </View>
             {!inPathMode && (
               <Text style={styles.trackMeta}>
                 Track {trackIndex + 1} of {tracks.length}
@@ -577,26 +577,34 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     color: colors.muted,
   },
-  artWrap: { alignItems: "center", marginTop: spacing.lg },
-  trackTitle: { marginTop: spacing.lg, fontSize: 20, fontWeight: "800", color: colors.ink, textAlign: "center" },
+  artWrap: { alignItems: "center", marginTop: spacing.xl },
+  trackTitle: {
+    marginTop: spacing.xl,
+    fontSize: 27,
+    lineHeight: 33,
+    fontWeight: "800",
+    letterSpacing: -0.5,
+    color: colors.ink,
+    textAlign: "center",
+  },
   trackMeta: { marginTop: 4, fontSize: 12, color: colors.faint, textAlign: "center" },
   warn: { marginTop: spacing.sm, fontSize: 12, color: colors.warning, textAlign: "center" },
   progressTrack: {
-    marginTop: spacing.lg,
-    height: 6,
+    marginTop: spacing.xl,
+    height: 4,
     borderRadius: radii.pill,
     backgroundColor: colors.brand100,
     overflow: "hidden",
   },
   progressFill: { height: "100%", backgroundColor: colors.brand600 },
-  times: { flexDirection: "row", justifyContent: "space-between", marginTop: 6 },
-  timeText: { fontSize: 11, color: colors.faint, fontVariant: ["tabular-nums"] },
+  times: { flexDirection: "row", justifyContent: "space-between", marginTop: 10 },
+  timeText: { fontSize: 13, color: colors.faint, fontVariant: ["tabular-nums"] },
   transport: {
-    marginTop: spacing.lg,
+    marginTop: spacing.xl,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: spacing.sm,
+    gap: spacing.lg,
   },
   narration: {
     marginTop: spacing.lg,
