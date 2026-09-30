@@ -41,10 +41,37 @@ All other topics are empty.
 
 ---
 
+## Known defects at the 2026-09-30 push (branch `learning-path-graph-screen`)
+
+Learning path formation, all measured (reports: `docs/learning-path-v5-evaluation-2026-09-30.md`,
+`docs/course-path-evaluation-2026-09-30.md`):
+
+1. **Course level: recall 2 of 16** key links on related topics. Same-subject topics look related
+   almost everywhere (existence problem); the name-and-terms rule suppresses false links and real
+   ones alike. Next: existence cutoff calibrated on 340↔341, direction from content clues, measured
+   only on unused pairs 341↔343, 341↔347, 347↔348.
+2. **Topic level: few accepted links without PDF structure** — text-only links stay pending, so the
+   adaptive engine cannot use them until a teacher approves.
+3. **Suggestion volume** — 62 pending on topic 340; many are not in the key.
+4. **357's process chain exists only as pending suggestions** (amendment 2); remediation needs
+   teacher approval first.
+5. **Meaning clue at chance on direction within a topic** (27/25); do not present it as a
+   direction signal in the manuscript.
+6. **Gold 62 reach 5 of 10 (v4: 9)** — headings alone no longer accept.
+7. **Course path page re-derives the whole course on every open** — slow and noisy at ~30 topics.
+8. **Evaluation limits** — AI-drafted keys, dev/test share subjects, one course.
+9. **Upstream inputs** — stale section headings, sentence-fragment titles, split concepts
+   (extraction/grouping); topic 341 names two properties it never teaches.
+10. **Deferred review minors** — listed in `docs/AGENT_LOG.md` / the review notes (undo validation,
+    stale reason text, layout overlap, reverse-direction rows, NaN cutoff, retry on model load).
+
+Not done: the adaptive engine (groupmate) does not use `course_prerequisites` yet
+(`docs/handoff-course-prerequisites.md`); the manuscript still describes v3/v4.
+
 ## 1. Learning path formation (user's pipeline)
 
 ### 1.1 Automatic rules find few real prerequisites — highest impact
-> **2026-09-30, v5:** v4's R1/R2/R3 are gone. On the test topic 340, required links reached 11 → 18 of 23, 0 forbidden, accepted precision 0.92. Topic 357 (AI-drafted key): 8 → 14 of 20 required links, τ 1.00, 0 forbidden, every accepted link correct. Gold 62 lost reach (9 → 5): heading containment no longer accepts on its own.
+> **2026-09-30, v5:** v4's R1/R2/R3 are gone. On the test topic 340, required links reached 11 → 18 of 23, 0 forbidden, accepted precision 0.92. Topic 357 (AI-drafted key): 8 → 20 of 20 required links, τ 1.00, 0 forbidden, every accepted link correct — but the process chain is reached only as pending suggestions (amendment 2); remediation needs a teacher to approve them. Gold 62 lost reach (9 → 5): heading containment no longer accepts on its own.
 
 Only R2 (section containment) fired on topics 340/357; **R1 never fired**.
 - **R1 is blind to the lessons' definition format.** PDFs define terms as a bold
@@ -90,7 +117,9 @@ matching as R1–R3, no model). Simulated read-only: topic 340 particle figure
 moves from step 2 to after Gas; topic 357 flower-parts figure moves after
 Petals and Sepals; nothing else moved. Lives in `criteria.py` (user's code).
 
-### 1.5 Course-level learning path — not started (part of the user's 50% requirement)
+### 1.5 Course-level learning path — implemented and measured 2026-09-30 (`docs/course-path-evaluation-2026-09-30.md`): unrelated topics 0 links, related-topic recall 2/16 — next: existence vs direction redesign, measured on unused pairs 341↔343, 341↔347, 347↔348
+> Spec `docs/superpowers/specs/2026-09-30-course-learning-path-design.md`, plan `docs/superpowers/plans/2026-09-30-course-learning-path.md` (Task 13 blocked on uploads), hand-off `docs/handoff-course-prerequisites.md`. Topic ids changed since this note: 341 Grouping Materials, 345/346 Changes, 343 Mixtures, 348 Separating Mixture, 362 Reproductive Structures.
+
 Today topic→topic order is only the outline order
 (`adaptive/services.py:431 _next_topic_with_content`); no cross-topic links.
 Agreed direction so far (not designed in detail):

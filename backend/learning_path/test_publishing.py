@@ -366,3 +366,40 @@ class RedundantAcrossLoopTests(PublishingFixture):
 
         solid = next(step for step in path["steps"] if step["title"] == "Solid")
         self.assertEqual([entry["redundant"] for entry in solid["prerequisites"]], [False])
+
+
+class CourseRefreshOnPublishTests(PublishingFixture):
+    def test_publishing_a_topic_refreshes_its_course_links(self):
+        with self._derive(), patch("learning_path.services.course_links.refresh_course_links", return_value={"accepted": 0, "pending": 0, "teacher_decided": 0}) as refresh:
+            summary = publishing.publish_learning_path(self.topic)
+
+        refresh.assert_called_once_with(self.topic.course)
+        self.assertEqual(summary["course_links"]["accepted"], 0)
+
+    def test_a_failed_course_refresh_never_fails_the_publish(self):
+        with self._derive(), patch("learning_path.services.course_links.refresh_course_links", side_effect=RuntimeError("boom")):
+            with self.assertLogs("learning_path.services.publishing", level="WARNING"):
+                summary = publishing.publish_learning_path(self.topic)
+
+        self.assertIsNone(summary["course_links"])
+        self.assertEqual(summary["steps"], 4)
+
+    def test_the_course_refresh_runs_in_its_own_savepoint(self):
+        """On PostgreSQL a failed statement aborts the whole transaction; a
+        savepoint lets a caller's transaction survive a failed course refresh
+        (for example before the course-link table exists). SQLite cannot show
+        the abort itself, so this checks the savepoint."""
+        from django.db import connection, transaction
+
+        seen = {}
+
+        def record_savepoints(course):
+            seen["savepoints"] = len(connection.savepoint_ids)
+            return {"accepted": 0, "pending": 0, "teacher_decided": 0}
+
+        with transaction.atomic():
+            outer = len(connection.savepoint_ids)
+            with self._derive(), patch("learning_path.services.course_links.refresh_course_links", side_effect=record_savepoints):
+                publishing.publish_learning_path(self.topic)
+
+        self.assertGreater(seen["savepoints"], outer)

@@ -96,3 +96,33 @@ class LinkReasonTests(SimpleTestCase):
             "Gas names Solid. The files present Solid and Gas side by side under one heading. Confidence 1.00.",
         )
 
+    def test_a_suggestion_from_the_files_alone_says_the_text_is_silent(self):
+        evidence = {"rule": "fusion", "confidence": 1.0, "semantic": True, "disagreement": False, "parallel": False,
+                    "votes": {"name": 0, "terms": 0, "meaning": 0, "heading": 0, "order": 1},
+                    "records": {"order": {"pdfs": 2, "agree": 2}}}
+
+        self.assertEqual(
+            link_reason(evidence, "Pollination", "Fertilization"),
+            "2 of 2 files teach Pollination first. The text says nothing either way. Confidence 1.00.",
+        )
+
+    def test_a_course_link_that_follows_the_outline(self):
+        evidence = {"rule": "course", "confidence": 1.0, "semantic": True, "contradicts_outline": False,
+                    "votes": {"name": 1, "terms": 1, "meaning": 0, "outline": 1},
+                    "records": {"terms": {"owned": ["anther"]}}}
+
+        self.assertEqual(
+            link_reason(evidence, "Stamen", "Pollination"),
+            "Pollination uses terms Stamen explains (anther). Pollination names Stamen. "
+            "This follows your outline. Confidence 1.00.",
+        )
+
+    def test_a_course_link_against_the_outline_says_so(self):
+        evidence = {"rule": "course", "confidence": 0.67, "semantic": True, "contradicts_outline": True,
+                    "votes": {"name": 1, "terms": 1, "meaning": 0, "outline": -1}, "records": {}}
+
+        self.assertEqual(
+            link_reason(evidence, "Stamen", "Pollination"),
+            "Pollination uses terms Stamen explains. Pollination names Stamen. "
+            "This contradicts your outline: Stamen's topic comes later. Confidence 0.67.",
+        )

@@ -1,0 +1,15 @@
+/* Course path page: topic boxes and the side panel. Arrow colours live in coursePathModel.js. */
+.cp-layout { display: grid; grid-template-columns: 1fr minmax(260px, 340px); gap: 1rem; margin-top: 1rem; }
+.cp-layout > .pg-canvas:only-child { grid-column: 1 / -1; }
+.cp-topic {
+  width: 220px; min-height: 60px; box-sizing: border-box; display: grid; grid-template-columns: auto 1fr;
+  gap: 0.5rem; align-items: center; padding: 0.5rem 0.65rem; border: 2px solid #1f2a37; border-radius: 10px;
+  background: #fff; color: #1f2a37; font-size: 0.85rem;
+}
+.cp-topic.empty { border-style: dashed; color: #8a96a3; border-color: #b8c2cc; background: #f7f9fb; }
+.cp-topic-position { font-weight: 700; }
+.cp-panel { align-self: start; }
+.cp-warning { color: #b3261e; }
+.cp-link { margin-bottom: 0.75rem; }
+.cp-link-status { margin-left: 0.5rem; font-size: 0.75rem; text-transform: uppercase; color: #5b6b7b; }
+@media (max-width: 900px) { .cp-layout { grid-template-columns: 1fr; } }

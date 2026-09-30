@@ -369,3 +369,30 @@ reachable 5/10, 3/8, 10/10 (v4: 9, 3, 8).
 
 **Thesis framing.** A link is trusted when two views of the material whose errors do not coincide
 confirm each other — the multi-view agreement idea of co-training (Blum & Mitchell 1998).
+
+## 15. Amendment 2 (2026-09-30): structure-only suggestions
+
+**Supersedes** two rows of the §14 verdict table. Approved by the user after topic 357's process
+chain (Stamen → Pollination → Fertilization → Seed/Fruit) came out unreachable.
+
+**Why.** On process steps the content clues are silent or backwards (Pollination says "anther",
+never "stamen"; the steps' terms point at each other), and all steps sit under one heading, so the
+sibling flag fires. The files' order is the only signal that knows the direction (PDF order: 39
+right, 0 wrong over five topics). An opening-sentence clue (Wang et al. 2016's first-sentence
+idea, read by meaning) was tried on the development set and rejected: 7 right, 12 wrong.
+
+**Change.**
+
+| Situation | Before | Now |
+|---|---|---|
+| content silent, PDF order votes (≥ 2 PDFs agree), structure agrees, not siblings | no link | **PENDING**, the files' direction |
+| siblings flag, content disagrees with structure | PENDING, content's direction | **PENDING, structure's direction** |
+
+Accepted links are unchanged: structure alone never accepts, so the path, the adaptive engine's
+detours and the forbidden count are unaffected until a teacher approves a suggestion. The reason
+says "The text says nothing either way."
+
+**Measured.** Development (decided there): reach 62: 5 → 8, 79: 3 → 7, 152: 10 → 10; accepted, τ,
+forbidden unchanged; pending 11 → 15, 12 → 25, 20 → 20. Test (afterwards): 340 unchanged; 357
+14 → 20 of 20, pending 18 → 29. Development and test share subjects (79/357, 62/152/340), so the
+unseen uploads remain the real test.

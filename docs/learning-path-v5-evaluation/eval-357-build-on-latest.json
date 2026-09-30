@@ -63,7 +63,7 @@
       "pending": [
         [
           "fertilization",
-          "pollination"
+          "fruit"
         ],
         [
           "fertilization",
@@ -71,11 +71,7 @@
         ],
         [
           "fruit",
-          "fertilization"
-        ],
-        [
-          "fruit",
-          "pollination"
+          "examples"
         ],
         [
           "parts_figure",
@@ -87,7 +83,31 @@
         ],
         [
           "parts_figure",
+          "fruit"
+        ],
+        [
+          "parts_figure",
+          "petals"
+        ],
+        [
+          "parts_figure",
+          "pistil"
+        ],
+        [
+          "parts_figure",
           "pollination"
+        ],
+        [
+          "parts_figure",
+          "seed"
+        ],
+        [
+          "parts_figure",
+          "stamen"
+        ],
+        [
+          "petals",
+          "fertilization"
         ],
         [
           "petals",
@@ -95,19 +115,35 @@
         ],
         [
           "petals",
-          "parts_figure"
-        ],
-        [
-          "petals",
           "pollination"
         ],
         [
+          "petals",
+          "seed"
+        ],
+        [
           "pistil",
-          "parts_figure"
+          "fertilization"
         ],
         [
           "pistil",
           "petals"
+        ],
+        [
+          "pistil",
+          "seed"
+        ],
+        [
+          "pollination",
+          "fertilization"
+        ],
+        [
+          "pollination",
+          "fruit"
+        ],
+        [
+          "reproduction",
+          "fertilization"
         ],
         [
           "reproduction",
@@ -127,11 +163,19 @@
         ],
         [
           "stamen",
-          "parts_figure"
+          "fertilization"
         ],
         [
           "stamen",
           "pistil"
+        ],
+        [
+          "stamen",
+          "pollination"
+        ],
+        [
+          "stamen",
+          "seed"
         ]
       ],
       "missing_required": [
@@ -234,33 +278,8 @@
           "fruit"
         ]
       ],
-      "unreachable": [
-        [
-          "stamen",
-          "pollination"
-        ],
-        [
-          "stamen",
-          "fertilization"
-        ],
-        [
-          "pistil",
-          "fertilization"
-        ],
-        [
-          "pollination",
-          "fertilization"
-        ],
-        [
-          "fertilization",
-          "fruit"
-        ],
-        [
-          "fruit",
-          "examples"
-        ]
-      ],
-      "reachable_count": 14,
+      "unreachable": [],
+      "reachable_count": 20,
       "accepted_precision": 1.0,
       "accepted_by_rule": {
         "fusion": 13

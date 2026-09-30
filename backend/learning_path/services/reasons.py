@@ -32,10 +32,35 @@ def _fused_reason(evidence, a, b):
     against = [_CLUE_NAMES[clue] for clue in _CLUE_NAMES if votes.get(clue) == -1]
     if against:
         parts.append(f"Against it: {', '.join(against)}.")
+    if not any(votes.get(clue) for clue in ("name", "terms", "meaning")):
+        parts.append("The text says nothing either way.")
     if evidence.get("disagreement"):
         parts.append("The text reads the other way; this follows how the files are organised.")
     if evidence.get("parallel"):
         parts.append(f"The files present {a} and {b} side by side under one heading.")
+    if evidence.get("semantic") is False:
+        parts.append("The meaning check was unavailable.")
+    if evidence.get("confidence") is not None:
+        parts.append(f"Confidence {evidence['confidence']:.2f}.")
+    return " ".join(parts)
+
+
+def _course_reason(evidence, a, b):
+    votes = evidence.get("votes") or {}
+    records = evidence.get("records") or {}
+    parts = []
+    if votes.get("terms") == 1:
+        owned = (records.get("terms") or {}).get("owned") or []
+        listed = f" ({', '.join(owned[:3])})" if owned else ""
+        parts.append(f"{b} uses terms {a} explains{listed}.")
+    if votes.get("meaning") == 1:
+        parts.append(f"{b}'s sentences refer to {a}'s ideas.")
+    if votes.get("name") == 1:
+        parts.append(f"{b} names {a}.")
+    if evidence.get("contradicts_outline"):
+        parts.append(f"This contradicts your outline: {a}'s topic comes later.")
+    else:
+        parts.append("This follows your outline.")
     if evidence.get("semantic") is False:
         parts.append("The meaning check was unavailable.")
     if evidence.get("confidence") is not None:
@@ -48,6 +73,8 @@ def link_reason(evidence, prerequisite_title, dependent_title):
     evidence = evidence or {}
     rule = evidence.get("rule")
 
+    if rule == "course":
+        return _course_reason(evidence, a, b)
     if rule == "fusion":
         return _fused_reason(evidence, a, b)
     if rule == "definition":

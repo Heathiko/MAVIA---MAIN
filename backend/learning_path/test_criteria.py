@@ -52,13 +52,15 @@ class DecisionTests(SimpleTestCase):
 
         self.assertEqual(decided, {})
 
-    def test_pdf_order_alone_never_makes_a_link(self):
+    def test_pdf_order_alone_is_never_more_than_a_suggestion(self):
         first = concept(1, "Heat", member("Heat changes water into steam.", material_id=10, order=0),
                         member("Heat changes water into steam.", material_id=11, order=0))
         second = concept(2, "Steam", member("Heat changes water into steam.", material_id=10, order=1),
                          member("Heat changes water into steam.", material_id=11, order=1))
 
-        self.assertEqual(decide([first, second]), {})
+        decided = decide([first, second])
+
+        self.assertEqual({pair: row["verdict"] for pair, row in decided.items()}, {(1, 2): PENDING})
 
     def test_without_the_encoder_links_are_only_pending(self):
         decided = decide(flower(), embed=no_encoder)

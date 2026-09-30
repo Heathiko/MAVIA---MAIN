@@ -2,7 +2,7 @@
 
 **Status (2026-09-30):** implemented on branch `learning-path-graph-screen`.
 Design: `docs/superpowers/specs/2026-09-30-learning-path-evidence-fusion-design.md`
-(§14 = the two-family amendment that is what the code does).
+(§14 and §15 = the amendments that are what the code does).
 Measurements: `docs/learning-path-v5-evaluation-2026-09-30.md`. Numbers live there, not here.
 
 **Scope:** one path per **topic**, whose steps are **concepts** (grouping's concept bundles
@@ -45,9 +45,10 @@ Content = sign of name + terms + meaning. Structure = sign of heading + order.
 
 | Situation | Verdict, direction |
 |---|---|
-| content silent or cancelling | no link (structure alone never links) |
-| `parallel` flag | pending, content's direction |
+| content silent, ≥ 2 PDFs agree on the order, structure agrees, not siblings | pending, the files' direction (amendment 2) |
+| content silent or cancelling, otherwise | no link |
 | structure disagrees with content | pending, structure's direction (`disagreement: true`) |
+| `parallel` flag | pending, content's direction |
 | structure agrees with content | **accepted** |
 | all three content clues agree, structure silent | **accepted** |
 | otherwise | pending, content's direction |
@@ -65,6 +66,17 @@ Unchanged from v4. `ConceptPrerequisite` rows: `accepted` and `pending` come fro
 are replaced on every derivation; `approved` and `rejected` come from a teacher and are never
 overwritten. Only `accepted` and `approved` shape the order. Loops made of teacher links are
 refused (`services/teacher_links.py`). Screen: `docs/superpowers/specs/2026-09-29-learning-path-graph-screen-design.md`.
+
+## Course level (across topics)
+
+Spec: `docs/superpowers/specs/2026-09-30-course-learning-path-design.md`.
+`services/course_criteria.py` pairs concepts of **different** topics of one course, with the same
+relatedness gate and content clues; the structure is the teacher's **outline order** (headings and
+PDF order cannot compare topics). Only name and terms vote, and they must agree (spec amendment 1):
+with the outline → accepted; against it → pending, `contradicts_outline`; anything else → no link.
+The meaning clue is recorded, not counted. Stored as `CourseConceptLink` (`services/course_links.py`), shown on the Course path page,
+refreshed when a topic is published. `published.course_prerequisites` gives the adaptive engine
+accepted/approved earlier-topic prerequisites (hand-off: `docs/handoff-course-prerequisites.md`).
 
 ## Measuring
 
