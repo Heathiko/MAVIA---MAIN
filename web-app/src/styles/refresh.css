@@ -409,3 +409,156 @@
   border-radius: var(--mv-radius-pill);
   border: none;
 }
+
+/* ===========================================================================
+   The window is the window, on every screen.
+
+   The band of empty ground under the content kept coming back because the fix
+   was always per-screen: one shell was pinned to the viewport, the next one
+   still used `min-height: 100vh`, which is only a floor. Anything that grew
+   past it pushed the whole document taller, and the overshoot showed as bare
+   canvas below the app -- white, because the root element's own background
+   (#ffffff, from base.css) paints the canvas and body's page-grey only paints
+   body's own box.
+
+   So the contract moves up to the document, once, for everything:
+
+     - html and body are exactly the window and never scroll.
+     - #root is the window, and is the only scroller a page-length screen has.
+       A long dashboard or landing page scrolls inside it exactly as it used to
+       scroll the document; nothing about those screens changes except which
+       box owns the scrollbar.
+     - html carries the page grey, so even if something did overshoot, what
+       shows is the app's own ground and not a white void.
+
+   Screens that must not scroll at all then simply take `height: 100%` -- they
+   are the window because #root is, with no viewport unit anywhere to drift
+   from it. */
+html {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--mv-page);
+}
+
+body {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--mv-page);
+}
+
+#root {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The workspace shells are the window itself: they fill #root exactly and
+   whatever is long scrolls inside their own panel. `100%` rather than `100vh`
+   so a shell can never be taller than the box it sits in. */
+.app-shell:has(.topic-workspace-shell) {
+  height: 100%;
+}
+
+.topic-workspace-shell {
+  height: 100%;
+}
+
+.app-shell:has(.dag-workspace) {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dag-workspace {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* --- The two graph screens ------------------------------------------------
+   `.pg-canvas` was a fixed `70vh`, so the header above it plus the shell's own
+   4rem bottom padding always added up to more than one window: every visit to
+   a learning path began with a scrollbar and ended in empty ground. The canvas
+   now takes whatever height is left over instead of naming its own. */
+.app-shell:has(.learning-path-page),
+.app-shell:has(.cp-layout) {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem 0;
+}
+
+/* The heading card keeps its height; only the graph below it flexes. */
+.app-shell:has(.cp-layout) > .card {
+  flex: 0 0 auto;
+}
+
+.app-shell > .learning-path-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.app-shell > .cp-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 0;
+}
+
+.app-shell > .cp-layout > .pg-canvas {
+  height: 100%;
+  min-height: 0;
+}
+
+/* The arrow panel is a column beside a full-height canvas, so it scrolls in
+   place rather than stretching the row to the length of its link list. */
+.cp-layout > .cp-panel {
+  align-self: stretch;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Inside the learning-path page the canvas is nested a few levels down, so it
+   keeps a height of its own -- but a bounded one, sized to leave the header
+   and the notes above it visible without the panel scrolling on arrival. */
+.learning-path-page .pg-canvas {
+  height: min(62vh, 620px);
+  min-height: 360px;
+}
+
+/* One scrollbar treatment for the new scrollers, matching the panels that
+   already had it. */
+#root::-webkit-scrollbar,
+.dag-workspace::-webkit-scrollbar,
+.app-shell > .learning-path-page::-webkit-scrollbar,
+.cp-layout > .cp-panel::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+#root::-webkit-scrollbar-thumb,
+.dag-workspace::-webkit-scrollbar-thumb,
+.app-shell > .learning-path-page::-webkit-scrollbar-thumb,
+.cp-layout > .cp-panel::-webkit-scrollbar-thumb {
+  background: rgba(20, 24, 31, 0.18);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+#root::-webkit-scrollbar-track,
+.dag-workspace::-webkit-scrollbar-track,
+.app-shell > .learning-path-page::-webkit-scrollbar-track,
+.cp-layout > .cp-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
