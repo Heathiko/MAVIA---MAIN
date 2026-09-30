@@ -14,7 +14,7 @@ export default function Card({ children, style, tint }: Props) {
     <View
       style={[
         styles.card,
-        tint && { backgroundColor: colors.brand50, borderColor: colors.brand100 },
+        tint && { backgroundColor: colors.brand50 },
         style,
       ]}
     >

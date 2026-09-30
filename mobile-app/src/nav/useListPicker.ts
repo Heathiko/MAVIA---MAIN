@@ -14,6 +14,7 @@
 // passed, which is also roughly when a learner could first have answered.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useFocusEffect } from "expo-router";
 
 import { useBrailleKeypad } from "@/input/useBrailleKeypad";
 import { useVoiceCommands } from "@/voice/useVoiceCommands";
@@ -70,6 +71,20 @@ export function useListPicker<T extends PickerItem>({
   enabled?: boolean;
 }): ListPicker<T> {
   const [pageIndex, setPageIndex] = useState(0);
+
+  // A screen that has been navigated away from stays mounted in the router
+  // stack, and its picker stayed live with it: the course list would read its
+  // prompt again over the lesson list that replaced it, which is the doubled,
+  // overlapping audio. Only the screen actually in front of the learner
+  // speaks.
+  const [focused, setFocused] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      setFocused(true);
+      return () => setFocused(false);
+    }, [])
+  );
+  const live = enabled && focused;
   const pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
 
   // Clamp rather than reset: a list that loads in stages (or shrinks) should
@@ -141,13 +156,17 @@ export function useListPicker<T extends PickerItem>({
   // Read the page whenever it changes, and when the list first arrives.
   const signature = `${safePage}:${page.map((item) => item.id).join(",")}`;
   useEffect(() => {
-    if (!enabled) return;
+    if (!live) return;
     readPage();
     return () => {
       if (settleRef.current) clearTimeout(settleRef.current);
       acceptingRef.current = false;
+      // Silence on the way out. Without this the prompt carried on over
+      // whatever screen came next -- speak() only cancels the PREVIOUS
+      // utterance, so a picker that is merely unmounted keeps talking.
+      narrationRef.current.stop();
     };
-  }, [enabled, signature, readPage]);
+  }, [live, signature, readPage]);
 
   useVoiceCommands(
     {
@@ -159,7 +178,7 @@ export function useListPicker<T extends PickerItem>({
       repeatQuestion: () => readPage(),
       repeatTopic: () => readPage(),
     },
-    { enabled }
+    { enabled: live }
   );
 
   useBrailleKeypad(
@@ -175,7 +194,7 @@ export function useListPicker<T extends PickerItem>({
       if (action.kind === "next") nextPage();
       if (action.kind === "repeat") readPage();
     },
-    { enabled }
+    { enabled: live }
   );
 
   return { page, pageIndex: safePage, pageCount, readPage, nextPage, lettersForPage };
