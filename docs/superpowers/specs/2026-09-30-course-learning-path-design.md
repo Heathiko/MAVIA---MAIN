@@ -173,3 +173,25 @@ gold tests skip with a clear reason until the 341/345 fixtures and keys exist.
   the higher accept bar is the guard, measured on the design pair.
 - **Outline flags could be noisy** — each wastes teacher time; counted against the key.
 - **Ownership:** anything the adaptive engine does with the data is the groupmate's decision.
+
+## 11. Amendment 1 (2026-09-30): only name and terms vote across topics
+
+**Supersedes** the §3 verdict table and `MIN_AGREEING_CONTENT`. Decided on the design pair
+340 ↔ 341 only (its AI-drafted key: no 340 concept is a prerequisite of any 341 concept), before
+any test pair was measured.
+
+**Measured with the §3 rule:** 8 accepted (all wrong), 41 pending, 17 outline flags (all wrong).
+Every accepted link involved the meaning clue, which the topic-level evaluation had already found
+at chance on direction. With meaning silenced: 0 accepted, but 31 pending and 13 flags, every one
+resting on a single clue — topics of one subject share vocabulary ("particles", "materials").
+
+**Rule now:** name and terms must both point the same way; the meaning clue is recorded in the
+evidence but does not vote.
+
+| Situation | Verdict |
+|---|---|
+| name and terms agree, with the outline | ACCEPTED (PENDING without the encoder) |
+| name and terms agree, against the outline | PENDING, `contradicts_outline` |
+| anything else | no link |
+
+Design pair with this rule: 0 accepted, 0 pending. Risk: too strict — the test pairs measure it.

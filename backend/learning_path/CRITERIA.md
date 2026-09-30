@@ -72,9 +72,9 @@ refused (`services/teacher_links.py`). Screen: `docs/superpowers/specs/2026-09-2
 Spec: `docs/superpowers/specs/2026-09-30-course-learning-path-design.md`.
 `services/course_criteria.py` pairs concepts of **different** topics of one course, with the same
 relatedness gate and content clues; the structure is the teacher's **outline order** (headings and
-PDF order cannot compare topics). Content silent → no link; content against the outline → pending,
-`contradicts_outline`; ≥ 2 content clues agree, none against, outline agrees → accepted; otherwise
-pending. Stored as `CourseConceptLink` (`services/course_links.py`), shown on the Course path page,
+PDF order cannot compare topics). Only name and terms vote, and they must agree (spec amendment 1):
+with the outline → accepted; against it → pending, `contradicts_outline`; anything else → no link.
+The meaning clue is recorded, not counted. Stored as `CourseConceptLink` (`services/course_links.py`), shown on the Course path page,
 refreshed when a topic is published. `published.course_prerequisites` gives the adaptive engine
 accepted/approved earlier-topic prerequisites (hand-off: `docs/handoff-course-prerequisites.md`).
 

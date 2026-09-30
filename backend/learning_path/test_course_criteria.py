@@ -22,8 +22,12 @@ def votes(name=0, terms=0, meaning=0, outline=1):
 
 
 def stamen():
-    # Name + meaning carry the link: with two concepts G2 cannot make "anther" owned.
-    return concept(1, "Stamen", "The anther makes pollen grains. The filament is a thin green stalk. The filament holds the anther up high. Each grain carries a male cell.")
+    return concept(1, "Stamen", "The anther makes pollen grains. " * 8)
+
+
+def petals():
+    # Gives the term statistics enough text for "anther" to be significantly Stamen's.
+    return concept(4, "Petals", "Petals attract bees with bright colours. " * 8)
 
 
 def pollination(names_stamen=True):
@@ -47,17 +51,25 @@ def decide(topic_concepts, embed=word_vectors):
 
 
 class CourseVerdictTests(SimpleTestCase):
-    def test_two_content_clues_with_the_outline_are_accepted(self):
+    """Across topics only name and terms vote, and they must agree (design pair 340-341:
+    every link resting on one clue, or on the meaning clue, was wrong)."""
+
+    def test_name_and_terms_agreeing_with_the_outline_are_accepted(self):
         self.assertEqual(course_verdict(votes(name=1, terms=1)), (ACCEPTED, 1))
 
-    def test_one_content_clue_is_only_pending(self):
-        self.assertEqual(course_verdict(votes(terms=1)), (PENDING, 1))
-
-    def test_a_clue_against_blocks_acceptance(self):
-        self.assertEqual(course_verdict(votes(name=1, terms=1, meaning=-1)), (PENDING, 1))
-
-    def test_content_against_the_outline_is_pending_in_the_contents_direction(self):
+    def test_name_and_terms_against_the_outline_are_a_flagged_suggestion(self):
         self.assertEqual(course_verdict(votes(name=-1, terms=-1)), (PENDING, -1))
+
+    def test_one_clue_alone_makes_no_link(self):
+        self.assertEqual(course_verdict(votes(terms=1))[0], PARALLEL)
+        self.assertEqual(course_verdict(votes(name=-1))[0], PARALLEL)
+
+    def test_the_meaning_clue_does_not_vote(self):
+        self.assertEqual(course_verdict(votes(name=1, meaning=1))[0], PARALLEL)
+        self.assertEqual(course_verdict(votes(name=1, terms=1, meaning=-1)), (ACCEPTED, 1))
+
+    def test_clues_that_disagree_make_no_link(self):
+        self.assertEqual(course_verdict(votes(name=1, terms=-1))[0], PARALLEL)
 
     def test_the_outline_alone_makes_no_link(self):
         self.assertEqual(course_verdict(votes())[0], PARALLEL)
@@ -68,7 +80,7 @@ class CourseVerdictTests(SimpleTestCase):
 
 class DecideCoursePairsTests(SimpleTestCase):
     def test_a_later_topic_using_an_earlier_topics_concept_is_accepted(self):
-        row = decide([[stamen()], [pollination()]])[(1, 2)]
+        row = decide([[stamen(), petals()], [pollination()]])[(1, 2)]
 
         self.assertEqual(row["verdict"], ACCEPTED)
         self.assertEqual(row["evidence"]["rule"], "course")
@@ -76,15 +88,13 @@ class DecideCoursePairsTests(SimpleTestCase):
         self.assertFalse(row["evidence"]["contradicts_outline"])
 
     def test_an_earlier_topic_needing_a_later_one_is_flagged(self):
-        row = decide([[pollination()], [stamen()]])[(1, 2)]
+        row = decide([[pollination()], [stamen(), petals()]])[(1, 2)]
 
         self.assertEqual(row["verdict"], PENDING)
         self.assertTrue(row["evidence"]["contradicts_outline"])
 
-    def test_one_clue_across_topics_is_only_pending(self):
-        row = decide([[stamen()], [pollination(names_stamen=False)]])[(1, 2)]
-
-        self.assertEqual(row["verdict"], PENDING)
+    def test_one_clue_across_topics_makes_no_link(self):
+        self.assertNotIn((1, 2), decide([[stamen(), petals()], [pollination(names_stamen=False)]]))
 
     def test_unrelated_topics_get_no_link(self):
         self.assertEqual(decide([[stamen()], [weather()]]), {})
@@ -93,7 +103,7 @@ class DecideCoursePairsTests(SimpleTestCase):
         self.assertEqual(decide([[stamen(), pollination()]]), {})
 
     def test_without_the_encoder_links_are_only_pending(self):
-        decided = decide([[stamen()], [pollination()]], embed=no_encoder)
+        decided = decide([[stamen(), petals()], [pollination()]], embed=no_encoder)
 
         self.assertEqual({row["verdict"] for row in decided.values()}, {PENDING})
         self.assertFalse(decided[(1, 2)]["evidence"]["semantic"])

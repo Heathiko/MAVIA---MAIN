@@ -12,12 +12,14 @@ from . import embeddings
 from .calibration import load_calibration
 from .clues import clue_records, find_term_owners, meaning_vote, name_vote, term_vote
 from .concept_text import prepare
-from .fusion import ACCEPTED, CONTENT_CLUES, PARALLEL, PENDING, family_direction
+from .fusion import ACCEPTED, PARALLEL, PENDING
 from .relatedness import relatedness
 
-# The outline always votes, so one content clue -- the meaning clue is at chance
-# on direction -- must not be enough to send a learner to another topic.
-MIN_AGREEING_CONTENT = 2
+# Across topics only the clues that point at something specific vote, and they
+# must agree. Measured on the design pair 340-341 (2026-09-30; its key has no
+# links): every link resting on the meaning clue (8 accepted) or on a single
+# clue (31 suggestions) was wrong -- topics of one subject share vocabulary.
+COURSE_CLUES = ("name", "terms")
 
 
 def course_topics(course, with_content=True):
@@ -48,17 +50,19 @@ def course_topics(course, with_content=True):
 
 
 def course_verdict(votes, semantic=True):
-    """``(verdict, direction)`` for concepts of two topics; direction +1 means "first before second"."""
-    content = family_direction(votes, CONTENT_CLUES)
-    if not content:
+    """``(verdict, direction)`` for concepts of two topics; direction +1 means "first before second".
+
+    Name and terms must agree. With the outline -> accepted; against it ->
+    pending, flagged for the teacher. The meaning clue is recorded, not counted.
+    """
+    direction = votes["name"]
+    if not direction or votes["terms"] != direction:
         return PARALLEL, 0
-    if content == -votes["outline"]:
-        return PENDING, content
-    agreeing = sum(1 for clue in CONTENT_CLUES if votes[clue] == content)
-    against = sum(1 for clue in CONTENT_CLUES if votes[clue] == -content)
-    if semantic and agreeing >= MIN_AGREEING_CONTENT and not against:
-        return ACCEPTED, content
-    return PENDING, content
+    if direction == -votes["outline"]:
+        return PENDING, direction
+    if semantic:
+        return ACCEPTED, direction
+    return PENDING, direction
 
 
 def _decide(first, second, owners, calibration, semantic):

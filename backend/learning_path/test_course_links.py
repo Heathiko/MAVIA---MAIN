@@ -51,7 +51,8 @@ class CourseFixture(TestCase):
         self.empty = OutlineNode.objects.create(course=self.course, parent=unit, title="Empty topic", order=3, depth=1)
         self.groups = {}
         for topic, title, content in (
-            (self.flowers, "Stamen", "The anther makes pollen grains. The filament is a thin green stalk. The filament holds the anther up high. Each grain carries a male cell."),
+            (self.flowers, "Stamen", "The anther makes pollen grains. " * 8),
+            (self.flowers, "Petals", "Petals attract bees with bright colours. " * 8),
             (self.reproduction, "Pollination", "Pollen travels from the stamen anther to a stigma."),
             (self.weather, "Rain", "Clouds bring heavy rain showers today. " * 8),
         ):
@@ -266,7 +267,7 @@ class UnitWithContentTests(CourseFixture):
     def test_a_unit_holding_content_itself_is_listed_with_its_links(self):
         """Review finding: a PDF placed on the unit made its links invisible on the page."""
         unit = self.flowers.parent
-        LearningObjectGroup.objects.filter(pk=self.groups["Stamen"].pk).update(outline_node=unit)
+        LearningObjectGroup.objects.filter(outline_node=self.flowers).update(outline_node=unit)
         LearningMaterial.objects.filter(outline_node=self.flowers).update(outline_node=unit)
         self.flowers.delete()
         self._refresh()
