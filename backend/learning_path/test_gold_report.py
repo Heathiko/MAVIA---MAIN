@@ -77,3 +77,51 @@ class GoldReportTests(SimpleTestCase):
 
     def test_nothing_accepted_has_no_precision(self):
         self.assertIsNone(gold_report(self.data, self.concepts, [])["accepted_precision"])
+
+    def test_kendall_tau_is_one_in_order_and_minus_one_reversed(self):
+        from .services.gold import kendall_tau
+
+        self.assertEqual(kendall_tau(["a", "b", "c"], ["a", "b", "c"]), 1.0)
+        self.assertEqual(kendall_tau(["c", "b", "a"], ["a", "b", "c"]), -1.0)
+        self.assertIsNone(kendall_tau(["a"], ["a", "b"]))
+
+    def test_the_report_carries_kendall_tau(self):
+        report = gold_report(self.data, self.concepts, [])
+
+        self.assertEqual(report["kendall_tau"], 1.0)
+
+
+class ClueMeasureTests(SimpleTestCase):
+    def setUp(self):
+        from .testing import concept as make_concept
+
+        self.concepts = [
+            make_concept(1, "Stamen", "The anther makes pollen grains. " * 8, key="stamen"),
+            make_concept(2, "Pollination", "Pollen travels from an anther to a stigma.", key="pollination"),
+            make_concept(3, "Weather", "Clouds bring heavy rain showers today. " * 8, key="weather"),
+        ]
+        self.data = {"required": [["stamen", "pollination"], ["stamen", "weather"]]}
+        self.calibration = {"related_cutoff": 0.1, "meaning_cutoff": 0.3}
+
+    def test_clue_accuracy_counts_votes_on_the_keys_links(self):
+        from unittest.mock import patch
+
+        from .services.gold import clue_accuracy
+        from .testing import word_vectors
+
+        with patch("learning_path.services.embeddings.embed", word_vectors):
+            counts = clue_accuracy(self.data, self.concepts, self.calibration)
+
+        self.assertEqual(counts["terms"]["right"], 1)
+        self.assertEqual(counts["terms"]["wrong"], 0)
+
+    def test_gate_loss_lists_key_links_the_gate_blocks(self):
+        from unittest.mock import patch
+
+        from .services.gold import gate_loss
+        from .testing import word_vectors
+
+        with patch("learning_path.services.embeddings.embed", word_vectors):
+            lost = gate_loss(self.data, self.concepts, self.calibration)
+
+        self.assertEqual(lost, [["stamen", "weather"]])

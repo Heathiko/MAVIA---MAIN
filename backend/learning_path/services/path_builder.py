@@ -1,18 +1,18 @@
 """The topic's learning path as the review screen previews it.
 
 The preview uses the same ordering the publish step saves
-(``publishing.order_with_links``) over the links already stored -- ``accepted``
-from the last publish and anything a teacher ``approved`` -- so what a teacher
-reviews before publishing is what the saved path will look like. It never runs
-the criteria itself: deriving links calls the sentence encoder, which is too
-slow for a page load and happens at publish instead.
+(``publishing.order_with_links``) over the links stored for the topic --
+``accepted`` and ``approved``. The review endpoint re-derives those links
+(``publishing.refresh_prerequisites``) just before building this preview, so
+what a teacher reviews is what publishing would save.
 """
 
 from lessons.models import OutlineNode
 
 from ..models import ConceptPrerequisite, LearningPathStep
 from .concept_units import concepts_for_topic
-from .publishing import order_with_links, path_links
+from .publishing import order_with_links, path_link_confidence, path_links, redundant_links
+from .reasons import link_reason
 from .teacher_links import changed_since_publish
 
 
@@ -21,7 +21,10 @@ def build_topic_path(node_id):
     concepts = concepts_for_topic(node)
     concept_ids = {concept.id for concept in concepts}
     links = path_links(node, concept_ids)
-    ordered, depth, ignored = order_with_links(concepts, links)
+    ordered, depth, ignored = order_with_links(concepts, links, path_link_confidence(node, concept_ids))
+    # Only among links the order keeps: a loop Kahn breaks would otherwise make a
+    # real link look implied through it.
+    redundant = redundant_links(set(links) - set(ignored))
 
     document_index = {concept.id: index for index, concept in enumerate(concepts)}
     object_id = {concept.id: concept.representative.id for concept in concepts}
@@ -46,6 +49,8 @@ def build_topic_path(node_id):
             "title": title[row.prerequisite_id],
             "status": row.status,
             "cross_section": row.cross_section,
+            "reason": link_reason(row.evidence, title[row.prerequisite_id], title[row.dependent_id]),
+            "redundant": (row.prerequisite_id, row.dependent_id) in redundant,
         }
         if row.status in ConceptPrerequisite.SHAPES_PATH:
             shown[row.dependent_id].append(entry)
@@ -61,6 +66,11 @@ def build_topic_path(node_id):
             ((member.section_title or "").strip() for member in members if (member.section_title or "").strip()),
             "",
         )
+
+    def sources(concept):
+        # The files a step was assembled from, named for the details card.
+        named = {member.material_id: member.material.title for member in concept.members}
+        return [{"id": material_id, "title": named[material_id]} for material_id in sorted(named)]
 
     steps = []
     for position, concept in enumerate(ordered, start=1):
@@ -78,6 +88,7 @@ def build_topic_path(node_id):
             "kind": concept.kind,
             "content": concept.content,
             "source_material_ids": concept.source_material_ids,
+            "source_materials": sources(concept),
             "source_count": len(concept.members),
             "source_order": document_index[concept.id],
             "dag_depth": depth[concept.id],
@@ -102,6 +113,7 @@ def build_topic_path(node_id):
             "status": row.status,
             "weight": 1.0,
             "evidence": row.evidence,
+            "redundant": (row.prerequisite_id, row.dependent_id) in redundant,
         }
         for row in rows
     ]

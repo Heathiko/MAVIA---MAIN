@@ -38,6 +38,7 @@ import {
 // The same path display the standalone page uses, so review step 5 and that
 // page cannot drift apart.
 import { MaterialPath } from "./LearningPathPage";
+import PublishedDialog from "../learning-path/PublishedDialog";
 
 function flattenNodes(nodes = []) {
   return nodes.flatMap((node) => [node, ...flattenNodes(node.children || [])]);
@@ -3381,19 +3382,25 @@ function LearningPathReviewPanel({
 }) {
   const [pathData, setPathData] = useState(null);
   const [loadingPath, setLoadingPath] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
   const [publishing, setPublishing] = useState(false);
   const [publishEvents, setPublishEvents] = useState([]);
+  const [showPublished, setShowPublished] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadPath() {
       setLoadingPath(true);
+      setLoadError("");
       try {
         const data = await fetchTopicLearningPath(topicId);
         if (!cancelled) setPathData(data);
       } catch (err) {
-        if (!cancelled) onError(err.message);
+        // Shown by this panel's own banner, with Retry; the page-wide error
+        // banner would say it twice and outlive a successful retry.
+        if (!cancelled) setLoadError(err.message);
       } finally {
         if (!cancelled) setLoadingPath(false);
       }
@@ -3403,7 +3410,7 @@ function LearningPathReviewPanel({
     return () => {
       cancelled = true;
     };
-  }, [topicId]);
+  }, [topicId, reloadKey]);
 
   // Publishing narrates images, settles versions and synthesises audio, each of
   // which calls a local model. The request only starts the run; progress
@@ -3472,6 +3479,12 @@ function LearningPathReviewPanel({
         } else {
           onMessage("Published.");
         }
+        if (!(status === "failed" || unpublished)) {
+          // The published dialog replaces the progress window on success; a
+          // failed run keeps it, since it lists the problems to resolve.
+          setPublishEvents([]);
+          setShowPublished(true);
+        }
         try {
           onResourcesChange(await fetchLearningResources(courseId, topicId));
           // Whether the topic is published lives on the course, not on the
@@ -3539,7 +3552,16 @@ function LearningPathReviewPanel({
         </div>
       )}
 
-      {!loadingPath && !paths.length && (
+      {!loadingPath && loadError && !pathData && (
+        <div className="error-banner" role="alert">
+          Couldn't load the learning path: {loadError}{" "}
+          <button type="button" className="btn btn-small btn-secondary" onClick={() => setReloadKey((key) => key + 1)}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {!loadingPath && !loadError && !paths.length && (
         <div className="review-queue-empty">
           No path yet. Each step is a concept, so confirm the learning objects in
           your lesson files first — grouping is what turns them into concepts.
@@ -3555,6 +3577,14 @@ function LearningPathReviewPanel({
           onPathData={setPathData}
         />
       ))}
+
+      {showPublished && (
+        <PublishedDialog
+          topicId={topicId}
+          topicTitle={topic?.title || ""}
+          onClose={() => setShowPublished(false)}
+        />
+      )}
 
       <div className="review-step-actions-row">
         <button

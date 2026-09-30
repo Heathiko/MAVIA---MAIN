@@ -17,3 +17,4 @@ scikit-learn>=1.4
 edge-tts>=7.0
 requests>=2.31
 -r requirements-semantic.txt
+nltk>=3.8

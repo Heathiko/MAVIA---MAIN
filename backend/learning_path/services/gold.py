@@ -6,12 +6,16 @@ table quotes, and what ``test_gold_paths`` asserts on.
 """
 
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import criteria
+from . import criteria, embeddings
+from .clues import find_term_owners, pair_votes
+from .concept_text import material_positions, prepare
+from .fusion import CLUES
 from .publishing import order_with_links
+from .relatedness import relatedness
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
@@ -69,7 +73,29 @@ def _edges(decisions, key, verdict):
     })
 
 
-def gold_report(data, concepts, decisions):
+def kendall_tau(order, expected):
+    """Agreement between two orders over the keys both contain: 1 same, -1 reversed.
+
+    Replaces the all-or-nothing order match, which fails on a single swap and
+    says nothing about how close a path is. ``None`` below two shared keys.
+    """
+    rank = {}
+    for index, key in enumerate(order):
+        rank.setdefault(key, index)
+    shared = [key for key in expected if key in rank]
+    if len(shared) < 2:
+        return None
+    concordant = discordant = 0
+    for index, earlier in enumerate(shared):
+        for later in shared[index + 1:]:
+            if rank[earlier] < rank[later]:
+                concordant += 1
+            else:
+                discordant += 1
+    return (concordant - discordant) / (concordant + discordant)
+
+
+def gold_report(data, concepts, decisions, build_on_latest=False):
     key = {concept.id: concept.key for concept in concepts}
     by_key = {concept.key: concept for concept in concepts if concept.key}
     accepted = _edges(decisions, key, criteria.ACCEPTED)
@@ -106,11 +132,13 @@ def gold_report(data, concepts, decisions):
     # Ordered from the decisions themselves, not from `accepted`: a fixture in
     # the live shape has edges `accepted` drops (unkeyed concepts, and the two
     # halves of a split concept), and those edges still move the path.
-    links = [
-        (row["prerequisite"].id, row["dependent"].id)
-        for row in decisions if row["verdict"] == criteria.ACCEPTED
-    ]
-    ordered, _, ignored = order_with_links(concepts, links)
+    accepted_rows = [row for row in decisions if row["verdict"] == criteria.ACCEPTED]
+    links = [(row["prerequisite"].id, row["dependent"].id) for row in accepted_rows]
+    confidence = {
+        (row["prerequisite"].id, row["dependent"].id): (row.get("evidence") or {}).get("confidence", 0.0)
+        for row in accepted_rows
+    }
+    ordered, _, ignored = order_with_links(concepts, links, confidence, build_on_latest=build_on_latest)
     # An unkeyed concept is taught somewhere in the order, but the teacher's map
     # says nothing about where; two concepts sharing a key are one concept
     # taught over two steps. Both collapse away before the order is compared.
@@ -144,6 +172,52 @@ def gold_report(data, concepts, decisions):
         "accepted_by_rule": dict(rules),
         "order": order,
         "order_matches": order == data["expected_order"],
+        "kendall_tau": kendall_tau(order, data["expected_order"]),
         "ignored_links": [[key[before], key[after]] for before, after in ignored],
         "unkeyed_concepts": sum(1 for concept in concepts if concept.key is None),
     }
+
+
+def _keyed_texts(concepts):
+    texts = prepare(concepts, embed=embeddings.embed)
+    by_key = defaultdict(list)
+    for text in texts:
+        if getattr(text.concept, "key", None):
+            by_key[text.concept.key].append(text)
+    return texts, by_key
+
+
+def gate_loss(data, concepts, calibration):
+    """The key's links whose two concepts the relatedness gate keeps apart."""
+    _, by_key = _keyed_texts(concepts)
+    lost = []
+    for before, after in data["required"]:
+        closest = max(
+            (relatedness(first, second) for first in by_key[before] for second in by_key[after]),
+            default=0.0,
+        )
+        if closest < calibration["related_cutoff"]:
+            lost.append([before, after])
+    return lost
+
+
+def clue_accuracy(data, concepts, calibration):
+    """For each clue, how many of the key's links it points the right and the wrong way."""
+    texts, _ = _keyed_texts(concepts)
+    owners = find_term_owners(texts)
+    positions = material_positions(concepts)
+    required = {tuple(edge) for edge in data["required"]}
+    counts = {clue: {"right": 0, "wrong": 0} for clue in CLUES}
+    for pair in pair_votes(texts, owners, positions, calibration["related_cutoff"], calibration["meaning_cutoff"]):
+        first, second = getattr(pair["first"].concept, "key", None), getattr(pair["second"].concept, "key", None)
+        if (first, second) in required:
+            truth = 1
+        elif (second, first) in required:
+            truth = -1
+        else:
+            continue
+        for clue in CLUES:
+            vote = pair["votes"][clue]
+            if vote:
+                counts[clue]["right" if vote == truth else "wrong"] += 1
+    return counts

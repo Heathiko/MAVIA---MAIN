@@ -791,6 +791,62 @@ had staged all of it at one point; it was unstaged before committing. Check
 **Not done:** the user ended the session mid-decision on the True/False-in-MCQ
 defect below.
 
+### 2026-09-29 — Claude Code — Learning path review screen is graph-first
+
+**Branch / commits:** `learning-path-graph-screen` (from `learning-path-criteria-v4`), b97586e..HEAD.
+Spec `docs/superpowers/specs/2026-09-29-learning-path-graph-screen-design.md`,
+plan `docs/superpowers/plans/2026-09-29-learning-path-graph-screen.md`.
+**Tests:** `python manage.py test` → 1212 OK; `cd web-app && npm test` → 14 OK;
+`npm run build` OK. Playwright walkthrough of every editing action on topics 340
+and 357 (add, move, add-vs-move choice, "already", loop refusal, accept, reject,
+remove, undo of each, 10 s undo timeout, read-only page, load-failure Retry).
+**Changed:**
+- Review step 5 is now a React Flow + dagre prerequisite graph (75%) with a
+  recommended-links panel (25%); list view and the heading-column concept map
+  removed. Drag B onto A = A before B; when B already has prerequisites the
+  confirm offers Add or Move. Every change is confirmed and undoable for 10 s.
+- Links are derived when the screen opens (`GET /api/learning-path/topics/<id>/`
+  calls `refresh_prerequisites`), no longer only at publish.
+- `refresh_prerequisites` keeps derived link ids stable and tolerates two opens
+  deriving at once (found live: IntegrityError 500 on concurrent first loads).
+- New `links/move/` and `links/restore/`; add/decide/move return an `undo` record.
+- Each link carries a plain-words `reason`; each step names its `source_materials`;
+  R3 evidence records passage counts.
+**Live database:** links for topics 340 and 357 were derived by opening the
+screen (derived rows only). Every walkthrough change was undone; both topics'
+link rows were compared before/after and are identical.
+**Decisions I made:** listed as `Ruling:` lines in the run ledger and in the
+hand-back message (in-place branch not worktree; `_path` test client reuse;
+arrow styling; key fix; Retry banner replaces the page-wide error for failed
+path loads).
+**Not done / watch out:**
+- Old `.cm-*`, `.lf-*`, `.path-step*`, `.ps-*` rules in
+  `web-app/src/styles/pipeline.css` are now unused; delete in a cleanup pass.
+- Entering the Versions step auto-POSTs `generate-all-versions` for topic 357
+  (pre-existing); anyone driving the UI to step 5 triggers it.
+- The details card sits over the graph's top-left and can cover highlighted
+  neighbours on small topics.
+- Opening the screen now writes (derived links); it is teacher-only.
+
+**Addendum 2026-09-30 (same branch, commits 0385758, 8a97d2b):** per the user,
+the recommendations panel is gone -- the graph is full width, pending links sit
+in the dependent concept's card as yellow rows, and concepts with pending links
+are marked yellow with a count. A "Topic published!" dialog now follows a
+successful publish, playing each concept's Normal narration in path order
+(multi-part concepts play back to back; no Play all). Verified in a headless
+browser with the publish simulated in the browser (no real publish, no model
+calls); topic 340's links identical before/after. Note: the dev server serves
+media without Range support, so audio cannot be seeked (pre-existing).
+
+
+### 2026-09-30 — Claude Code (Opus 5.5) — Learning-path criteria v5: relatedness + two evidence families
+
+**Branch / commits:** learning-path-graph-screen, e75429b..HEAD (spec, plan, Tasks 1–10, 12). Not pushed.
+**Tests:** `python manage.py test` 1225/1225 OK; `learning_path` 200 OK; web-app vitest 19/19, build OK.
+**Changed:** replaced v4 criteria with v5 (`backend/learning_path/CRITERIA.md`): sentence-embedding relatedness gate, clues name/terms/meaning (content) and heading/PDF order (structure), accepted only when the families agree; Kahn with weakest-link cycle breaking; redundant links hidden on the graph. Removed `concepts.py`, v4 text helpers, `evaluate_edges.py`. Added `calibrate_learning_path` and `calibration/weights.json`. Gold 62/79/152 no longer mark examples structural (user decision).
+**Live database:** untouched (read-only exports only).
+**Decisions I made:** see the ledger rulings in the final report — notably Kahn ties by PDF order (build-on-latest measured worse), and meaning clue kept despite being at chance on direction.
+**Not done / watch out:** topic 357's key encoded from the user's AI recommendation and measured (8 → 14 of 20, 0 forbidden); calibration now uses 62/79/152/340/357. 340 shows 62 pending suggestions — a lot for one screen. First v5 build accepted forbidden links (overviews read backwards); spec §14 records the fix. A `git stash pop` mistake briefly applied the user's `stash@{0}` (LATEST-with-bugs) here; the four touched files were restored to HEAD and the stash is intact.
 
 ---
 
