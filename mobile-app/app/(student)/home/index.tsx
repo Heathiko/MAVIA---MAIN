@@ -1,6 +1,7 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   FlatList,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -19,7 +20,7 @@ import { useNarration } from "@/hooks/useNarration";
 import { useListPicker } from "@/nav/useListPicker";
 import { useGuideBusy } from "@/guide/GuideActivity";
 import { Course, fetchContinueLearning, fetchCourses } from "@/data/library";
-import { colors, radii, spacing } from "@/theme";
+import { colors, radii, shadow, spacing } from "@/theme";
 
 export default function CourseListScreen() {
   const router = useRouter();
@@ -54,6 +55,15 @@ export default function CourseListScreen() {
         course.title.toLowerCase().includes(query.trim().toLowerCase())
       )
     : courses;
+
+  // "Continue learning" repeats the list below whenever every course is
+  // already in progress, which on a one-course account meant the same card
+  // twice on an otherwise empty screen. It earns its place only when it is a
+  // shortcut PAST something.
+  const showContinue = useMemo(
+    () => continueLearning.length > 0 && filtered.length > continueLearning.length,
+    [continueLearning.length, filtered.length]
+  );
 
   const openCourse = useCallback(
     (course: Course) => {
@@ -101,38 +111,36 @@ export default function CourseListScreen() {
         />
       </View>
 
-      <Text style={styles.sectionTitle} accessibilityRole="header">
-        Continue learning
-      </Text>
-      {continueLearning.length === 0 ? (
-        <EmptyState
-          icon="play-circle-outline"
-          title="Nothing in progress yet"
-          body="Courses you start will show up here."
-        />
-      ) : (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.continueRow}
-        >
-          {continueLearning.map((course) => (
-            <View key={course.id} style={styles.continueCard}>
-              <GradientTile size={128} radius={radii.md} />
-              <Text style={styles.continueTitle} numberOfLines={1}>
-                {course.title}
-              </Text>
-              <Text style={styles.continueSubtitle} numberOfLines={1}>
-                {course.subtitle}
-              </Text>
-            </View>
-          ))}
-        </ScrollView>
+      {showContinue && (
+        <>
+          <Text style={styles.sectionTitle} accessibilityRole="header">
+            Continue learning
+          </Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.continueRow}
+          >
+            {continueLearning.map((course) => (
+              <Pressable
+                key={course.id}
+                style={styles.continueCard}
+                onPress={() => openCourse(course)}
+                accessibilityRole="button"
+                accessibilityLabel={`Continue ${course.title}`}
+              >
+                <GradientTile size={148} radius={radii.md} />
+                <Text style={styles.continueTitle} numberOfLines={2}>
+                  {course.title}
+                </Text>
+                <Text style={styles.continueSubtitle} numberOfLines={1}>
+                  {course.subtitle}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </>
       )}
-
-      <Text style={styles.sectionTitle} accessibilityRole="header">
-        All courses
-      </Text>
       {!loading && filtered.length === 0 ? (
         <EmptyState
           icon="library-outline"
@@ -149,21 +157,29 @@ export default function CourseListScreen() {
           columnWrapperStyle={columns > 1 ? styles.columnWrap : undefined}
           contentContainerStyle={styles.list}
           renderItem={({ item }) => (
-            <View style={columns > 1 ? styles.gridItem : undefined}>
-              <ListRow
-                title={item.title}
-                subtitle={`${item.subtitle} · ${item.lessonCount} lessons`}
-                leading={<GradientTile size={44} />}
-                onPress={() => openCourse(item)}
-                accessibilityLabel={`${item.title}. ${item.subtitle}. ${item.lessonCount} lessons. ${item.progressPercent} percent complete.`}
-              />
-            </View>
+            <Pressable
+              style={styles.courseCard}
+              onPress={() => openCourse(item)}
+              accessibilityRole="button"
+              accessibilityLabel={`${item.title}. ${item.subtitle}`}
+            >
+              <View style={styles.courseBanner} />
+              <View style={styles.courseBody}>
+                <Text style={styles.courseTitle} numberOfLines={2}>
+                  {item.title}
+                </Text>
+                <Text style={styles.courseMeta} numberOfLines={1}>
+                  {item.subtitle}
+                </Text>
+              </View>
+            </Pressable>
           )}
         />
       )}
     </ScreenContainer>
   );
 }
+
 
 const styles = StyleSheet.create({
   heading: {
@@ -199,6 +215,18 @@ const styles = StyleSheet.create({
   continueTitle: { fontSize: 15, fontWeight: "700", color: colors.ink },
   continueSubtitle: { fontSize: 13, color: colors.muted },
   list: { gap: spacing.md, paddingBottom: spacing.xl },
+  // A course is a card with its own banner rather than a thin row beneath a
+  // large loose square: the block of colour belongs to the thing it names.
+  courseCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radii.md,
+    overflow: "hidden",
+    ...shadow.card,
+  },
+  courseBanner: { height: 104, backgroundColor: colors.brand600 },
+  courseBody: { padding: spacing.lg, gap: 6 },
+  courseTitle: { fontSize: 20, fontWeight: "800", letterSpacing: -0.3, color: colors.ink },
+  courseMeta: { fontSize: 14, color: colors.muted },
   columnWrap: { gap: spacing.md },
   gridItem: { flex: 1 },
 });

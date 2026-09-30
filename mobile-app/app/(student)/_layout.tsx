@@ -205,10 +205,13 @@ const styles = StyleSheet.create({
   fill: { flex: 1 },
   loading: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.page },
   tabBar: {
-    borderTopColor: colors.border,
-    height: 62,
-    paddingBottom: 8,
-    paddingTop: 6,
+    // Taller, and the label sits clear of the gesture bar: at 62px with 8px
+    // below it, "Home" and "Profile" were being cut in half on this device.
+    borderTopWidth: 0,
+    backgroundColor: colors.surface,
+    height: 78,
+    paddingBottom: 18,
+    paddingTop: 8,
   },
-  tabLabel: { fontSize: 11, fontWeight: "700" },
+  tabLabel: { fontSize: 12, fontWeight: "700" },
 });
