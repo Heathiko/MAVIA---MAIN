@@ -16,10 +16,11 @@ from course.services import _generated_versions, _version_from_segments
 from course.version_assignment import assign_group_versions, version_bundles
 from question_generation.models import GeneratedQuestion
 
-from ..models import ConceptPrerequisite, LearningPathStep
+from ..models import ConceptPrerequisite, CourseConceptLink, LearningPathStep
 from lessons.services.concept_bundles import bundles_for_group
 
 from .concept_units import concepts_for_topic
+from .course_criteria import course_topics
 from .text_signals import part_marker, strip_part_suffix
 
 
@@ -219,6 +220,49 @@ def _questions(parts, include_answers):
     return questions
 
 
+def course_prerequisites(node, concept_ids):
+    """Earlier-topic concepts each step needs, for the adaptive engine.
+
+    Only links that shape paths (accepted, approved), only from topics earlier
+    in the outline, only to concepts saved in a published topic's path --
+    nearest topic first. See docs/handoff-course-prerequisites.md.
+    """
+    topics = course_topics(node.course)
+    rank = {topic.id: index for index, topic in enumerate(topics)}
+    published = {topic.id for topic in topics if topic.published}
+    if node.id not in rank:
+        return {}
+    rows = list(
+        CourseConceptLink.objects.filter(
+            course_id=node.course_id,
+            status__in=CourseConceptLink.SHAPES_PATH,
+            dependent_id__in=concept_ids,
+        ).select_related("prerequisite")
+    )
+    positions = {
+        (step.outline_node_id, step.concept_id): step.position
+        for step in LearningPathStep.objects.filter(concept_id__in=[row.prerequisite_id for row in rows])
+    }
+    found = defaultdict(list)
+    for row in rows:
+        topic_id = row.prerequisite.outline_node_id
+        if topic_id not in published or rank.get(topic_id, len(rank)) >= rank[node.id]:
+            continue
+        position = positions.get((topic_id, row.prerequisite_id))
+        if position is None:
+            continue
+        found[row.dependent_id].append((rank[topic_id], {
+            "topic_id": topic_id,
+            "concept_id": row.prerequisite_id,
+            "position": position,
+            "status": row.status,
+        }))
+    return {
+        concept_id: [entry for _, entry in sorted(entries, key=lambda item: (-item[0], item[1]["position"]))]
+        for concept_id, entries in found.items()
+    }
+
+
 def get_published_path(node, *, include_answers=True):
     """The topic's saved learning path, or ``None`` if it was never published.
 
@@ -236,6 +280,7 @@ def get_published_path(node, *, include_answers=True):
 
     concept_ids = {step.concept_id for step in steps}
     position_of = {step.concept_id: step.position for step in steps}
+    earlier_topics = course_prerequisites(node, concept_ids)
     needs, leads = defaultdict(list), defaultdict(list)
     for row in ConceptPrerequisite.objects.filter(
         outline_node=node,
@@ -315,6 +360,7 @@ def get_published_path(node, *, include_answers=True):
             ],
             "prerequisites": sorted(needs[group.id], key=position_of.get),
             "leads_to": sorted(leads[group.id], key=position_of.get),
+            "course_prerequisites": earlier_topics.get(group.id, []),
         })
 
     return {

@@ -1,11 +1,25 @@
 """Cross-topic concept links: model, derivation storage, roll-up, edits (course spec)."""
 
+from unittest.mock import patch
+
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.test import TestCase
+from django.utils import timezone
+from rest_framework.test import APIClient
 
-from lessons.models import CourseGroup, LearningObjectGroup, OutlineNode
+from lessons.models import CourseGroup, LearningMaterial, LearningObject, LearningObjectGroup, OutlineNode
 
-from .models import CourseConceptLink
+from .models import CourseConceptLink, LearningPathStep
+from .services.course_links import (
+    CourseLinkError,
+    course_path,
+    decide_course_link,
+    refresh_course_links,
+    restore_course_links,
+)
+from .services.published import course_prerequisites
+from .testing import word_vectors
 
 
 class CourseConceptLinkModelTests(TestCase):
@@ -23,14 +37,6 @@ class CourseConceptLinkModelTests(TestCase):
     def test_statuses_match_the_topic_links(self):
         self.assertEqual(CourseConceptLink.SHAPES_PATH, ("accepted", "approved"))
         self.assertEqual(CourseConceptLink.TEACHER_DECIDED, ("approved", "rejected"))
-
-
-from unittest.mock import patch
-
-from lessons.models import LearningMaterial, LearningObject
-
-from .services.course_links import course_path, refresh_course_links
-from .testing import word_vectors
 
 
 class CourseFixture(TestCase):
@@ -122,9 +128,6 @@ class CoursePathTests(CourseFixture):
         self.assertEqual(course_path(self.course)["arrows"], [])
 
 
-from .services.course_links import CourseLinkError, decide_course_link, restore_course_links
-
-
 class CourseLinkEditTests(CourseFixture):
     def setUp(self):
         super().setUp()
@@ -162,10 +165,6 @@ class CourseLinkEditTests(CourseFixture):
     def test_a_malformed_undo_is_refused(self):
         with self.assertRaises(CourseLinkError):
             restore_course_links(self.course, [{"prerequisite_id": "x"}])
-
-
-from django.contrib.auth import get_user_model
-from rest_framework.test import APIClient
 
 
 class CoursePathApiTests(CourseFixture):
@@ -210,3 +209,45 @@ class CoursePathApiTests(CourseFixture):
         response = self._client("TEACHER").get("/api/learning-path/courses/999999/")
 
         self.assertEqual(response.status_code, 404)
+
+
+class CoursePrerequisiteTests(CourseFixture):
+    def setUp(self):
+        super().setUp()
+        for topic in (self.flowers, self.reproduction):
+            OutlineNode.objects.filter(pk=topic.pk).update(published=True)
+        now = timezone.now()
+        LearningPathStep.objects.create(outline_node=self.flowers, concept=self.groups["Stamen"], position=1, depth=0, published_at=now)
+        LearningPathStep.objects.create(outline_node=self.reproduction, concept=self.groups["Pollination"], position=1, depth=0, published_at=now)
+
+    def _link(self, before, after, status):
+        return CourseConceptLink.objects.create(
+            course=self.course, prerequisite=self.groups[before], dependent=self.groups[after], status=status,
+        )
+
+    def _for(self, topic, title):
+        topic.refresh_from_db()
+        return course_prerequisites(topic, {self.groups[title].id}).get(self.groups[title].id, [])
+
+    def test_an_accepted_link_from_an_earlier_topic_is_published(self):
+        self._link("Stamen", "Pollination", "accepted")
+
+        self.assertEqual(self._for(self.reproduction, "Pollination"), [{
+            "topic_id": self.flowers.id, "concept_id": self.groups["Stamen"].id, "position": 1, "status": "accepted",
+        }])
+
+    def test_pending_and_rejected_links_are_never_published(self):
+        self._link("Stamen", "Pollination", "pending")
+
+        self.assertEqual(self._for(self.reproduction, "Pollination"), [])
+
+    def test_an_approved_link_from_a_later_topic_is_never_published(self):
+        self._link("Pollination", "Stamen", "approved")
+
+        self.assertEqual(self._for(self.flowers, "Stamen"), [])
+
+    def test_a_prerequisite_in_an_unpublished_topic_is_never_published(self):
+        OutlineNode.objects.filter(pk=self.flowers.pk).update(published=False)
+        self._link("Stamen", "Pollination", "accepted")
+
+        self.assertEqual(self._for(self.reproduction, "Pollination"), [])
