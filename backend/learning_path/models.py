@@ -1,6 +1,6 @@
 from django.db import models
 
-from lessons.models import LearningObjectGroup, OutlineNode
+from lessons.models import CourseGroup, LearningObjectGroup, OutlineNode
 
 
 class ConceptPrerequisite(models.Model):
@@ -116,3 +116,43 @@ class LearningPathStep(models.Model):
 
     def __str__(self):
         return f"{self.outline_node_id} #{self.position}: {self.concept_id}"
+
+
+class CourseConceptLink(models.Model):
+    """"Learn ``prerequisite`` before ``dependent``", across two topics of one course.
+
+    The course-level counterpart of ``ConceptPrerequisite``, kept apart so a
+    topic's path and screen never see a concept from another topic. Same
+    statuses and the same rule: re-deriving never overwrites a teacher's
+    ``approved`` or ``rejected``.
+    """
+
+    Status = ConceptPrerequisite.Status
+    Source = ConceptPrerequisite.Source
+    SHAPES_PATH = ConceptPrerequisite.SHAPES_PATH
+    TEACHER_DECIDED = ConceptPrerequisite.TEACHER_DECIDED
+
+    course = models.ForeignKey(CourseGroup, related_name="course_concept_links", on_delete=models.CASCADE)
+    prerequisite = models.ForeignKey(
+        LearningObjectGroup, related_name="course_dependent_links", on_delete=models.CASCADE,
+    )
+    dependent = models.ForeignKey(
+        LearningObjectGroup, related_name="course_prerequisite_links", on_delete=models.CASCADE,
+    )
+    status = models.CharField(max_length=10, choices=ConceptPrerequisite.Status.choices, db_index=True)
+    source = models.CharField(
+        max_length=10, choices=ConceptPrerequisite.Source.choices, default=ConceptPrerequisite.Source.DERIVED,
+    )
+    # Votes and scores behind a derived row, plus ``contradicts_outline``.
+    evidence = models.JSONField(default=dict, blank=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["prerequisite", "dependent"], name="unique_course_concept_link"),
+        ]
+
+    def __str__(self):
+        return f"{self.prerequisite_id} -> {self.dependent_id} ({self.status})"
