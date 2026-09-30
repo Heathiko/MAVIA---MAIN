@@ -3,10 +3,11 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from lessons.models import OutlineNode
+from lessons.models import CourseGroup, OutlineNode
 from user.permissions import IsTeacherOrAdmin
 
 from .services import build_topic_path, get_published_path
+from .services.course_links import CourseLinkError, course_path, decide_course_link, refresh_course_links, restore_course_links
 from .services.publishing import refresh_prerequisites
 from .services.teacher_links import LinkError, add_link, decide_link, move_link, restore_links
 
@@ -147,3 +148,42 @@ def published_learning_path(request, node_id):
             status=status.HTTP_404_NOT_FOUND,
         )
     return Response(path)
+
+
+@api_view(["GET"])
+@permission_classes([IsTeacherOrAdmin])
+def course_learning_path(request, course_id):
+    """The Course path page: topics in outline order and cross-topic arrows, derived on open."""
+    course = CourseGroup.objects.filter(pk=course_id).first()
+    if course is None:
+        return Response({"detail": "Course not found."}, status=status.HTTP_404_NOT_FOUND)
+    refresh_course_links(course)
+    return Response(course_path(course))
+
+
+@api_view(["POST"])
+@permission_classes([IsTeacherOrAdmin])
+def decide_course_path_link(request, course_id, link_id):
+    """Approve a suggestion, or reject (remove) a course link. Body: ``{"status": "approved"|"rejected"}``."""
+    course = CourseGroup.objects.filter(pk=course_id).first()
+    if course is None:
+        return Response({"detail": "Course not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        undo = decide_course_link(course, link_id, request.data.get("status"))
+    except CourseLinkError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({**course_path(course), "undo": undo})
+
+
+@api_view(["POST"])
+@permission_classes([IsTeacherOrAdmin])
+def restore_course_path_links(request, course_id):
+    """Undo a course link change. Body: ``{"undo": [<record from the change's response>]}``."""
+    course = CourseGroup.objects.filter(pk=course_id).first()
+    if course is None:
+        return Response({"detail": "Course not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        restore_course_links(course, request.data.get("undo"))
+    except CourseLinkError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(course_path(course))

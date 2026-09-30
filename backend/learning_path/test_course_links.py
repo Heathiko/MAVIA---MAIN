@@ -162,3 +162,51 @@ class CourseLinkEditTests(CourseFixture):
     def test_a_malformed_undo_is_refused(self):
         with self.assertRaises(CourseLinkError):
             restore_course_links(self.course, [{"prerequisite_id": "x"}])
+
+
+from django.contrib.auth import get_user_model
+from rest_framework.test import APIClient
+
+
+class CoursePathApiTests(CourseFixture):
+    def _client(self, role):
+        user = get_user_model().objects.create(username=f"user-{role}", email=f"{role}@example.com", role=role)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_a_student_cannot_open_the_course_path(self):
+        response = self._client("STUDENT").get(f"/api/learning-path/courses/{self.course.id}/")
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_a_teacher_gets_topics_and_arrows(self):
+        with patch("learning_path.services.embeddings.embed", word_vectors):
+            response = self._client("TEACHER").get(f"/api/learning-path/courses/{self.course.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["topics"]), 4)
+        self.assertEqual(len(response.data["arrows"]), 1)
+
+    def test_a_decision_returns_the_path_and_an_undo(self):
+        link = CourseConceptLink.objects.create(
+            course=self.course, prerequisite=self.groups["Stamen"], dependent=self.groups["Pollination"], status="pending",
+        )
+        client = self._client("TEACHER")
+
+        response = client.post(
+            f"/api/learning-path/courses/{self.course.id}/links/{link.id}/decision/", {"status": "approved"}, format="json",
+        )
+        restored = client.post(
+            f"/api/learning-path/courses/{self.course.id}/links/restore/", {"undo": response.data["undo"]}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(restored.status_code, 200)
+        link.refresh_from_db()
+        self.assertEqual(link.status, "pending")
+
+    def test_an_unknown_course_is_404(self):
+        response = self._client("TEACHER").get("/api/learning-path/courses/999999/")
+
+        self.assertEqual(response.status_code, 404)
