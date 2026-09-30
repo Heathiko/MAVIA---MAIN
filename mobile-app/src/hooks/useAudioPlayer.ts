@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFocusEffect } from "expo-router";
+
+import { registerSilencer } from "./audioBus";
 import { AudioPlayer, AudioStatus, createAudioPlayer, setAudioModeAsync } from "expo-audio";
 
 type PlayerState = {
@@ -90,6 +92,8 @@ export function useAudioPlayer(onFinish?: () => void) {
     playerRef.current = null;
     setState({ ...INITIAL });
   }, []);
+
+  useEffect(() => registerSilencer(stop), [stop]);
 
   // Same rule as narration: leaving the screen ends its sound. A lesson track
   // is an audio FILE, which expo-speech knows nothing about, so stopping the

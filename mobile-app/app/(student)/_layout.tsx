@@ -5,6 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { useAuth } from "@/auth/AuthContext";
 import { useNarration } from "@/hooks/useNarration";
+import { silenceAll } from "@/hooks/audioBus";
 import { hasHeardGuide, useGuideOnFirstLaunch } from "@/guide/useGuide";
 import { GuideMenu } from "@/guide/GuideMenu";
 import { useGuidePractice } from "@/guide/useGuidePractice";
@@ -74,7 +75,7 @@ export default function StudentLayout() {
     // During practice a swipe is the drill, not a navigation.
     if (practice.feed({ kind: "swipe" })) return;
     guide.stop();
-    narration.stop();
+    silenceAll();
     router.push("/home");
   }, [guide, narration, practice]);
 
@@ -99,7 +100,9 @@ export default function StudentLayout() {
       narration.stop();
       return;
     }
-    narration.stop();
+    // Everything, not just this component's narrator: the screen being left
+    // has its own narrator and, in the player, an audio track as well.
+    silenceAll();
     if (router.canGoBack()) router.back();
     else router.replace("/home");
   }, [guide, menuOpen, narration, practice]);
