@@ -238,10 +238,6 @@ export default function LearningPathPage() {
         <div>
           <span className="connection-eyebrow">Learning path</span>
           <h2>{data?.topic?.title || "Learning path"}</h2>
-          <p className="muted-text">
-            One path for the whole topic. Each step is a concept, assembled from every
-            uploaded file that teaches it.
-          </p>
         </div>
         <div className="learning-path-actions">
           <button type="button" className="btn btn-secondary" disabled={loading} onClick={load}>
