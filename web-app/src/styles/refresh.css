@@ -149,6 +149,10 @@
   padding: 0.85rem;
   gap: 0;
   min-height: 100vh;
+  /* With content-box the 100vh and the padding ADD, so the shell is always
+     taller than the viewport and the page scrolls by exactly its padding. */
+  box-sizing: border-box;
+  align-items: stretch;
 }
 
 .card.lesson-pdf-sidebar {
@@ -176,11 +180,26 @@
   background: var(--mv-page);
   border-radius: var(--mv-radius-lg);
   padding: clamp(1.1rem, 2vw, 1.75rem);
-  min-height: calc(100vh - 1.7rem);
   width: 100%;
   max-width: none;
   margin: 0;
+  /* No min-height of its own. The shell is already a 100vh grid and its rows
+     stretch, so the panel fills the height for free -- asking for 100vh here
+     as well made the two add up, which is the band of empty white that
+     appeared under short content. */
+  min-height: 0;
+  box-sizing: border-box;
   overflow: hidden;
+}
+
+/* The sidebar sticks within the shell rather than being a 100vh column of its
+   own, for the same reason. */
+.topic-workspace-shell > .card.lesson-pdf-sidebar {
+  height: auto;
+  min-height: 0;
+  max-height: calc(100vh - 1.7rem);
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .mv-side {

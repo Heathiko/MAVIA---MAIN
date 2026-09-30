@@ -6,20 +6,25 @@
    Everything visual is scoped to `.app-shell` (the wrapper these pages use)
    so it no longer leaks into the blue .mv-* screens.
    ========================================================================== */
+/* This sheet's own names, defined in terms of the app's tokens rather than as
+   a second palette. Hundreds of rules below already say var(--bg) and
+   var(--ink); pointing those names at --mv-* moves all of them at once, and
+   means a later change to the palette reaches this sheet instead of leaving
+   it a week behind. The names stay so nothing below has to be rewritten. */
 :root {
   color-scheme: light;
-  --bg: #f4f7fb;
-  --surface: #ffffff;
-  --ink: #12212f;
-  --muted: #5c6b7c;
+  --bg: var(--mv-page);
+  --surface: var(--mv-surface);
+  --ink: var(--mv-ink);
+  --muted: var(--mv-muted);
   --accent: var(--mv-brand-600);
-  --accent-soft: #dfecfa;
-  --warning: #9a5b00;
-  --danger: #c0392b;
-  --border: #dde5ee;
-  --border-strong: #c6d2e0;
-  --shadow: 0 18px 45px rgba(11, 42, 74, 0.12);
-  --shadow-sm: 0 4px 14px rgba(11, 42, 74, 0.06);
+  --accent-soft: var(--mv-brand-100);
+  --warning: var(--mv-warning);
+  --danger: var(--mv-danger);
+  --border: var(--mv-border);
+  --border-strong: var(--mv-border-strong);
+  --shadow: var(--mv-shadow);
+  --shadow-sm: var(--mv-shadow-sm);
 }
 
 .app-shell * {
