@@ -90,7 +90,7 @@ matching as R1–R3, no model). Simulated read-only: topic 340 particle figure
 moves from step 2 to after Gas; topic 357 flower-parts figure moves after
 Petals and Sepals; nothing else moved. Lives in `criteria.py` (user's code).
 
-### 1.5 Course-level learning path — implemented 2026-09-30, evaluation waiting for uploads 341 and 345
+### 1.5 Course-level learning path — implemented and measured 2026-09-30 (`docs/course-path-evaluation-2026-09-30.md`): unrelated topics 0 links, related-topic recall 2/16 — next: existence vs direction redesign, measured on unused pairs 341↔343, 341↔347, 347↔348
 > Spec `docs/superpowers/specs/2026-09-30-course-learning-path-design.md`, plan `docs/superpowers/plans/2026-09-30-course-learning-path.md` (Task 13 blocked on uploads), hand-off `docs/handoff-course-prerequisites.md`. Topic ids changed since this note: 341 Grouping Materials, 345/346 Changes, 343 Mixtures, 348 Separating Mixture, 362 Reproductive Structures.
 
 Today topic→topic order is only the outline order
