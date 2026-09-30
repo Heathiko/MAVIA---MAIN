@@ -16,7 +16,7 @@ decision.
 | Branch | State |
 |---|---|
 | `learning-path-criteria-v4` | v4 criteria (R1 definition / R2 containment accept, R3 reference pending). Pushed to origin. **Not merged.** |
-| `learning-path-graph-screen` | Graph-first review screen + fixes (below), pushed 2026-09-30. Since then, locally: **criteria v5** (relatedness + two evidence families, `backend/learning_path/CRITERIA.md`; results in `docs/learning-path-v5-evaluation-2026-09-30.md`). **Not merged — wait for the user's cue.** |
+| `learning-path-graph-screen` | Graph-first review screen + fixes (below), pushed 2026-09-30. Since then, locally: **criteria v6** (text = whether, order = direction; spec `docs/superpowers/specs/2026-09-30-learning-path-v6-reference-order-design.md`, report `docs/learning-path-v6-evaluation-2026-09-30.md`, `backend/learning_path/CRITERIA.md`). Test set is now 341/343/347/348. **Not merged — wait for the user's cue.** |
 
 Live data (SQLite `backend/db.sqlite3`): outline 12 "Outline for Grade 1 Science".
 Topic **340** Solid, Liquid and Gas (materials 62, 63, 64 — published).
@@ -51,12 +51,17 @@ Learning path formation, all measured (reports: `docs/learning-path-v5-evaluatio
    ones alike. Next: existence cutoff calibrated on 340↔341, direction from content clues, measured
    only on unused pairs 341↔343, 341↔347, 347↔348.
 2. **Topic level: few accepted links without PDF structure** — text-only links stay pending, so the
-   adaptive engine cannot use them until a teacher approves.
-3. **Suggestion volume** — 62 pending on topic 340; many are not in the key.
+   adaptive engine cannot use them until a teacher approves. *v6 (same day, later): on the unseen
+   test topics 341/343/347/348 v5 accepted 1 link (wrong); v6 covers 20 of 41 required links with
+   accepted precision 0.68 and no forbidden link (`docs/learning-path-v6-evaluation-2026-09-30.md`).*
+3. **Suggestion volume** — 62 pending on topic 340; many are not in the key. *v6: 340 → 46; test set
+   86 → 35.*
 4. **357's process chain exists only as pending suggestions** (amendment 2); remediation needs
-   teacher approval first.
+   teacher approval first. *v6: 357 covered 16 of 20 by accepted links; chains with no shared words
+   (Pollination → Fertilization) still need a teacher.*
 5. **Meaning clue at chance on direction within a topic** (27/25); do not present it as a
-   direction signal in the manuscript.
+   direction signal in the manuscript. *v6: recorded only, never decides; on the test set it was
+   right 7, wrong 23.*
 6. **Gold 62 reach 5 of 10 (v4: 9)** — headings alone no longer accept.
 7. **Course path page re-derives the whole course on every open** — slow and noisy at ~30 topics.
 8. **Evaluation limits** — AI-drafted keys, dev/test share subjects, one course.

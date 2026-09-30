@@ -16,7 +16,16 @@ This file is only *what happened and what is pending*.
 - **Record what would surprise the next agent**: decisions you made on the
   user's behalf, things you deliberately did not do, and anything you changed
   in the live database.
-- **Open questions go in `## Open threads`** near the bottom, and are removed by
+- **Open questions go in `### 2026-09-30 — Claude Code (Opus 5.5) — Learning-path criteria v6: the text decides a link, the order its direction
+
+**Branch / commits:** learning-path-graph-screen, bd73e52..(this commit); rules frozen at b42b364. Not merged, not pushed.
+**Tests:** `python manage.py test learning_path` OK; full backend suite run at the end of the session (see the commit).
+**Changed:** new test set 341/343/347/348 (snapshots, AI-drafted keys, fixtures); 340/357 moved to development. `fusion.reference_verdict` replaces v5's two-family verdict; `criteria.decide_pairs` builds per-pair facts (name/term use each way, heading, shared-PDF order, figure, parallel); relatedness and meaning recorded only; reason sentences for `rule: "reference-order"`; `evaluate_gold_paths` gains the "covered" metric and `--baseline order`. Spec `docs/superpowers/specs/2026-09-30-learning-path-v6-reference-order-design.md`, report `docs/learning-path-v6-evaluation-2026-09-30.md`, `backend/learning_path/CRITERIA.md` rewritten.
+**Live database:** untouched (stored links are re-derived the next time a topic's review screen opens).
+**Decisions I made:** spec §5 compares the order-only baseline on accepted precision, not covered (its chain covers every forward link by construction; amended before the test run). Test set run without the extra lesson / second key (none existed); they can still be scored at b42b364.
+**Not done / watch out:** implicit links (no shared words) and siblings without headings stay invisible — topic 348 covered 3/18. Keys are AI-drafted and follow PDF order. The course level still uses v5's cutoffs.
+
+## Open threads`** near the bottom, and are removed by
   whoever resolves them (noting the resolution in their entry).
 - Be honest about what you did not verify. "Tests pass" and "I reasoned it
   through" are different claims.
