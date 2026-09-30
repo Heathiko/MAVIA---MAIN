@@ -9,6 +9,9 @@ from collections import defaultdict
 
 from django.db import transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+
+from lessons.models import LearningObjectGroup
 
 from ..models import CourseConceptLink
 from .concept_units import concepts_for_topic
@@ -120,3 +123,86 @@ def course_path(course):
             for (from_topic, to_topic), links in sorted(arrows.items(), key=lambda item: (position[item[0][0]], position[item[0][1]]))
         ],
     }
+
+
+class CourseLinkError(ValueError):
+    """A teacher's change that cannot be applied; the message is shown as is."""
+
+
+_INVALID_UNDO = "That undo is not valid. Refresh the page."
+
+
+def _snapshot(course, pairs):
+    rows = {
+        (row.prerequisite_id, row.dependent_id): row
+        for row in CourseConceptLink.objects.filter(course=course)
+    }
+    records = []
+    for prerequisite_id, dependent_id in pairs:
+        row = rows.get((prerequisite_id, dependent_id))
+        records.append({
+            "prerequisite_id": prerequisite_id,
+            "dependent_id": dependent_id,
+            "prior": None if row is None else {
+                "status": row.status,
+                "source": row.source,
+                "decided_at": row.decided_at.isoformat() if row.decided_at else None,
+            },
+        })
+    return records
+
+
+def decide_course_link(course, link_id, status):
+    """Approve a suggestion, or reject (remove) any link. Returns the undo record."""
+    if status not in CourseConceptLink.TEACHER_DECIDED:
+        raise CourseLinkError("Choose approve or reject.")
+    row = CourseConceptLink.objects.filter(pk=link_id, course=course).first()
+    if row is None:
+        raise CourseLinkError("That link no longer exists. Refresh the page.")
+    undo = _snapshot(course, [(row.prerequisite_id, row.dependent_id)])
+    row.status = status
+    row.source = CourseConceptLink.Source.TEACHER
+    row.decided_at = timezone.now()
+    row.save(update_fields=["status", "source", "decided_at", "updated_at"])
+    return undo
+
+
+def _course_group(course, group_id):
+    group = LearningObjectGroup.objects.filter(pk=group_id, outline_node__course=course).first()
+    if group is None:
+        raise CourseLinkError(_INVALID_UNDO)
+    return group
+
+
+@transaction.atomic
+def restore_course_links(course, records):
+    """Put each pair back exactly as an undo record says it was."""
+    if not isinstance(records, list) or not records:
+        raise CourseLinkError("Nothing to undo.")
+    for record in records:
+        try:
+            prerequisite = _course_group(course, int(record["prerequisite_id"]))
+            dependent = _course_group(course, int(record["dependent_id"]))
+            prior = record["prior"]
+        except (KeyError, TypeError, ValueError):
+            raise CourseLinkError(_INVALID_UNDO)
+        if prior is None:
+            CourseConceptLink.objects.filter(prerequisite=prerequisite, dependent=dependent).delete()
+            continue
+        if (
+            not isinstance(prior, dict)
+            or prior.get("status") not in CourseConceptLink.Status.values
+            or prior.get("source") not in CourseConceptLink.Source.values
+            or not isinstance(prior.get("decided_at"), (str, type(None)))
+        ):
+            raise CourseLinkError(_INVALID_UNDO)
+        CourseConceptLink.objects.update_or_create(
+            prerequisite=prerequisite,
+            dependent=dependent,
+            defaults={
+                "course": course,
+                "status": prior["status"],
+                "source": prior["source"],
+                "decided_at": parse_datetime(prior["decided_at"]) if prior.get("decided_at") else None,
+            },
+        )

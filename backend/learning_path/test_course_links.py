@@ -120,3 +120,45 @@ class CoursePathTests(CourseFixture):
         self.groups["Pollination"].delete()
 
         self.assertEqual(course_path(self.course)["arrows"], [])
+
+
+from .services.course_links import CourseLinkError, decide_course_link, restore_course_links
+
+
+class CourseLinkEditTests(CourseFixture):
+    def setUp(self):
+        super().setUp()
+        self.link = CourseConceptLink.objects.create(
+            course=self.course, prerequisite=self.groups["Stamen"], dependent=self.groups["Pollination"],
+            status="pending", evidence={"rule": "course"},
+        )
+
+    def test_approving_a_suggestion_records_the_teacher(self):
+        undo = decide_course_link(self.course, self.link.id, "approved")
+
+        self.link.refresh_from_db()
+        self.assertEqual((self.link.status, self.link.source), ("approved", "teacher"))
+        self.assertIsNotNone(self.link.decided_at)
+        self.assertEqual(undo[0]["prior"]["status"], "pending")
+
+    def test_undo_puts_the_link_back(self):
+        undo = decide_course_link(self.course, self.link.id, "rejected")
+
+        restore_course_links(self.course, undo)
+
+        self.link.refresh_from_db()
+        self.assertEqual((self.link.status, self.link.source), ("pending", "derived"))
+
+    def test_only_approve_or_reject(self):
+        with self.assertRaises(CourseLinkError):
+            decide_course_link(self.course, self.link.id, "accepted")
+
+    def test_a_link_of_another_course_is_not_found(self):
+        other = CourseGroup.objects.create(title="Other course")
+
+        with self.assertRaises(CourseLinkError):
+            decide_course_link(other, self.link.id, "approved")
+
+    def test_a_malformed_undo_is_refused(self):
+        with self.assertRaises(CourseLinkError):
+            restore_course_links(self.course, [{"prerequisite_id": "x"}])
