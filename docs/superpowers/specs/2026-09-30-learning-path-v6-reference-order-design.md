@@ -134,6 +134,24 @@ The option "trust the order, fix figures only" measured 61 covered but 6 forbidd
   reported as they come out. A forbidden link or a poor number there is recorded, not tuned away.
 - Report: `docs/learning-path-v6-evaluation-<date>.md`; `CRITERIA.md` rewritten for v6.
 
+**Guards against overfitting** (added 2026-09-30 at the user's request):
+- **Order-only baseline.** Every report shows, next to v5 and v6, a baseline that links each
+  concept to the one just before it in PDF order (figures included, no text used). If v6 does not
+  clearly beat it on covered links and forbidden links, the text rules add nothing, and the report
+  says so.
+- **Rules frozen before the test run.** The commit that runs the test set records the rule
+  version; §3 is not changed after that run. Any later idea is a new version, measured on a new
+  unseen topic.
+- **One lesson of a different kind**, if the user can upload one: a lesson from another subject
+  (e.g. Math, English, Filipino, Araling Panlipunan) or a science lesson written by another
+  teacher in another style. Same procedure as the test set: snapshot → key → scored once. It is the
+  only check on the assumption that the author's order is the learning order.
+- **One key from a different source**, if available: a teacher, or at least a different AI tool
+  given the concepts **shuffled** (not in PDF order), for one test topic. Its agreement with the
+  existing key, and v6's score against both, show how much the keys lean on PDF order.
+- **Stated scope.** The report and the manuscript say: grade-school science lessons from one
+  course, one lesson template, AI-drafted keys.
+
 ## 6. Code changes (`backend/learning_path/`)
 
 | File | Change |
@@ -158,4 +176,15 @@ The option "trust the order, fix figures only" measured 61 covered but 6 forbidd
   from v5.
 - **Headings.** The `parallel` flag depends on section headings; sentence-fragment titles from
   extraction may hide siblings on single-PDF topics.
-- One course, one subject area; development and test topics share a curriculum.
+- One course, one subject area; development and test topics share a curriculum and, it appears,
+  one lesson template (single PDF, competency references). The test set checks new topics, not new
+  authors or subjects.
+- **Rules found on one topic.** The `figure` and `no_shared_pdf` contradictions were added after
+  seeing topic 340 accept wrong links, and several variants were simulated on the development set.
+  They are general in intent (extraction puts figures first; a merged order is a guess), but were
+  chosen by looking.
+- **Test text was read.** The test topics' text was read while writing their snapshots, before the
+  design; their keys were not scored. Some of them were also used in the course-level work.
+- **Few fitted numbers.** v6's verdict uses yes/no references and one textbook statistic (G² ≥
+  3.84); v5's topic-level cutoffs no longer decide anything. This lowers, but does not remove, the
+  risk of fitting these lessons.
