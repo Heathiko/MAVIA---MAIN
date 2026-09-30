@@ -30,7 +30,12 @@ def course_topics(course, with_content=True):
             .values_list("id", flat=True)
         )
     else:
-        topic_ids = {node_id for node_id in nodes if node_id not in with_children}
+        # Leaves, plus any node holding content itself -- a PDF with no matching
+        # subtopic is placed on its unit, and its links must stay visible.
+        topic_ids = {node_id for node_id in nodes if node_id not in with_children} | set(
+            OutlineNode.objects.filter(course=course, learning_object_groups__isnull=False)
+            .values_list("id", flat=True)
+        )
 
     def outline_position(node):
         chain = []

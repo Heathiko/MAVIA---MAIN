@@ -33,7 +33,15 @@ confirmed it on the Course path page).
   `position` for that concept.
 - **Never pending or rejected links.**
 - **Nearest topic first**, then by position.
-- **Changes only when a topic is published again**, like the rest of the published path.
+- **Read live.** Like the in-topic `prerequisites`, it reflects the course's current accepted or
+  approved links each time the path is read — a teacher approving or removing a link on the
+  Course path page, or another topic being published, can change it without this topic being
+  re-published. It never points at a concept outside a published path.
+- **Never breaks the path.** If the course links cannot be read (for example before migration
+  `learning_path.0009` is applied), the list is empty and a warning is logged.
+- **Order caveat for deep outlines.** "Earlier" follows the outline's full nesting (unit, then
+  sub-unit, then topic). The engine's `_course_topic_nodes` sorts by top-level module, then the
+  node's own `order`; the two agree for two-level outlines like today's.
 - An empty list when there is nothing — the key is always present.
 
 ## Suggested use in `_reroute`

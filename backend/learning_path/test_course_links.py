@@ -251,3 +251,27 @@ class CoursePrerequisiteTests(CourseFixture):
         self._link("Stamen", "Pollination", "accepted")
 
         self.assertEqual(self._for(self.reproduction, "Pollination"), [])
+
+
+    def test_a_missing_course_link_table_never_breaks_the_student_path(self):
+        """Review finding: before migration 0009 the published path would crash."""
+        from django.db import DatabaseError
+
+        with patch.object(CourseConceptLink.objects, "filter", side_effect=DatabaseError("no such table")):
+            with self.assertLogs("learning_path.services.published", level="WARNING"):
+                self.assertEqual(course_prerequisites(self.reproduction, {self.groups["Pollination"].id}), {})
+
+
+class UnitWithContentTests(CourseFixture):
+    def test_a_unit_holding_content_itself_is_listed_with_its_links(self):
+        """Review finding: a PDF placed on the unit made its links invisible on the page."""
+        unit = self.flowers.parent
+        LearningObjectGroup.objects.filter(pk=self.groups["Stamen"].pk).update(outline_node=unit)
+        LearningMaterial.objects.filter(outline_node=self.flowers).update(outline_node=unit)
+        self.flowers.delete()
+        self._refresh()
+
+        path = course_path(self.course)
+
+        self.assertIn(unit.id, [topic["id"] for topic in path["topics"]])
+        self.assertEqual([(arrow["from_topic"], arrow["to_topic"]) for arrow in path["arrows"]], [(unit.id, self.reproduction.id)])

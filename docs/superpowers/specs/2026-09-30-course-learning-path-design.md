@@ -111,8 +111,10 @@ Endpoints (teacher/admin only, like the topic endpoints): `GET courses/<id>/path
 `services/published.py` adds a per-step field **`course_prerequisites`**: a list of
 `{topic_id, concept_id, position, status}` — the concept's position in its own topic's published
 path — for accepted or approved `CourseConceptLink` rows whose prerequisite is in an **earlier**
-topic, whose target concept is in that topic's **published** path, nearest topic first. It
-changes only when a topic is published again. Pending and rejected links never appear.
+topic, whose target concept is in that topic's **published** path, nearest topic first. It is
+read live, like the in-topic `prerequisites` (a teacher's change on the Course path page shows at
+once); if the links cannot be read it is empty. Pending and rejected links never appear.
+(Corrected after the final review: an earlier draft said it changed only on re-publish.)
 
 **Hand-off note** `docs/handoff-course-prerequisites.md` for the adaptive engine's owner: what
 the field means, the guarantees above, a suggested use (after the in-topic prerequisite detour

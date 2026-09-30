@@ -9,7 +9,10 @@ without breaking either reader, as long as the returned shape stays the same.
 See ``learning_path/HANDOFF.md`` for the shape and how to use it.
 """
 
+import logging
 from collections import defaultdict
+
+from django.db import DatabaseError, transaction
 
 from course.models import bundle_segments, normal_bundle_for
 from course.services import _generated_versions, _version_from_segments
@@ -22,6 +25,8 @@ from lessons.services.concept_bundles import bundles_for_group
 from .concept_units import concepts_for_topic
 from .course_criteria import course_topics
 from .text_signals import part_marker, strip_part_suffix
+
+logger = logging.getLogger(__name__)
 
 
 def _representative(group, members):
@@ -221,6 +226,20 @@ def _questions(parts, include_answers):
 
 
 def course_prerequisites(node, concept_ids):
+    """Earlier-topic prerequisites, or none when the course links cannot be read.
+
+    Students read this path; a missing course-link table (before migration
+    0009) or any read failure must cost the detour data, not the whole path.
+    """
+    try:
+        with transaction.atomic():
+            return _course_prerequisites(node, concept_ids)
+    except DatabaseError as exc:
+        logger.warning("[Published path topic %s] course prerequisites unavailable: %s", node.id, exc)
+        return {}
+
+
+def _course_prerequisites(node, concept_ids):
     """Earlier-topic concepts each step needs, for the adaptive engine.
 
     Only links that shape paths (accepted, approved), only from topics earlier
