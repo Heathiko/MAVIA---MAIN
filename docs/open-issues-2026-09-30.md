@@ -41,6 +41,33 @@ All other topics are empty.
 
 ---
 
+## Known defects at the 2026-09-30 push (branch `learning-path-graph-screen`)
+
+Learning path formation, all measured (reports: `docs/learning-path-v5-evaluation-2026-09-30.md`,
+`docs/course-path-evaluation-2026-09-30.md`):
+
+1. **Course level: recall 2 of 16** key links on related topics. Same-subject topics look related
+   almost everywhere (existence problem); the name-and-terms rule suppresses false links and real
+   ones alike. Next: existence cutoff calibrated on 340↔341, direction from content clues, measured
+   only on unused pairs 341↔343, 341↔347, 347↔348.
+2. **Topic level: few accepted links without PDF structure** — text-only links stay pending, so the
+   adaptive engine cannot use them until a teacher approves.
+3. **Suggestion volume** — 62 pending on topic 340; many are not in the key.
+4. **357's process chain exists only as pending suggestions** (amendment 2); remediation needs
+   teacher approval first.
+5. **Meaning clue at chance on direction within a topic** (27/25); do not present it as a
+   direction signal in the manuscript.
+6. **Gold 62 reach 5 of 10 (v4: 9)** — headings alone no longer accept.
+7. **Course path page re-derives the whole course on every open** — slow and noisy at ~30 topics.
+8. **Evaluation limits** — AI-drafted keys, dev/test share subjects, one course.
+9. **Upstream inputs** — stale section headings, sentence-fragment titles, split concepts
+   (extraction/grouping); topic 341 names two properties it never teaches.
+10. **Deferred review minors** — listed in `docs/AGENT_LOG.md` / the review notes (undo validation,
+    stale reason text, layout overlap, reverse-direction rows, NaN cutoff, retry on model load).
+
+Not done: the adaptive engine (groupmate) does not use `course_prerequisites` yet
+(`docs/handoff-course-prerequisites.md`); the manuscript still describes v3/v4.
+
 ## 1. Learning path formation (user's pipeline)
 
 ### 1.1 Automatic rules find few real prerequisites — highest impact
