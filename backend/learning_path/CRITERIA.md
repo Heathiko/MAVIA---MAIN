@@ -84,6 +84,15 @@ The meaning clue is recorded, not counted. Stored as `CourseConceptLink` (`servi
 refreshed when a topic is published. `published.course_prerequisites` gives the adaptive engine
 accepted/approved earlier-topic prerequisites (hand-off: `docs/handoff-course-prerequisites.md`).
 
+## v7 (tried 2026-10-01, not adopted)
+
+Three equal direction votes (hierarchy, order, references) on a block x concept matrix
+(`services/direction_votes.py`, `rule="three-votes"`, spreadsheet export
+`export_direction_sheet`). On the design set it repaired fewer moved links than v6 (3 vs 7):
+the reference and subsumption votes both read overviews backwards and outvoted correct orders
+and headings. Spec `docs/superpowers/specs/2026-10-01-learning-path-v7-direction-votes-design.md`;
+outputs `docs/learning-path-v7-evaluation/`. Its final check (moves 5-9 on 341-348) is unspent.
+
 ## Measuring
 
 ```bash
