@@ -1044,15 +1044,11 @@ def apply_move(concepts, move):
 
 - [ ] **Step 5: Append `move_report` and `vote_accuracy` to `gold.py`**
 
-Add to `gold.py`'s imports (keep the existing ones):
+Add to `gold.py`'s imports (it already imports `find_term_owners`, `prepare` and `criteria`):
 
 ```python
-from .clues import find_term_owners
-from .concept_text import prepare
 from .direction_votes import VOTES, build_block_matrix, cast_votes
 ```
-
-(If `prepare` or `find_term_owners` is already imported there, do not import it twice.)
 
 Append:
 
