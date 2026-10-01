@@ -2,12 +2,13 @@
 
 Development and test sets. Uses the real encoder; skipped when it cannot load.
 Floors are measured v6 values; see docs/learning-path-v6-evaluation-2026-09-30.md.
+The four test-set topics are tagged ``final_check``: run with ``--exclude-tag final_check`` until the v7 freeze.
 """
 
 import json
 import unittest
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, tag
 
 from .services import criteria
 from .services.embeddings import EncoderUnavailable, load_encoder
@@ -64,14 +65,18 @@ class GoldPathTests(SimpleTestCase):
     def test_topic_357_against_the_recommended_arrangement(self):
         self._assert_gold(357)
 
+    @tag("final_check")
     def test_topic_341_grouping_materials(self):
         self._assert_gold(341)
 
+    @tag("final_check")
     def test_topic_343_mixtures(self):
         self._assert_gold(343)
 
+    @tag("final_check")
     def test_topic_347_changes_in_materials(self):
         self._assert_gold(347)
 
+    @tag("final_check")
     def test_topic_348_separating_mixtures(self):
         self._assert_gold(348)
