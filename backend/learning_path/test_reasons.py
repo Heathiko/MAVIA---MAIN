@@ -222,3 +222,45 @@ class LinkReasonTests(SimpleTestCase):
             "Pollination uses terms Stamen explains. Pollination names Stamen. "
             "This contradicts your outline: Stamen's topic comes later. Confidence 0.67.",
         )
+
+
+def three_vote_evidence(direction_from, hierarchy=0, order=0, reference=0, hierarchy_from=""):
+    return {"rule": "three-votes", "direction_from": direction_from,
+            "votes": {"hierarchy": hierarchy, "order": order, "reference": reference},
+            "records": {"hierarchy": {"from": hierarchy_from}, "order": {"centres": {}}, "reference": {}}}
+
+
+class ThreeVoteReasonTests(SimpleTestCase):
+    def test_an_outvoted_order_is_said_plainly(self):
+        evidence = three_vote_evidence("outvoted_order", hierarchy=1, order=-1, reference=1, hierarchy_from="subsumption")
+
+        self.assertEqual(
+            link_reason(evidence, "Matter", "Solid"),
+            "Matter is the broader idea: almost everywhere Solid appears, Matter does too. "
+            "Solid refers to Matter more than the reverse. "
+            "This outvoted the lesson order, which teaches Solid first.",
+        )
+
+    def test_votes_that_agree(self):
+        evidence = three_vote_evidence("votes_agree", hierarchy=1, order=1, hierarchy_from="heading")
+
+        self.assertEqual(
+            link_reason(evidence, "Seeds", "Germination"),
+            "Germination sits under a heading naming Seeds. The lesson teaches Seeds first.",
+        )
+
+    def test_order_only_says_how_weak_it_is(self):
+        self.assertEqual(
+            link_reason(three_vote_evidence("order_only", order=1), "Pollination", "Fertilization"),
+            "The lesson teaches Pollination first. "
+            "Direction from the lesson order only; the text gives nothing else to go on.",
+        )
+
+    def test_a_contested_suggestion_names_what_stands_against_it(self):
+        evidence = three_vote_evidence("contested", hierarchy=-1, order=1)
+
+        self.assertEqual(
+            link_reason(evidence, "Stamen", "Pollination"),
+            "The lesson teaches Stamen first. Against it: the hierarchy. "
+            "The evidence disagrees; choose the direction.",
+        )

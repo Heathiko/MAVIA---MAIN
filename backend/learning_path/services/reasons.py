@@ -1,6 +1,6 @@
 """One plain sentence explaining a prerequisite link, for the review screen.
 
-Built from the evidence ``criteria.decide_pairs`` stores on each derived row;
+Built from the evidence ``criteria.decide_pairs`` stores on each derived row (v6 or v7);
 rows from older versions (v4, v5) keep their wording until re-derived. A row
 with no evidence was made by the teacher.
 """
@@ -118,6 +118,41 @@ def _reference_order_reason(evidence, a, b):
     return " ".join(parts)
 
 
+_VOTE_NAMES = {"hierarchy": "the hierarchy", "order": "the lesson order", "reference": "the references"}
+
+_SOURCE_SENTENCES = {
+    "outvoted_order": "This outvoted the lesson order, which teaches {b} first.",
+    "order_only": "Direction from the lesson order only; the text gives nothing else to go on.",
+    "contested": "The evidence disagrees; choose the direction.",
+    "merged_order": "Nothing settles the direction; it follows the topic's combined order.",
+    "hierarchy": "Only the hierarchy points this way; please confirm.",
+    "reference": "Only the references point this way; please confirm.",
+}
+
+
+def _three_vote_reason(evidence, a, b):
+    """v7: one sentence per vote for the link, what stands against it, how it was settled."""
+    votes = evidence.get("votes") or {}
+    records = evidence.get("records") or {}
+    parts = []
+    if votes.get("hierarchy") == 1:
+        if (records.get("hierarchy") or {}).get("from") == "heading":
+            parts.append(f"{b} sits under a heading naming {a}.")
+        else:
+            parts.append(f"{a} is the broader idea: almost everywhere {b} appears, {a} does too.")
+    if votes.get("reference") == 1:
+        parts.append(f"{b} refers to {a} more than the reverse.")
+    if votes.get("order") == 1:
+        parts.append(f"The lesson teaches {a} first.")
+    source = evidence.get("direction_from")
+    against = [_VOTE_NAMES[vote] for vote in _VOTE_NAMES if votes.get(vote) == -1]
+    if against and source != "outvoted_order":
+        parts.append(f"Against it: {', '.join(against)}.")
+    if source in _SOURCE_SENTENCES:
+        parts.append(_SOURCE_SENTENCES[source].format(a=a, b=b))
+    return " ".join(parts)
+
+
 def link_reason(evidence, prerequisite_title, dependent_title):
     a, b = prerequisite_title, dependent_title
     evidence = evidence or {}
@@ -125,6 +160,8 @@ def link_reason(evidence, prerequisite_title, dependent_title):
 
     if rule == "course":
         return _course_reason(evidence, a, b)
+    if rule == "three-votes":
+        return _three_vote_reason(evidence, a, b)
     if rule == "reference-order":
         return _reference_order_reason(evidence, a, b)
     if rule == "fusion":
