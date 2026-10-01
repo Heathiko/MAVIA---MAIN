@@ -3,7 +3,7 @@
 --rule RULE          three-votes (v7) or reference-order (v6); default criteria.DEFAULT_RULE
 --moves              also score each approved move of the topic (fixtures/direction_moves.json)
 --by-vote            add each v7 vote's right/wrong/silent count on the key's links
---final-check        required to score 341, 343, 347 or 348 (scored once, after the freeze)
+--final-check        required to score 341-348 (v7 lock) or 351/353/365 (v6.1 final check)
 --without CLUE       silence one clue (v6 ablation)
 --build-on-latest    Kahn ties prefer the concept building on the latest step (off by default)
 --meaning-matches N  average the N best matches in the meaning clue (size check)
@@ -24,7 +24,7 @@ from learning_path.services.gold import (
 from learning_path.services.moves import apply_move, load_moves
 
 DESIGN_TOPICS = ["340", "357"]
-FINAL_CHECK_TOPICS = {"341", "343", "347", "348"}
+FINAL_CHECK_TOPICS = {"341", "343", "347", "348", "351", "353", "365"}
 
 
 class Command(BaseCommand):
