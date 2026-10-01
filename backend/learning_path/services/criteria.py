@@ -1,10 +1,12 @@
-"""Prerequisite links for the learning path (criteria v6).
+"""Prerequisite links for the learning path (criteria v6 and v7).
 
-For each pair of concepts in a topic: the text decides whether a link exists (a
-name, terms one concept explains, or a heading), the lesson's order decides which
-way, and a link nothing contradicts is accepted. Relatedness and meaning are
-recorded, not counted. Nothing here writes to the database. See
-docs/superpowers/specs/2026-09-30-learning-path-v6-reference-order-design.md.
+For each pair of concepts in a topic the text decides whether a link exists (a
+name, terms one concept explains, or a heading); v6 (``reference-order``) lets
+the lesson's order decide which way, v7 (``three-votes``) lets three votes
+decide: hierarchy, order and references. Relatedness and meaning are recorded,
+not counted. Nothing here writes to the database. See
+docs/superpowers/specs/2026-09-30-learning-path-v6-reference-order-design.md and
+docs/superpowers/specs/2026-10-01-learning-path-v7-direction-votes-design.md.
 """
 
 from . import embeddings
@@ -14,13 +16,23 @@ from .clues import (
     presented_in_parallel, reference_uses, shared_pdf_order, term_vote,
 )
 from .concept_text import material_positions, prepare
+from .direction_votes import build_block_matrix, cast_votes, count_votes
 from .fusion import (
     ACCEPTED, DECIDING_CLUES, DISAGREE, NONE_SHARED, PENDING, SHARED,
     PairFacts, confidence, reference_verdict,
 )
 from .relatedness import relatedness
 
-__all__ = ["ACCEPTED", "PENDING", "crosses_sections", "decide_pairs"]
+__all__ = [
+    "ACCEPTED", "DEFAULT_RULE", "PENDING", "REFERENCE_ORDER", "RULES", "THREE_VOTES",
+    "crosses_sections", "decide_pairs",
+]
+
+THREE_VOTES = "three-votes"
+REFERENCE_ORDER = "reference-order"
+RULES = (THREE_VOTES, REFERENCE_ORDER)
+# v6 until v7 passes the final check (v7 spec section 8, stop rule).
+DEFAULT_RULE = REFERENCE_ORDER
 
 _PDF_ORDER = {1: SHARED, -1: SHARED, 0: DISAGREE, None: NONE_SHARED}
 _NAME_FIELDS = ("later_names_earlier", "earlier_names_later")
@@ -79,13 +91,40 @@ def _votes(prerequisite, dependent, owners, positions, meaning_cutoff, semantic,
     return {clue: 0 if clue in without else vote for clue, vote in votes.items()}
 
 
-def decide_pairs(concepts, runtime_instance=None, calibration=None, embed=None, without=()):
+def _three_vote_row(first, second, matrix, owners, semantic):
+    """One v7 row; ``first`` precedes ``second`` in the topic's merged order."""
+    votes, _ = cast_votes(first, second, matrix)
+    decision = count_votes(votes)
+    prerequisite, dependent = (first, second) if decision.direction > 0 else (second, first)
+    votes, records = cast_votes(prerequisite, dependent, matrix)
+    records["terms"] = term_vote(prerequisite, dependent, owners)[1]
+    voting = [vote for vote in votes.values() if vote]
+    return {
+        "prerequisite": prerequisite.concept,
+        "dependent": dependent.concept,
+        "verdict": decision.verdict,
+        "evidence": {
+            "rule": THREE_VOTES,
+            "direction_from": decision.direction_from,
+            "votes": votes,
+            "records": records,
+            "relatedness": round(relatedness(first, second), 3) if semantic else None,
+            "confidence": round(sum(1 for vote in voting if vote == 1) / len(voting), 3) if voting else 0.0,
+            "semantic": semantic,
+        },
+        "cross_section": crosses_sections(prerequisite.concept, dependent.concept),
+    }
+
+
+def decide_pairs(concepts, runtime_instance=None, calibration=None, embed=None, without=(), rule=None):
     """Every pair the text links: accepted when nothing contradicts it, pending otherwise.
 
     ``concepts`` arrive in the topic's merged order (``concepts_for_topic``).
     ``runtime_instance`` is kept for callers and ignored. Without the encoder
     the verdicts are the same; only relatedness and meaning are not recorded.
-    ``without`` silences clues, for the evaluation's ablations.
+    ``without`` silences clues, for the evaluation's ablations. ``rule`` is
+    ``THREE_VOTES`` or ``REFERENCE_ORDER`` (default ``DEFAULT_RULE``); either way
+    v6 decides whether a link exists.
     """
     concepts = list(concepts)
     if len(concepts) < 2:
@@ -99,6 +138,8 @@ def decide_pairs(concepts, runtime_instance=None, calibration=None, embed=None, 
     owners = find_term_owners(texts)
     positions = material_positions(concepts)
     meaning_cutoff = calibration["meaning_cutoff"]
+    rule = rule or DEFAULT_RULE
+    matrix = build_block_matrix(texts, owners) if rule == THREE_VOTES else None
 
     decisions = []
     for index, first in enumerate(texts):
@@ -109,6 +150,10 @@ def decide_pairs(concepts, runtime_instance=None, calibration=None, embed=None, 
             facts, earlier, later = _facts(first, second, owners, positions, without)
             decision = reference_verdict(facts)
             if decision.verdict not in (ACCEPTED, PENDING):
+                continue
+            # v6's text-silent suggestion stays as it is: no text, nothing for the votes to read.
+            if rule == THREE_VOTES and decision.direction_from != "pdf_agreement":
+                decisions.append(_three_vote_row(first, second, matrix, owners, semantic))
                 continue
             prerequisite, dependent = (earlier, later) if decision.direction > 0 else (later, earlier)
             votes = _votes(prerequisite, dependent, owners, positions, meaning_cutoff, semantic, without)

@@ -7,8 +7,9 @@ from django.test import SimpleTestCase, TestCase
 from lessons.models import CourseGroup, LearningMaterial, LearningObject, LearningObjectGroup, OutlineNode
 
 from .services.concept_units import concepts_for_topic
-from .services.criteria import ACCEPTED, PENDING, crosses_sections, decide_pairs
+from .services.criteria import ACCEPTED, PENDING, THREE_VOTES, crosses_sections, decide_pairs
 from .services.embeddings import EncoderUnavailable
+from .test_direction_votes import three_states
 from .testing import concept, member, word_vectors
 
 CALIBRATION = {
@@ -192,3 +193,62 @@ class MemberTextTests(TestCase):
 
         self.assertIn("A solid is matter that keeps its shape.", concept_unit.member_text)
         self.assertIn("Solid particles vibrate.", concept_unit.member_text)
+
+
+def decide_by_votes(concepts):
+    return {
+        (row["prerequisite"].id, row["dependent"].id): row
+        for row in decide_pairs(concepts, calibration=CALIBRATION, embed=word_vectors, rule=THREE_VOTES)
+    }
+
+
+class ThreeVoteTests(SimpleTestCase):
+    """v7 spec section 6: the order is one vote of three."""
+
+    def test_the_hierarchy_and_the_references_outvote_a_misplaced_concept(self):
+        """Solid is taught before Matter; Matter is broader and Solid refers to it."""
+        row = decide_by_votes(three_states())[(2, 1)]
+
+        self.assertEqual(row["verdict"], ACCEPTED)
+        self.assertEqual(row["evidence"]["rule"], "three-votes")
+        self.assertEqual(row["evidence"]["direction_from"], "outvoted_order")
+        self.assertEqual(row["evidence"]["votes"], {"hierarchy": 1, "order": -1, "reference": 1})
+        self.assertAlmostEqual(row["evidence"]["confidence"], 2 / 3, places=3)
+
+    def test_votes_and_records_read_prerequisite_first(self):
+        row = decide_by_votes(three_states())[(2, 1)]
+
+        hierarchy = row["evidence"]["records"]["hierarchy"]
+        self.assertEqual((hierarchy["blocks_a"], hierarchy["blocks_b"]), (6, 3))
+        self.assertEqual(row["evidence"]["records"]["reference"], {"a_refers_b": 0.0, "b_refers_a": 1.0})
+
+    def test_the_existence_rule_is_v6s(self):
+        """Siblings under one heading naming neither still get no link."""
+        lesson = [concept(1, "Solid", member("A solid keeps its shape.", section_title="States", order=0)),
+                  concept(2, "Liquid", member("A liquid is not a solid.", section_title="States", order=1))]
+
+        self.assertEqual(decide_by_votes(lesson), {})
+
+    def test_files_agreeing_while_the_text_is_silent_stays_a_v6_suggestion(self):
+        lesson = [
+            concept(1, "Stamen", member("The anther makes pollen grains.", material_id=1, order=0),
+                    member("The anther makes pollen grains.", material_id=2, order=0)),
+            concept(2, "Fruit", member("A ripe fruit protects the seeds.", material_id=1, order=1),
+                    member("A ripe fruit protects the seeds.", material_id=2, order=1)),
+        ]
+
+        row = decide_by_votes(lesson)[(1, 2)]
+
+        self.assertEqual(row["verdict"], PENDING)
+        self.assertEqual(row["evidence"]["rule"], "reference-order")
+
+    def test_three_vote_evidence_is_json_serialisable(self):
+        rows = decide_pairs(three_states(), calibration=CALIBRATION, embed=word_vectors, rule=THREE_VOTES)
+
+        self.assertTrue(rows)
+        json.dumps([row["evidence"] for row in rows])
+
+    def test_the_default_rule_is_still_v6_until_the_final_check(self):
+        rows = decide_pairs(three_states(), calibration=CALIBRATION, embed=word_vectors)
+
+        self.assertTrue(all(row["evidence"]["rule"] == "reference-order" for row in rows))
