@@ -264,3 +264,25 @@ class ThreeVoteReasonTests(SimpleTestCase):
             "The lesson teaches Stamen first. Against it: the hierarchy. "
             "The evidence disagrees; choose the direction.",
         )
+
+
+class SingleWordReasonTests(SimpleTestCase):
+    def evidence(self, owned=(), owned_back=()):
+        return {"rule": "reference-order", "version": "6.1", "direction_from": "pdf_order",
+                "contradictions": ["weak_terms"], "votes": {"name": 0, "terms": 0, "heading": 0},
+                "records": {"name": {"use": 0.0, "use_back": 0.0},
+                            "terms": {"owned": list(owned), "owned_back": list(owned_back),
+                                      "use": 0.0, "use_back": 0.0}}}
+
+    def test_it_names_the_word(self):
+        self.assertEqual(
+            link_reason(self.evidence(owned=["table"]), "Comparing the Three States", "Everyday Example"),
+            "Comparing the Three States comes first in the lesson. "
+            "Only one shared word links them (table); please confirm.",
+        )
+
+    def test_it_names_the_word_when_the_prerequisite_uses_it(self):
+        self.assertEqual(
+            link_reason(self.evidence(owned_back=["stigma"]), "Pollination", "Pistil"),
+            "Pollination comes first in the lesson. Only one shared word links them (stigma); please confirm.",
+        )
