@@ -1,6 +1,10 @@
-# Prerequisite link criteria (v6)
+# Prerequisite link criteria (v6.1)
 
-**Status (2026-09-30):** implemented on branch `learning-path-graph-screen` (not merged).
+**Status (2026-10-02):** v6.1 is the default (`rule="cleaner-edges"`); v6 stays selectable as
+`rule="reference-order"`. Branch `learning-path-graph-screen` (not merged).
+v6.1 design: `docs/superpowers/specs/2026-10-02-learning-path-v6-1-edge-quality-design.md`;
+measurements: `docs/learning-path-v6-1-evaluation-2026-10-02.md` (final check on new topics 351/353/365).
+v6:
 Design: `docs/superpowers/specs/2026-09-30-learning-path-v6-reference-order-design.md`.
 Plan: `docs/superpowers/plans/2026-09-30-learning-path-v6-reference-order.md`.
 Measurements: `docs/learning-path-v6-evaluation-2026-09-30.md` and
@@ -35,7 +39,7 @@ The adaptive engine then walks the saved path and detours through the nearest pr
 | Evidence | Reads | Known failure |
 |---|---|---|
 | name | a concept's sentences containing all of the other's name stems | lessons refer to a concept by its parts ("anther", not "stamen"); sentence titles have no name |
-| terms | a concept's passages using terms the other owns (Dunning G² ≥ 3.84) | an overview uses its children's terms |
+| terms | a concept's passages using **at least two** terms the other owns (Dunning G² ≥ 3.84; v6.1, `MIN_SHARED_TERMS`) | an overview uses its children's terms; a link on one shared word is only a suggestion (`weak_terms`) |
 | heading | a concept under a heading whose stems contain the other's name | word matching; silent when headings are missing |
 | PDF order | positions in every PDF teaching both | a figure's position (extraction puts it first); a merged order across PDFs is a guess |
 | `parallel` | both under one heading naming neither | depends on section headings |
@@ -46,6 +50,7 @@ The adaptive engine then walks the saved path and detours through the nearest pr
 |---|---|---|---|
 | 1 | `parallel` flag | no link | — |
 | 2 | text silent, 2+ PDFs agree on order | pending | the PDFs' order |
+| 2b | (v6.1) the only text link is single shared words | pending (`weak_terms`) | the order |
 | 3 | text silent, otherwise | no link | — |
 | 4 | heading containment | **accepted** | the heading's |
 | 5 | the later concept refers to the earlier (name or owned terms), no contradiction | **accepted** | earlier → later |
@@ -53,6 +58,9 @@ The adaptive engine then walks the saved path and detours through the nearest pr
 
 Contradictions: `reverse_name` (the earlier names the later more than the reverse), `figure`
 (either is a figure), `no_shared_pdf`, `pdfs_disagree`, `backward_only` (only the earlier refers).
+v6.1 drops `figure` and `no_shared_pdf` (a figure pair is accepted in PDF order, a cross-PDF pair
+in the merged order) and adds `weak_terms` (row 2b). Its rows carry `evidence.version = "6.1"`
+and `records.terms` gains `owned_back`, `single_word_use`, `single_word_use_back`.
 A suggestion's direction: a figure after the text its description refers to, else the order;
 across PDFs the name clue's direction if it has one, else the merged order; otherwise the order.
 

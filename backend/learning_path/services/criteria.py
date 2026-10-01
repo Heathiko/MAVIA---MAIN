@@ -32,8 +32,8 @@ THREE_VOTES = "three-votes"
 REFERENCE_ORDER = "reference-order"
 CLEANER_EDGES = "cleaner-edges"
 RULES = (THREE_VOTES, REFERENCE_ORDER, CLEANER_EDGES)
-# v6 until v6.1 passes the final check (v6.1 spec section 6, stop rule).
-DEFAULT_RULE = REFERENCE_ORDER
+# v6.1 since the final check of 2026-10-02 (docs/learning-path-v6-1-evaluation-2026-10-02.md).
+DEFAULT_RULE = CLEANER_EDGES
 
 _PDF_ORDER = {1: SHARED, -1: SHARED, 0: DISAGREE, None: NONE_SHARED}
 _NAME_FIELDS = ("later_names_earlier", "earlier_names_later")

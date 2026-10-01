@@ -31,7 +31,7 @@ def flower():
 def decide(concepts, embed=word_vectors):
     return {
         (row["prerequisite"].id, row["dependent"].id): row
-        for row in decide_pairs(concepts, calibration=CALIBRATION, embed=embed)
+        for row in decide_pairs(concepts, calibration=CALIBRATION, embed=embed, rule="reference-order")
     }
 
 
@@ -300,8 +300,8 @@ class CleanerEdgeTests(SimpleTestCase):
     def test_leaving_out_terms_leaves_out_single_words_too(self):
         self.assertNotIn((2, 3), decide_cleanly(flower(), without=("terms",)))
 
-    def test_v6_is_still_the_default(self):
-        row = decide(flower())[(2, 3)]
+    def test_v6_1_is_the_default(self):
+        rows = decide_pairs(flower(), calibration=CALIBRATION, embed=word_vectors)
 
-        self.assertIn("backward_only", row["evidence"]["contradictions"])
-        self.assertNotIn("version", row["evidence"])
+        self.assertTrue(rows)
+        self.assertTrue(all(row["evidence"]["version"] == "6.1" for row in rows))
