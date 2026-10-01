@@ -57,11 +57,6 @@ def text_metrics(text):
     return {"words": word_count, "sentences": sentence_count, "fk": round(fk, 2)}
 
 
-def flesch_kincaid_grade(text):
-    """US grade level. Reported for evidence; comparison uses text_metrics."""
-    return text_metrics(text)["fk"]
-
-
 def compare(original_text, candidate_text):
     """Where does ``candidate_text`` sit relative to ``original_text``?
 

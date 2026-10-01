@@ -596,12 +596,13 @@ def _mark_question_headings(classified: list[dict]) -> list[dict]:
     """
     for index, block in enumerate(classified):
         text = re.sub(r"\s+", " ", block.get("text") or "").strip()
+        numbered = bool(re.match(r"^\d+[.)]\s+", text))
         if (
             block.get("category") != "assessment"
             or not text.endswith("?")
             or len(text.split()) > _MAX_QUESTION_HEADING_WORDS
             or int(block.get("line_count") or 1) != 1
-            or re.match(r"^\s*(?:\d+[.)]|[A-Da-d][.)]|q\d*\s*[:.]|question\b)", text, re.IGNORECASE)
+            or re.match(r"^\s*(?:[A-Da-d][.)]|q\d*\s*[:.]|question\b)", text, re.IGNORECASE)
         ):
             continue
         following = next(
@@ -618,6 +619,9 @@ def _mark_question_headings(classified: list[dict]) -> list[dict]:
         )
         if (
             emphasized
+            # A numbered quiz prompt can also be bold. Only treat it as a
+            # section heading when its type is clearly larger than the prose.
+            and (not numbered or (block.get("is_bold") and font_size >= following_size + 1.5))
             and len(following_text.split()) >= _MIN_ANSWERING_PARAGRAPH_WORDS
             and "?" not in following_text
             and not re.search(r"_{3,}", following_text)
@@ -627,6 +631,36 @@ def _mark_question_headings(classified: list[dict]) -> list[dict]:
                 reason="Question-form heading answered by the paragraph under it.",
                 include_in_narration=True,
                 question_heading=True,
+            )
+    return classified
+
+
+def _mark_contents_navigation(classified: list[dict]) -> list[dict]:
+    """Set aside an authored contents list, even when PDF list markers contain zero-width spaces."""
+    for index, block in enumerate(classified):
+        if _normalized_label(block.get("text") or "") not in {"in this guide", "contents", "table of contents"}:
+            continue
+        numbers = []
+        entry_indexes = []
+        for entry_index in range(index + 1, len(classified)):
+            lines = [line.strip() for line in (classified[entry_index].get("text") or "").splitlines() if line.strip()]
+            if not lines:
+                continue
+            matches = [re.match(r"^(\d+)[.)][\u200b\u200c\u200d\ufeff\s]*(\S.*)$", line) for line in lines]
+            if not all(matches) or any(len(line.split()) > 16 for line in lines):
+                break
+            next_numbers = [int(match.group(1)) for match in matches]
+            if next_numbers != list(range(len(numbers) + 1, len(numbers) + len(next_numbers) + 1)):
+                break
+            numbers.extend(next_numbers)
+            entry_indexes.append(entry_index)
+        if len(numbers) < 3 or numbers != list(range(1, len(numbers) + 1)):
+            continue
+        for navigation_index in [index, *entry_indexes]:
+            classified[navigation_index].update(
+                category="navigation",
+                include_in_narration=False,
+                reason="Numbered contents list for navigating the document.",
             )
     return classified
 
@@ -805,9 +839,9 @@ def classify_instructional_blocks(blocks: list[dict], batch_size: int = 20) -> l
                 0.65 if is_instructional else 0.4,
             )
 
-    classified = _mark_question_headings(_mark_title_block(
+    classified = _mark_contents_navigation(_mark_question_headings(_mark_title_block(
         [classified_by_id[block["block_id"]] for block in blocks if block["block_id"] in classified_by_id]
-    ))
+    )))
     # One block at a time cannot see that a line sits on a credits page or an
     # upside-down answer key; the page-level pass can.
     from .page_roles import apply_page_roles

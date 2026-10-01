@@ -84,6 +84,14 @@ class ChunkingTests(GroundingTestCase):
 
 
 class LexicalStageTests(GroundingTestCase):
+    def test_generic_question_wording_is_not_treated_as_new_science(self):
+        question = self.question(
+            "Which of the following best shows the content about particles?",
+            {"A": "particles far apart", "B": "plasma"},
+            "A",
+        )
+        self.assertEqual(grounding.ungrounded_terms(question, self.lexical_index()), [])
+
     def test_out_of_corpus_answer_is_rejected(self):
         """The exact failure this gate was written for: 'plasma' marked correct
         where the source says 'gas'. No model is consulted."""

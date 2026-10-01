@@ -38,6 +38,7 @@ import re
 
 import requests
 from django.conf import settings
+from config.groq_client import generate as groq_generate
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ made make many might more most much must never next only other over own same
 should since some such than that the their them then there these they this
 those through thus too under until upon very were what when where which while
 who why will with within without would your
+best content false following given statement true
 """.split())
 
 _WORD = re.compile(r"[a-z][a-z-]{2,}")
@@ -358,6 +360,16 @@ def _judge_model():
 
 def _judge_call(prompt):
     """One judging call. Temperature 0 -- a verdict is not a creative task."""
+    if settings.LLM_PROVIDER == "groq":
+        raw, _metrics = groq_generate(
+            prompt,
+            model=_judge_model(),
+            schema=JUDGE_SCHEMA,
+            temperature=0.0,
+            max_tokens=512,
+            timeout=getattr(settings, "QUESTION_JUDGE_TIMEOUT", settings.OLLAMA_TIMEOUT),
+        )
+        return json.loads(raw)
     response = requests.post(
         f"{settings.OLLAMA_BASE_URL}/api/generate",
         json={

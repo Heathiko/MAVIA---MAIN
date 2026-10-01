@@ -7,6 +7,7 @@ import time
 
 import requests
 from django.conf import settings
+from config.groq_client import GroqRateLimitError, generate as groq_generate
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,8 @@ _GROUNDING_RULE = (
     "Every choice must use words and ideas from the content. A wrong choice "
     "must be wrong because the content says otherwise, not because it names "
     "something the lesson never mentions.\n"
+    "For the question stem and correct answer, reuse the lesson's own content "
+    "words. Avoid introducing synonyms or extra scientific terms.\n"
 )
 
 PROMPT_TEMPLATES = {
@@ -278,6 +281,45 @@ def build_response_schema(format_split):
     }
 
 
+def _groq_response_schema(format_split):
+    """One strict shape for mixed MCQ/TF batches on Groq.
+
+    Groq rejects the overlapping ``anyOf`` branches in the Ollama schema.
+    A nullable choices object covers both formats; the existing per-format
+    validator still requires four usable choices for each MCQ.
+    """
+    offered = [fmt for fmt in SUPPORTED_FORMATS if format_split.get(fmt)] or list(SUPPORTED_FORMATS)
+    answers = ["A", "B", "C", "D"] if offered == ["MCQ"] else (
+        ["True", "False"] if offered == ["TF"] else ["A", "B", "C", "D", "True", "False"]
+    )
+    return {
+        "type": "object",
+        "properties": {
+            "questions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "format": {"type": "string", "enum": offered},
+                        "choices": {
+                            "type": ["object", "null"],
+                            "properties": {key: {"type": "string"} for key in "ABCD"},
+                            "required": list("ABCD"),
+                        },
+                        "correct_answer": {"type": "string", "enum": answers},
+                        "explanation": {"type": "string"},
+                    },
+                    "required": [
+                        "question", "format", "choices", "correct_answer", "explanation",
+                    ],
+                },
+            },
+        },
+        "required": ["questions"],
+    }
+
+
 def _format_request(format_split):
     """The human-readable half of the same instruction the schema encodes."""
     parts = [
@@ -457,13 +499,32 @@ def _parse_llm_response(response_text):
         return [parsed]
 
 
-def _ollama_generate(prompt, schema=None, on_metrics=None):
-    """Call Ollama over HTTP using the project's existing settings.
+def _ollama_generate(prompt, schema=None, on_metrics=None, format_split=None, on_rate_limit_wait=None):
+    """Generate questions through the selected LLM provider.
 
     ``schema`` constrains the reply at decode time. Temperature stays where it
     was: the schema governs shape, not wording, so lowering it would cost
     question variety without preventing a single malformed response.
     """
+    if settings.LLM_PROVIDER == "groq":
+        offered = format_split or {"MCQ": 1, "TF": 1}
+        raw, metrics = groq_generate(
+            prompt + (
+                "\nFor true/false items, include the required JSON field "
+                '"choices": null; for MCQs provide choices A, B, C, and D.'
+                if offered.get("TF") else ""
+            ),
+            model=settings.QUESTION_LLM_MODEL,
+            schema=_groq_response_schema(offered) if schema is not None else None,
+            temperature=QUESTION_TEMPERATURE,
+            max_tokens=QUESTION_NUM_PREDICT,
+            timeout=settings.OLLAMA_TIMEOUT,
+            on_rate_limit_wait=on_rate_limit_wait,
+        )
+        if on_metrics:
+            on_metrics(metrics)
+        return raw
+
     payload = {
         "model": settings.QUESTION_LLM_MODEL,
         "prompt": prompt,
@@ -510,6 +571,21 @@ def _ollama_generate(prompt, schema=None, on_metrics=None):
 
 def warm_question_model(on_metrics=None):
     """Load the configured question model without generating lesson content."""
+    if settings.LLM_PROVIDER == "groq":
+        metrics = {
+            "load_ms": 0.0,
+            "prompt_eval_ms": 0.0,
+            "eval_ms": 0.0,
+            "total_ms": 0.0,
+            "prompt_tokens": 0,
+            "output_tokens": 0,
+            "tokens_per_second": None,
+            "model": settings.QUESTION_LLM_MODEL,
+            "warm_cache_hit": True,
+        }
+        if on_metrics:
+            on_metrics(metrics)
+        return metrics
     with _warm_lock:
         already_warm = (
             _warm_model == settings.QUESTION_LLM_MODEL
@@ -565,6 +641,8 @@ def generate_questions(
     format_split,
     max_retries=3,
     on_metrics=None,
+    on_error=None,
+    on_rate_limit_wait=None,
     correction="",
 ):
     """
@@ -598,7 +676,10 @@ def generate_questions(
     unusable_replies = 0
     for attempt in range(max_retries):
         try:
-            raw_text = _ollama_generate(prompt, schema=schema, on_metrics=on_metrics)
+            raw_text = _ollama_generate(
+                prompt, schema=schema, on_metrics=on_metrics, format_split=format_split,
+                on_rate_limit_wait=on_rate_limit_wait,
+            )
             questions = _parse_llm_response(raw_text)
 
             validated = []
@@ -618,10 +699,18 @@ def generate_questions(
                 return validated
 
             unusable_replies += 1
+            if on_error:
+                on_error(attempt + 1, "The model returned no structurally usable questions.")
             if unusable_replies >= MAX_UNUSABLE_REPLIES:
                 break
 
+        except GroqRateLimitError as e:
+            if on_error:
+                on_error(attempt + 1, str(e))
+            break
         except (json.JSONDecodeError, ValueError) as e:
+            if on_error:
+                on_error(attempt + 1, str(e))
             print(f"  Attempt {attempt + 1}/{max_retries} failed: {e}")
             continue
 

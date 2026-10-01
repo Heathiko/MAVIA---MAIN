@@ -6,9 +6,8 @@ from pathlib import Path
 import dj_database_url
 from dotenv import load_dotenv
 
-load_dotenv()
-
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = os.getenv(
     "DJANGO_SECRET_KEY",
@@ -237,14 +236,26 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-repl
 #     moondream, qwen2-vl, llama3.2-vision …). Must be pulled: `ollama pull …`
 #   IMAGE_DESCRIPTION_ENABLED=False turns the feature off outright.
 # ---------------------------------------------------------------------------
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_ADDITIONAL_API_KEYS = tuple(
+    key.strip() for key in os.getenv("GROQ_ADDITIONAL_API_KEYS", "").split(",")
+    if key.strip()
+)
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+GROQ_TEXT_MODEL = os.getenv("GROQ_TEXT_MODEL", "openai/gpt-oss-20b")
+GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
+GROQ_MAX_RATE_LIMIT_WAIT = float(os.getenv("GROQ_MAX_RATE_LIMIT_WAIT", "120"))
 IMAGE_DESCRIPTION_ENABLED = os.getenv("IMAGE_DESCRIPTION_ENABLED", "True").lower() in (
     "1",
     "true",
     "yes",
 )
-IMAGE_DESCRIPTION_MODEL = os.getenv("IMAGE_DESCRIPTION_MODEL", "gemma3:4b")
+IMAGE_DESCRIPTION_MODEL = (
+    GROQ_VISION_MODEL if LLM_PROVIDER == "groq"
+    else os.getenv("IMAGE_DESCRIPTION_MODEL", "gemma3:4b")
+)
 IMAGE_DESCRIPTION_TIMEOUT = int(os.getenv("IMAGE_DESCRIPTION_TIMEOUT", "300"))
 IMAGE_DESCRIPTION_REACHABILITY_TTL = int(
     os.getenv("IMAGE_DESCRIPTION_REACHABILITY_TTL", "15")
@@ -277,13 +288,17 @@ QUESTION_COUNT_HOT = int(os.getenv("QUESTION_COUNT_HOT", "3"))
 ADAPTIVE_VARIANT_GENERATION_ENABLED = os.getenv(
     "ADAPTIVE_VARIANT_GENERATION_ENABLED", "True"
 ).lower() in ("1", "true", "yes")
-ADAPTIVE_VARIANT_LLM_MODEL = os.getenv("ADAPTIVE_VARIANT_LLM_MODEL", OLLAMA_MODEL)
+ADAPTIVE_VARIANT_LLM_MODEL = (
+    os.getenv("GROQ_VARIANT_MODEL", GROQ_TEXT_MODEL) if LLM_PROVIDER == "groq"
+    else os.getenv("ADAPTIVE_VARIANT_LLM_MODEL", OLLAMA_MODEL)
+)
 ADAPTIVE_VARIANT_TIMEOUT = int(os.getenv("ADAPTIVE_VARIANT_TIMEOUT", str(OLLAMA_TIMEOUT)))
 # Decode budget for one simplified+elaborated pair. A learning object is
 # 15-60 words and the elaborated cap is 2x source words, so ~200 words of JSON
 # is the real ceiling; 1024 just meant every call ran the decoder long past the
 # grounding limit. Raise it only if long source objects start truncating.
 ADAPTIVE_VARIANT_NUM_PREDICT = int(os.getenv("ADAPTIVE_VARIANT_NUM_PREDICT", "512"))
+GROQ_VARIANT_MAX_TOKENS = int(os.getenv("GROQ_VARIANT_MAX_TOKENS", "1024"))
 # How many Ollama generation calls to keep in flight. The bottleneck in a
 # publish run is N sequential calls to a local model; Ollama serves concurrent
 # requests, so this is close to an N-times speed-up until it hits the server's
@@ -293,14 +308,20 @@ ADAPTIVE_VARIANT_CONCURRENCY = int(os.getenv("ADAPTIVE_VARIANT_CONCURRENCY", "3"
 CONTENT_VERSION_LLM_ENABLED = os.getenv(
     "CONTENT_VERSION_LLM_ENABLED", "True"
 ).lower() in ("1", "true", "yes")
-CONTENT_VERSION_LLM_MODEL = os.getenv("CONTENT_VERSION_LLM_MODEL", ADAPTIVE_VARIANT_LLM_MODEL)
+CONTENT_VERSION_LLM_MODEL = (
+    os.getenv("GROQ_CONTENT_VERSION_MODEL", GROQ_TEXT_MODEL) if LLM_PROVIDER == "groq"
+    else os.getenv("CONTENT_VERSION_LLM_MODEL", ADAPTIVE_VARIANT_LLM_MODEL)
+)
 CONTENT_VERSION_LLM_TIMEOUT = int(os.getenv("CONTENT_VERSION_LLM_TIMEOUT", str(OLLAMA_TIMEOUT)))
 CONTENT_VERSION_LLM_AUTO_THRESHOLD = float(
     os.getenv("CONTENT_VERSION_LLM_AUTO_THRESHOLD", "0.80")
 )
 
 # Model for question generation (separate from the content generation model)
-QUESTION_LLM_MODEL = os.getenv("QUESTION_LLM_MODEL", "llama3.2:3b")
+QUESTION_LLM_MODEL = (
+    os.getenv("GROQ_QUESTION_MODEL", GROQ_TEXT_MODEL) if LLM_PROVIDER == "groq"
+    else os.getenv("QUESTION_LLM_MODEL", "llama3.2:3b")
+)
 QUESTION_LLM_KEEP_ALIVE = os.getenv("QUESTION_LLM_KEEP_ALIVE", "30m")
 QUESTION_OVERGENERATION_FACTOR = float(
     os.getenv("QUESTION_OVERGENERATION_FACTOR", "1.0")
@@ -330,7 +351,10 @@ QUESTION_VALIDATION_MAX_RETRIES = int(
 )
 # The judging model. Deliberately separate from QUESTION_LLM_MODEL so the
 # judge can be a different (or larger) model than the generator.
-QUESTION_JUDGE_MODEL = os.getenv("QUESTION_JUDGE_MODEL", QUESTION_LLM_MODEL)
+QUESTION_JUDGE_MODEL = (
+    os.getenv("GROQ_JUDGE_MODEL", GROQ_TEXT_MODEL) if LLM_PROVIDER == "groq"
+    else os.getenv("QUESTION_JUDGE_MODEL", QUESTION_LLM_MODEL)
+)
 QUESTION_JUDGE_TIMEOUT = int(
     os.getenv("QUESTION_JUDGE_TIMEOUT", str(OLLAMA_TIMEOUT))
 )

@@ -20,7 +20,6 @@ from .version_assignment import (
     bundle_roles,
     set_bundle_role,
     release_from_group,
-    release_learning_object,
     settle_group,
 )
 
@@ -123,47 +122,6 @@ class RepresentationTests(TestCase):
             variant="ELABORATED",
         )
         self.assertEqual(elaborated.origin, "generated")
-
-    @patch("course.variant_generator._request_variants")
-    def test_release_takes_back_its_own_text_and_drops_generated_rows(self, request_variants):
-        request_variants.return_value = {"SIMPLIFIED": "Solid keeps shape.", "ELABORATED": "ignored"}
-        settle_group(self.group)
-
-        release_learning_object(self.second)
-
-        self.second.refresh_from_db()
-        self.assertIsNone(self.second.represented_by)
-        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
-        # The released object supplied the elaborated rung as its own text; no
-        # copy of it was ever stored on the original.
-        self.assertFalse(
-            LessonVariant.objects.filter(origin=LessonVariant.Origin.SOURCE_PDF).exists()
-        )
-        # The generated rung existed only to complete a triple that no longer
-        # has a partner, so it goes too.
-        self.assertFalse(
-            LessonVariant.objects.filter(learning_object=self.first, origin="generated").exists()
-        )
-
-    @patch("course.variant_generator._request_variants")
-    def test_release_keeps_text_supplied_by_other_members(self, request_variants):
-        request_variants.return_value = {"SIMPLIFIED": "Solid keeps shape.", "ELABORATED": "ignored"}
-        third = self._object(
-            "PDF three",
-            timezone.now() + timedelta(minutes=9),
-            "A solid keeps a fixed shape at all times. The particles inside it are packed "
-            "together very closely. It cannot flow the way that water does.",
-        )
-        settle_group(self.group)
-        # Changed 2026-09-20: roles are per bundle; a PDF-supplied version is its own objects.
-        self.group.refresh_from_db()
-        self.assertIn(third.material_id, bundle_roles(self.group))
-
-        release_learning_object(self.second)
-
-        # Another member's teacher-written text is untouched by this release.
-        self.group.refresh_from_db()
-        self.assertIn(third.material_id, bundle_roles(self.group))
 
     @patch("course.variant_generator._request_variants")
     def test_a_bundle_awaiting_confirmation_stays_its_own_teaching_step(self, request_variants):

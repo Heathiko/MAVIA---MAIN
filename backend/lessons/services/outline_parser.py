@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import io
 import logging
-import os
 import re
 from dataclasses import dataclass, field
 
@@ -211,20 +210,6 @@ def _normalized_title_text(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
 
 
-def _has_source_evidence(title: str, source_text: str) -> bool:
-    normalized_title = _normalized_title_text(title)
-    if not normalized_title:
-        return False
-    normalized_source = _normalized_title_text(source_text)
-    if normalized_title in normalized_source:
-        return True
-
-    words = normalized_title.split()
-    if len(words) >= 3:
-        return " ".join(words[:3]) in normalized_source
-    return False
-
-
 def _looks_like_fragment_or_non_topic(title: str) -> bool:
     lowered = title.lower().strip()
     words = re.findall(r"[A-Za-z0-9]+", title)
@@ -317,14 +302,6 @@ def _dedupe_outline_nodes(nodes: list[ParsedOutlineNode]) -> list[ParsedOutlineN
         return kept
 
     return visit(nodes)
-
-
-def _flatten_outline_nodes(nodes: list[ParsedOutlineNode]) -> list[ParsedOutlineNode]:
-    flattened = []
-    for node in nodes:
-        flattened.append(node)
-        flattened.extend(_flatten_outline_nodes(node.children))
-    return flattened
 
 
 def _normalize_outline_tree(nodes: list[ParsedOutlineNode], depth: int = 0) -> list[ParsedOutlineNode]:
@@ -1549,23 +1526,6 @@ def validate_course_outline_pdf(file_path: str) -> list[ParsedOutlineNode]:
     return parsed
 
 
-def _render_pdf_pages_as_images(document: fitz.Document, max_pages: int | None = None) -> list[dict]:
-    pages = []
-    limit = max_pages or int(os.getenv("MAX_PDF_PAGE_IMAGES_FOR_VISION", "8"))
-    matrix = fitz.Matrix(2, 2)
-    for page_index, page in enumerate(document, start=1):
-        if page_index > limit:
-            break
-        pixmap = page.get_pixmap(matrix=matrix, alpha=False)
-        pages.append(
-            {
-                "page_number": page_index,
-                "image_bytes": pixmap.tobytes("png"),
-            }
-        )
-    return pages
-
-
 def _transcribe_image_only_outline_pdf(document: fitz.Document) -> str:
     """Deterministic fallback: use embedded PDF text only. There is no LLM OCR step."""
     pages = []
@@ -1692,6 +1652,35 @@ def _build_outline_candidates(text: str, limit: int = 120) -> list[dict]:
     return candidates
 
 
+def _extract_numbered_outline(text: str) -> list[ParsedOutlineNode]:
+    """Build numbered topics before cleanup removes their parent prefixes."""
+    evidence = _document_structure_evidence(text)
+    if not (evidence["outline_heading"] or evidence["curriculum_schema_markers"] >= 2):
+        return []
+
+    roots: list[ParsedOutlineNode] = []
+    nodes_by_number: dict[str, ParsedOutlineNode] = {}
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        match = _NUMBERED_CONTENT_RE.match(line)
+        if not match:
+            continue
+        number = match.group("number")
+        title = _clean_topic_title(match.group("title"))
+        if number in nodes_by_number or not _is_valid_outline_topic_title(title):
+            continue
+        parent_number = number.rsplit(".", 1)[0] if "." in number else None
+        parent = nodes_by_number.get(parent_number) if parent_number else None
+        if parent_number and parent is None:
+            continue
+        siblings = parent.children if parent else roots
+        node = ParsedOutlineNode(title=title, depth=0, order=len(siblings))
+        siblings.append(node)
+        nodes_by_number[number] = node
+
+    return _normalize_outline_tree(roots) if len(nodes_by_number) >= 2 else []
+
+
 def parse_outline_text(text: str) -> list[ParsedOutlineNode]:
     module_lesson_nodes = _extract_module_lesson_bullet_outline(text)
     if module_lesson_nodes:
@@ -1708,6 +1697,10 @@ def parse_outline_text(text: str) -> list[ParsedOutlineNode]:
     structured_nodes = _extract_teacher_module_outline(text) or _extract_module_lesson_outline(text)
     if structured_nodes:
         return _normalize_outline_tree(_dedupe_outline_nodes(structured_nodes))
+
+    numbered_nodes = _extract_numbered_outline(text)
+    if numbered_nodes:
+        return numbered_nodes
 
     lines = text.splitlines()
     nodes = _parse_outline_lines(lines)

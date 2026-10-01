@@ -141,6 +141,19 @@ class MixedFormatValidationTests(SimpleTestCase):
 
 class MixedGenerationTests(SimpleTestCase):
     @patch("question_generation.services.question_generator._ollama_generate")
+    def test_generation_error_is_reported_to_trace(self, generate):
+        generate.side_effect = ValueError("invalid response schema")
+        errors = []
+
+        result = qg.generate_questions(
+            CONTENT, "LOT", {"MCQ": 1}, max_retries=1,
+            on_error=lambda attempt, reason: errors.append((attempt, reason)),
+        )
+
+        self.assertEqual(result, [])
+        self.assertEqual(errors, [(1, "invalid response schema")])
+
+    @patch("question_generation.services.question_generator._ollama_generate")
     def test_one_call_returns_both_formats(self, generate):
         generate.return_value = _response([MCQ_ITEM, MCQ_ITEM, TF_ITEM])
 
