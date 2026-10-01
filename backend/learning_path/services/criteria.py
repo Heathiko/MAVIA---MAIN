@@ -12,7 +12,7 @@ docs/superpowers/specs/2026-10-01-learning-path-v7-direction-votes-design.md.
 from . import embeddings
 from .calibration import load_calibration
 from .clues import (
-    clue_records, find_term_owners, heading_vote, meaning_vote, name_vote, order_vote,
+    MIN_SHARED_TERMS, clue_records, find_term_owners, heading_vote, meaning_vote, name_vote, order_vote,
     presented_in_parallel, reference_uses, shared_pdf_order, term_vote,
 )
 from .concept_text import material_positions, prepare
@@ -24,19 +24,21 @@ from .fusion import (
 from .relatedness import relatedness
 
 __all__ = [
-    "ACCEPTED", "DEFAULT_RULE", "PENDING", "REFERENCE_ORDER", "RULES", "THREE_VOTES",
+    "ACCEPTED", "CLEANER_EDGES", "DEFAULT_RULE", "PENDING", "REFERENCE_ORDER", "RULES", "THREE_VOTES",
     "crosses_sections", "decide_pairs",
 ]
 
 THREE_VOTES = "three-votes"
 REFERENCE_ORDER = "reference-order"
-RULES = (THREE_VOTES, REFERENCE_ORDER)
-# v6 until v7 passes the final check (v7 spec section 8, stop rule).
+CLEANER_EDGES = "cleaner-edges"
+RULES = (THREE_VOTES, REFERENCE_ORDER, CLEANER_EDGES)
+# v6 until v6.1 passes the final check (v6.1 spec section 6, stop rule).
 DEFAULT_RULE = REFERENCE_ORDER
 
 _PDF_ORDER = {1: SHARED, -1: SHARED, 0: DISAGREE, None: NONE_SHARED}
 _NAME_FIELDS = ("later_names_earlier", "earlier_names_later")
-_TERM_FIELDS = ("later_uses_earlier_terms", "earlier_uses_later_terms")
+_TERM_FIELDS = ("later_uses_earlier_terms", "earlier_uses_later_terms",
+                "later_uses_earlier_word", "earlier_uses_later_word")
 
 
 def section_headings(concept):
@@ -59,11 +61,11 @@ def _is_figure(text):
     return getattr(text.concept, "kind", "text") == "image"
 
 
-def _facts(first, second, owners, positions, without):
+def _facts(first, second, owners, positions, without, min_terms=1):
     """``(facts, earlier, later)``; ``first`` precedes ``second`` in the topic's merged order."""
     order, _ = shared_pdf_order(first, second, positions)
     earlier, later = (second, first) if order == -1 else (first, second)
-    uses = reference_uses(earlier, later, owners)
+    uses = reference_uses(earlier, later, owners, min_terms)
     for clue, fields in (("name", _NAME_FIELDS), ("terms", _TERM_FIELDS)):
         if clue in without:
             uses.update({field: 0.0 for field in fields})
@@ -79,11 +81,11 @@ def _facts(first, second, owners, positions, without):
     return facts, earlier, later
 
 
-def _votes(prerequisite, dependent, owners, positions, meaning_cutoff, semantic, without):
+def _votes(prerequisite, dependent, owners, positions, meaning_cutoff, semantic, without, min_terms=1):
     """Each clue's vote, +1 when it supports ``prerequisite`` first."""
     votes = {
         "name": name_vote(prerequisite, dependent)[0],
-        "terms": term_vote(prerequisite, dependent, owners)[0],
+        "terms": term_vote(prerequisite, dependent, owners, min_terms)[0],
         "meaning": meaning_vote(prerequisite, dependent, meaning_cutoff)[0] if semantic else 0,
         "heading": heading_vote(prerequisite, dependent)[0],
         "order": order_vote(prerequisite, dependent, positions)[0],
@@ -123,8 +125,8 @@ def decide_pairs(concepts, runtime_instance=None, calibration=None, embed=None, 
     ``runtime_instance`` is kept for callers and ignored. Without the encoder
     the verdicts are the same; only relatedness and meaning are not recorded.
     ``without`` silences clues, for the evaluation's ablations. ``rule`` is
-    ``THREE_VOTES`` or ``REFERENCE_ORDER`` (default ``DEFAULT_RULE``); either way
-    v6 decides whether a link exists.
+    ``REFERENCE_ORDER`` (v6), ``CLEANER_EDGES`` (v6.1) or ``THREE_VOTES`` (v7, not
+    adopted); default ``DEFAULT_RULE``. v6's text rule decides whether a link exists.
     """
     concepts = list(concepts)
     if len(concepts) < 2:
@@ -139,6 +141,8 @@ def decide_pairs(concepts, runtime_instance=None, calibration=None, embed=None, 
     positions = material_positions(concepts)
     meaning_cutoff = calibration["meaning_cutoff"]
     rule = rule or DEFAULT_RULE
+    cleaner = rule == CLEANER_EDGES
+    min_terms = MIN_SHARED_TERMS if cleaner else 1
     matrix = build_block_matrix(texts, owners) if rule == THREE_VOTES else None
 
     decisions = []
@@ -147,8 +151,8 @@ def decide_pairs(concepts, runtime_instance=None, calibration=None, embed=None, 
             # A concept with no full sentence has nothing to compare (kept from v5).
             if not (first.sentences and second.sentences):
                 continue
-            facts, earlier, later = _facts(first, second, owners, positions, without)
-            decision = reference_verdict(facts)
+            facts, earlier, later = _facts(first, second, owners, positions, without, min_terms)
+            decision = reference_verdict(facts, cleaner_edges=cleaner)
             if decision.verdict not in (ACCEPTED, PENDING):
                 continue
             # v6's text-silent suggestion stays as it is: no text, nothing for the votes to read.
@@ -156,7 +160,7 @@ def decide_pairs(concepts, runtime_instance=None, calibration=None, embed=None, 
                 decisions.append(_three_vote_row(first, second, matrix, owners, semantic))
                 continue
             prerequisite, dependent = (earlier, later) if decision.direction > 0 else (later, earlier)
-            votes = _votes(prerequisite, dependent, owners, positions, meaning_cutoff, semantic, without)
+            votes = _votes(prerequisite, dependent, owners, positions, meaning_cutoff, semantic, without, min_terms)
             decisions.append({
                 "prerequisite": prerequisite.concept,
                 "dependent": dependent.concept,
@@ -166,11 +170,13 @@ def decide_pairs(concepts, runtime_instance=None, calibration=None, embed=None, 
                     "direction_from": decision.direction_from,
                     "contradictions": list(decision.contradictions),
                     "votes": votes,
-                    "records": clue_records(prerequisite, dependent, owners, positions, meaning_cutoff, semantic),
+                    "records": clue_records(prerequisite, dependent, owners, positions, meaning_cutoff, semantic, min_terms=min_terms),
                     "relatedness": round(relatedness(first, second), 3) if semantic else None,
                     "confidence": round(confidence(votes, 1, DECIDING_CLUES), 3),
                     "semantic": semantic,
                 },
                 "cross_section": crosses_sections(prerequisite.concept, dependent.concept),
             })
+            if cleaner:
+                decisions[-1]["evidence"]["version"] = "6.1"
     return decisions

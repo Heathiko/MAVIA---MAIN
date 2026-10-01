@@ -7,7 +7,7 @@ from django.test import SimpleTestCase, TestCase
 from lessons.models import CourseGroup, LearningMaterial, LearningObject, LearningObjectGroup, OutlineNode
 
 from .services.concept_units import concepts_for_topic
-from .services.criteria import ACCEPTED, PENDING, THREE_VOTES, crosses_sections, decide_pairs
+from .services.criteria import ACCEPTED, CLEANER_EDGES, PENDING, THREE_VOTES, crosses_sections, decide_pairs
 from .services.embeddings import EncoderUnavailable
 from .test_direction_votes import three_states
 from .testing import concept, member, word_vectors
@@ -252,3 +252,56 @@ class ThreeVoteTests(SimpleTestCase):
         rows = decide_pairs(three_states(), calibration=CALIBRATION, embed=word_vectors)
 
         self.assertTrue(all(row["evidence"]["rule"] == "reference-order" for row in rows))
+
+
+def decide_cleanly(concepts, without=()):
+    return {
+        (row["prerequisite"].id, row["dependent"].id): row
+        for row in decide_pairs(concepts, calibration=CALIBRATION, embed=word_vectors,
+                                rule=CLEANER_EDGES, without=without)
+    }
+
+
+class CleanerEdgeTests(SimpleTestCase):
+    """v6.1 spec section 3, end to end."""
+
+    def test_two_shared_words_still_link(self):
+        row = decide_cleanly(flower())[(1, 2)]
+
+        self.assertEqual(row["verdict"], ACCEPTED)
+        self.assertEqual(row["evidence"]["version"], "6.1")
+        self.assertEqual(row["evidence"]["records"]["terms"]["use"], 1.0)
+
+    def test_a_single_shared_word_is_only_a_suggestion(self):
+        """Pollination uses only "stigma" from Pistil."""
+        row = decide_cleanly(flower())[(2, 3)]
+
+        self.assertEqual(row["verdict"], PENDING)
+        self.assertEqual(row["evidence"]["contradictions"], ["weak_terms"])
+        self.assertEqual(row["evidence"]["records"]["terms"]["owned_back"], ["stigma"])
+
+    def test_a_figure_no_longer_blocks_a_link(self):
+        figure = concept(1, "Particles in a solid", "The picture shows solid particles packed tightly.", kind="image")
+        solid = concept(2, "Solid", "A solid has particles packed tightly in rows. " * 4)
+
+        row = decide_cleanly([figure, solid])[(1, 2)]
+
+        self.assertEqual((row["verdict"], row["evidence"]["direction_from"]), (ACCEPTED, "pdf_order"))
+
+    def test_different_files_no_longer_block_a_link(self):
+        stamen = concept(1, "Stamen", member("The anther makes pollen grains. " * 8, material_id=10))
+        pollination = concept(2, "Pollination", member("Pollen travels from an anther to a stigma.", material_id=11))
+        pistil = concept(3, "Pistil", member("The stigma is sticky and holds the style. " * 8, material_id=12))
+
+        row = decide_cleanly([stamen, pollination, pistil])[(1, 2)]
+
+        self.assertEqual((row["verdict"], row["evidence"]["direction_from"]), (ACCEPTED, "merged_order"))
+
+    def test_leaving_out_terms_leaves_out_single_words_too(self):
+        self.assertNotIn((2, 3), decide_cleanly(flower(), without=("terms",)))
+
+    def test_v6_is_still_the_default(self):
+        row = decide(flower())[(2, 3)]
+
+        self.assertIn("backward_only", row["evidence"]["contradictions"])
+        self.assertNotIn("version", row["evidence"])
