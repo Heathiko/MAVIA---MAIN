@@ -36,6 +36,8 @@ class PairFacts:
     earlier_names_later: float = 0.0
     later_uses_earlier_terms: float = 0.0
     earlier_uses_later_terms: float = 0.0
+    later_uses_earlier_word: float = 0.0
+    earlier_uses_later_word: float = 0.0
     heading: int = 0
     pdf_agreement: int = 0
     parallel: bool = False

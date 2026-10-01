@@ -19,6 +19,8 @@ SIGNIFICANT_G2 = 3.84
 # How many best matches the meaning clue averages; 2 is the size fallback the
 # spec defines, switched on only if the development set shows a size bias.
 MEANING_MATCHES = 1
+# v6.1: a chunk uses another concept's terms only when it has two of them (spec 2026-10-02, C4).
+MIN_SHARED_TERMS = 2
 
 
 def _sign(difference):
@@ -81,23 +83,37 @@ def find_term_owners(texts):
     return owners
 
 
-def term_use(holder, target, term_owners):
-    """Share of the holder's passages using a term the target owns."""
+def term_use(holder, target, term_owners, min_terms=1):
+    """Share of the holder's passages using at least ``min_terms`` distinct terms the target owns."""
     passages = [passage for passage in holder.passages if passage]
     if not passages:
         return 0.0
-    return sum(1 for passage in passages if any(term_owners.get(term) == target.id for term in passage)) / len(passages)
+    return sum(
+        1 for passage in passages
+        if len({term for term in passage if term_owners.get(term) == target.id}) >= min_terms
+    ) / len(passages)
 
 
-def term_vote(prerequisite, dependent, term_owners):
-    use = term_use(dependent, prerequisite, term_owners)
-    use_back = term_use(prerequisite, dependent, term_owners)
-    owned = sorted({
-        dependent.spelling.get(term, term)
-        for passage in dependent.passages for term in passage
-        if term_owners.get(term) == prerequisite.id
+def _owned_words(holder, owner, term_owners):
+    return sorted({
+        holder.spelling.get(term, term)
+        for passage in holder.passages for term in passage
+        if term_owners.get(term) == owner.id
     })
-    return _sign(use - use_back), {"owned": owned, "use": round(use, 3), "use_back": round(use_back, 3)}
+
+
+def term_vote(prerequisite, dependent, term_owners, min_terms=1):
+    use = term_use(dependent, prerequisite, term_owners, min_terms)
+    use_back = term_use(prerequisite, dependent, term_owners, min_terms)
+    record = {"owned": _owned_words(dependent, prerequisite, term_owners),
+              "use": round(use, 3), "use_back": round(use_back, 3)}
+    if min_terms > 1:
+        record.update(
+            owned_back=_owned_words(prerequisite, dependent, term_owners),
+            single_word_use=round(term_use(dependent, prerequisite, term_owners), 3),
+            single_word_use_back=round(term_use(prerequisite, dependent, term_owners), 3),
+        )
+    return _sign(use - use_back), record
 
 
 def meaning_use(holder, target, meaning_cutoff):
@@ -162,15 +178,20 @@ def shared_pdf_order(first, second, positions):
     return 0, len(shared)
 
 
-def reference_uses(earlier, later, term_owners):
-    """How much each concept refers to the other, by name and by owned terms."""
+def reference_uses(earlier, later, term_owners, min_terms=1):
+    """How much each concept refers to the other, by name and by owned terms.
+
+    ``*_word`` are the single-word shares v6.1 keeps to tell a weak link from none.
+    """
     same_name = bool(earlier.name) and set(earlier.name) == set(later.name)
     return {
         # One title on two concepts (a split the grouping made) names neither.
         "later_names_earlier": 0.0 if same_name else name_use(later, earlier),
         "earlier_names_later": 0.0 if same_name else name_use(earlier, later),
-        "later_uses_earlier_terms": term_use(later, earlier, term_owners),
-        "earlier_uses_later_terms": term_use(earlier, later, term_owners),
+        "later_uses_earlier_terms": term_use(later, earlier, term_owners, min_terms),
+        "earlier_uses_later_terms": term_use(earlier, later, term_owners, min_terms),
+        "later_uses_earlier_word": term_use(later, earlier, term_owners),
+        "earlier_uses_later_word": term_use(earlier, later, term_owners),
     }
 
 def heading_stems(text):
@@ -220,11 +241,11 @@ def pair_votes(texts, term_owners, positions, related_cutoff, meaning_cutoff, se
             }
 
 
-def clue_records(prerequisite, dependent, term_owners, positions, meaning_cutoff, semantic=True):
+def clue_records(prerequisite, dependent, term_owners, positions, meaning_cutoff, semantic=True, min_terms=1):
     """The numbers behind each clue for "prerequisite before dependent", for the stored evidence."""
     records = {
         "name": name_vote(prerequisite, dependent)[1],
-        "terms": term_vote(prerequisite, dependent, term_owners)[1],
+        "terms": term_vote(prerequisite, dependent, term_owners, min_terms)[1],
         "heading": heading_vote(prerequisite, dependent)[1],
         "order": order_vote(prerequisite, dependent, positions)[1],
     }

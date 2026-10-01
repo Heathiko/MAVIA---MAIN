@@ -7,6 +7,7 @@ from django.test import SimpleTestCase
 
 from .services import clues
 from .services.clues import (
+    MIN_SHARED_TERMS,
     SIGNIFICANT_G2,
     find_term_owners,
     heading_vote,
@@ -19,6 +20,7 @@ from .services.clues import (
     presented_in_parallel,
     reference_uses,
     shared_pdf_order,
+    term_use,
     term_vote,
 )
 from .services.concept_text import prepare, terms
@@ -212,6 +214,7 @@ class ReferenceUseTests(SimpleTestCase):
         self.assertEqual(set(uses), {
             "later_names_earlier", "earlier_names_later",
             "later_uses_earlier_terms", "earlier_uses_later_terms",
+            "later_uses_earlier_word", "earlier_uses_later_word",
         })
 
     def test_two_concepts_with_one_title_do_not_name_each_other(self):
@@ -237,3 +240,53 @@ class ReferenceUseTests(SimpleTestCase):
 
         self.assertGreater(uses["later_uses_earlier_terms"], 0)
         self.assertEqual(uses["earlier_uses_later_terms"], 0.0)
+
+
+class TwoWordTermTests(SimpleTestCase):
+    """v6.1 spec section 3, C4: a chunk uses another concept's terms only with two of them."""
+
+    def lesson(self):
+        return prepare([
+            concept(1, "Stamen", "The anther makes pollen grains. " * 8),
+            concept(2, "Pollination", "Pollen travels from an anther to a stigma."),
+            concept(3, "Pistil", "The stigma is sticky and holds the style. " * 8),
+        ])
+
+    def test_one_owned_word_counts_by_default(self):
+        stamen, pollination, pistil = self.lesson()
+        owners = find_term_owners([stamen, pollination, pistil])
+
+        self.assertEqual(term_use(pollination, pistil, owners), 1.0)
+
+    def test_one_owned_word_is_not_enough_with_two_required(self):
+        stamen, pollination, pistil = self.lesson()
+        owners = find_term_owners([stamen, pollination, pistil])
+
+        self.assertEqual(term_use(pollination, pistil, owners, MIN_SHARED_TERMS), 0.0)
+        self.assertEqual(term_use(pollination, stamen, owners, MIN_SHARED_TERMS), 1.0)
+
+    def test_reference_uses_keeps_the_single_word_shares(self):
+        stamen, pollination, pistil = self.lesson()
+        owners = find_term_owners([stamen, pollination, pistil])
+
+        uses = reference_uses(pollination, pistil, owners, MIN_SHARED_TERMS)
+
+        self.assertEqual(uses["earlier_uses_later_terms"], 0.0)
+        self.assertEqual(uses["earlier_uses_later_word"], 1.0)
+
+    def test_the_record_names_the_word_used_either_way(self):
+        stamen, pollination, pistil = self.lesson()
+        owners = find_term_owners([stamen, pollination, pistil])
+
+        _, record = term_vote(pollination, pistil, owners, MIN_SHARED_TERMS)
+
+        self.assertEqual(record["owned_back"], ["stigma"])
+        self.assertEqual((record["single_word_use"], record["single_word_use_back"]), (0.0, 1.0))
+
+    def test_the_default_record_is_unchanged(self):
+        stamen, pollination, pistil = self.lesson()
+        owners = find_term_owners([stamen, pollination, pistil])
+
+        _, record = term_vote(stamen, pollination, owners)
+
+        self.assertEqual(set(record), {"owned", "use", "use_back"})
