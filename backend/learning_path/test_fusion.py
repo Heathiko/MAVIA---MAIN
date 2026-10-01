@@ -170,3 +170,49 @@ class CalibrationFileTests(SimpleTestCase):
         self.assertEqual(stored["topics"], [62, 79])
         self.assertEqual(set(stored["weights"]), {"name", "terms", "meaning", "heading", "order"})
         self.assertEqual(load_calibration(self.path)["source"], str(self.path))
+
+
+class CleanerEdgeVerdictTests(SimpleTestCase):
+    """v6.1 spec section 3."""
+
+    def test_a_figure_no_longer_blocks_a_link(self):
+        facts = PairFacts(later_uses_earlier_terms=0.6, later_is_figure=True)
+
+        self.assertEqual(reference_verdict(facts, cleaner_edges=True), Decision(ACCEPTED, 1, "pdf_order", ()))
+
+    def test_different_pdfs_no_longer_block_a_link(self):
+        facts = PairFacts(later_uses_earlier_terms=0.5, pdf_order=NONE_SHARED)
+
+        self.assertEqual(reference_verdict(facts, cleaner_edges=True), Decision(ACCEPTED, 1, "merged_order", ()))
+
+    def test_a_single_shared_word_is_only_a_suggestion(self):
+        facts = PairFacts(later_uses_earlier_word=0.5)
+
+        self.assertEqual(
+            reference_verdict(facts, cleaner_edges=True),
+            Decision(PENDING, 1, "pdf_order", ("weak_terms",)),
+        )
+
+    def test_a_single_word_across_disagreeing_pdfs_follows_the_merged_order(self):
+        facts = PairFacts(earlier_uses_later_word=0.5, pdf_order=DISAGREE)
+
+        self.assertEqual(
+            reference_verdict(facts, cleaner_edges=True),
+            Decision(PENDING, 1, "merged_order", ("weak_terms",)),
+        )
+
+    def test_siblings_still_get_no_link_even_with_a_shared_word(self):
+        facts = PairFacts(later_uses_earlier_word=0.5, parallel=True)
+
+        self.assertEqual(reference_verdict(facts, cleaner_edges=True).verdict, PARALLEL)
+
+    def test_the_other_contradictions_still_hold(self):
+        facts = PairFacts(later_uses_earlier_terms=0.5, pdf_order=DISAGREE)
+
+        self.assertEqual(
+            reference_verdict(facts, cleaner_edges=True),
+            Decision(PENDING, 1, "merged_order", ("pdfs_disagree",)),
+        )
+
+    def test_v6_ignores_single_words(self):
+        self.assertEqual(reference_verdict(PairFacts(later_uses_earlier_word=0.5)).verdict, PARALLEL)

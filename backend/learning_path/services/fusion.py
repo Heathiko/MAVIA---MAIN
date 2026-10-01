@@ -27,6 +27,9 @@ DISAGREE = "disagree"
 
 MAX_AGREEMENT = 0.95
 
+# v6.1 (spec 2026-10-02, C2 and C3): these no longer block a link.
+CLEARED_IN_6_1 = ("figure", "no_shared_pdf")
+
 
 @dataclass(frozen=True)
 class PairFacts:
@@ -79,13 +82,20 @@ def _suggested_direction(facts):
     return 1, "pdf_order" if facts.pdf_order == SHARED else "merged_order"
 
 
-def reference_verdict(facts):
-    """The v6 decision for one pair; direction +1 means earlier before later."""
+def reference_verdict(facts, cleaner_edges=False):
+    """The v6 decision for one pair; direction +1 means earlier before later.
+
+    ``cleaner_edges`` is v6.1: figures and different PDFs no longer block a link,
+    and a pair linked only by single shared words is a suggestion (``weak_terms``).
+    """
     if facts.parallel:
         return NO_LINK
     later_refers = facts.later_names_earlier > 0 or facts.later_uses_earlier_terms > 0
     earlier_refers = facts.earlier_names_later > 0 or facts.earlier_uses_later_terms > 0
+    in_order = "pdf_order" if facts.pdf_order == SHARED else "merged_order"
     if not (later_refers or earlier_refers or facts.heading):
+        if cleaner_edges and (facts.later_uses_earlier_word or facts.earlier_uses_later_word):
+            return Decision(PENDING, 1, in_order, ("weak_terms",))
         if facts.pdf_agreement:
             return Decision(PENDING, facts.pdf_agreement, "pdf_agreement")
         return NO_LINK
@@ -97,9 +107,10 @@ def reference_verdict(facts):
         ("no_shared_pdf", facts.pdf_order == NONE_SHARED),
         ("pdfs_disagree", facts.pdf_order == DISAGREE),
         ("backward_only", earlier_refers and not later_refers),
-    ) if present)
+    ) if present and not (cleaner_edges and name in CLEARED_IN_6_1))
     if not contradictions:
-        return Decision(ACCEPTED, 1, "pdf_order")
+        # v6 only gets here with a shared PDF, so its rows still read "pdf_order".
+        return Decision(ACCEPTED, 1, in_order)
     direction, source = _suggested_direction(facts)
     return Decision(PENDING, direction, source, contradictions)
 
