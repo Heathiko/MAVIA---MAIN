@@ -117,7 +117,9 @@ def _reference_order_reason(evidence, a, b):
     if "weak_terms" in contradictions:
         words = (terms.get("owned") or []) + (terms.get("owned_back") or [])
         listed = f" ({', '.join(words[:3])})" if words else ""
-        parts.append(f"Only one shared word links them{listed}; please confirm.")
+        # No passage holds two of them, but different passages can each hold a different one.
+        wording = "single shared words link them" if len(words) > 1 else "one shared word links them"
+        parts.append(f"Only {wording}{listed}; please confirm.")
     parts.extend(_CONTRADICTION_SENTENCES[key] for key in _CONTRADICTION_SENTENCES if key in contradictions)
     return " ".join(parts)
 

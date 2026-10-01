@@ -286,3 +286,11 @@ class SingleWordReasonTests(SimpleTestCase):
             link_reason(self.evidence(owned_back=["stigma"]), "Pollination", "Pistil"),
             "Pollination comes first in the lesson. Only one shared word links them (stigma); please confirm.",
         )
+
+    def test_several_single_words_read_in_the_plural(self):
+        """Each passage holds one word, but different passages hold different ones."""
+        self.assertEqual(
+            link_reason(self.evidence(owned=["energy", "movement"], owned_back=["spread"]), "As a general rule", "Gas"),
+            "As a general rule comes first in the lesson. "
+            "Only single shared words link them (energy, movement, spread); please confirm.",
+        )
