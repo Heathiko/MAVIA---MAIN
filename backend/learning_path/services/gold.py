@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from . import criteria, embeddings
 from .clues import find_term_owners, pair_votes
 from .concept_text import material_positions, prepare
+from .direction_votes import VOTES, build_block_matrix, cast_votes
 from .fusion import CLUES
 from .publishing import order_with_links
 from .relatedness import relatedness
@@ -316,3 +317,49 @@ def course_gold_report(data, topic_concepts, decisions):
         "unrelated_accepted": len(accepted) if data.get("unrelated") else 0,
         "outline_flags": flags,
     }
+
+
+def move_report(data, concepts, decisions, move):
+    """How a moved lesson's links came out (v7 spec section 8).
+
+    The moved concepts' key links are right, wrong (accepted reversed), pending
+    or missing; ``wrong_way_elsewhere`` is any other key link accepted reversed.
+    """
+    moved = set(move["concepts"])
+    key = {concept.id: concept.key for concept in concepts}
+    accepted = set(_edges(decisions, key, criteria.ACCEPTED))
+    pending = set(_edges(decisions, key, criteria.PENDING))
+    required = [tuple(edge) for edge in data["required"]]
+    links = [edge for edge in required if edge[0] in moved or edge[1] in moved]
+    right = [edge for edge in links if edge in accepted]
+    wrong = [edge for edge in links if (edge[1], edge[0]) in accepted]
+    waiting = [edge for edge in links if edge not in right and edge not in wrong
+               and (edge in pending or (edge[1], edge[0]) in pending)]
+    missing = [edge for edge in links if edge not in right and edge not in wrong and edge not in waiting]
+    elsewhere = [edge for edge in required if edge not in links and (edge[1], edge[0]) in accepted]
+    return {
+        "move": move["number"],
+        "topic": move["topic"],
+        "links": len(links),
+        "right_way": [list(edge) for edge in right],
+        "wrong_way": [list(edge) for edge in wrong],
+        "pending": [list(edge) for edge in waiting],
+        "missing": [list(edge) for edge in missing],
+        "wrong_way_elsewhere": [[after, before] for before, after in elsewhere],
+    }
+
+
+def vote_accuracy(data, concepts):
+    """For each v7 vote, how many of the key's links it points the right way, the wrong way, or not at all."""
+    texts = prepare(concepts)
+    matrix = build_block_matrix(texts, find_term_owners(texts))
+    first_of_key = {}
+    for text in texts:
+        if getattr(text.concept, "key", None):
+            first_of_key.setdefault(text.concept.key, text)
+    counts = {vote: {"right": 0, "wrong": 0, "silent": 0} for vote in VOTES}
+    for before, after in data["required"]:
+        votes, _ = cast_votes(first_of_key[before], first_of_key[after], matrix)
+        for vote, value in votes.items():
+            counts[vote]["right" if value == 1 else "wrong" if value == -1 else "silent"] += 1
+    return counts
