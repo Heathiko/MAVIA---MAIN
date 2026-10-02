@@ -25,3 +25,21 @@
 .cp-chip { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.15rem 0.4rem; border-radius: 6px; border: 1px solid #c9d2db; }
 .cp-chip.accepted, .cp-chip.approved { border-color: #2f6f4f; }
 .cp-chip.pending { border-color: #b8860b; border-style: dashed; }
+
+/* The shell is pinned to the window and never scrolls (refresh.css, "The window is
+   the window"); the graph and the learning-order list scroll together inside
+   .cp-page, and the canvas keeps a bounded height of its own -- the same pattern
+   as the topic-level learning path page. */
+.app-shell > .cp-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.cp-page > .cp-layout { margin-top: 0; }
+.cp-page > .cp-layout > .pg-canvas { height: min(62vh, 620px); min-height: 360px; }
+.cp-page > .cp-layout > .cp-panel { max-height: min(62vh, 620px); }
+.app-shell > .cp-page::-webkit-scrollbar { width: 10px; }
+.app-shell > .cp-page::-webkit-scrollbar-thumb {
+  background: rgba(20, 24, 31, 0.18); border-radius: 999px; border: 3px solid transparent; background-clip: content-box;
+}

@@ -99,6 +99,8 @@ export default function CoursePathPage() {
           Below, the learning order shows where each step can send a learner back to an earlier topic.
         </p>
       </section>
+      {/* One scroller for the graph and the list: the shell itself never scrolls (refresh.css). */}
+      <div className="cp-page">
       <div className="cp-layout">
         <div className="pg-canvas">
           <ReactFlow
@@ -186,6 +188,7 @@ export default function CoursePathPage() {
           ))}
         </ol>
       </section>
+      </div>
       {confirm && (
         <ConfirmDialog
           title={confirm.title}
