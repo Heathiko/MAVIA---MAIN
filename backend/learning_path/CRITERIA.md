@@ -92,6 +92,14 @@ The meaning clue is recorded, not counted. Stored as `CourseConceptLink` (`servi
 refreshed when a topic is published. `published.course_prerequisites` gives the adaptive engine
 accepted/approved earlier-topic prerequisites (hand-off: `docs/handoff-course-prerequisites.md`).
 
+A second rule, `rule="shortlist"` (`services/course_shortlist.py`, spec
+`docs/superpowers/specs/2026-10-02-course-path-top-down-design.md`), compares two topics only when
+their outline titles are close and offers each later concept its 3 closest earlier concepts. It
+failed its final check on 2026-10-03 (hit 4/18 against a bar of 0.6; the title gate closed two
+related pairs and meaningless titles filled the slots), so `"strict"` stays the default. Report:
+`docs/course-path-v2-evaluation-2026-10-03.md`. Final pairs 351-353, 341-343, 341-347, 347-348,
+351-365, 353-365 are spent.
+
 ## v7 (tried 2026-10-01, not adopted)
 
 Three equal direction votes (hierarchy, order, references) on a block x concept matrix
