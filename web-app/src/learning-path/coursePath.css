@@ -13,3 +13,15 @@
 .cp-link { margin-bottom: 0.75rem; }
 .cp-link-status { margin-left: 0.5rem; font-size: 0.75rem; text-transform: uppercase; color: #5b6b7b; }
 @media (max-width: 900px) { .cp-layout { grid-template-columns: 1fr; } }
+.cp-order { margin-top: 1rem; }
+.cp-order-topics { padding-left: 1.25rem; }
+.cp-order-topics > li { margin-bottom: 1rem; }
+.cp-order-topics h4 { margin: 0.5rem 0; }
+.cp-unpublished { margin-left: 0.5rem; font-size: 0.75rem; font-weight: 400; color: #5b6b7b; }
+.cp-order-steps { padding-left: 1.25rem; }
+.cp-order-steps > li { margin-bottom: 0.4rem; }
+.cp-step-links { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin: 0.25rem 0 0 0.5rem; font-size: 0.85rem; }
+.cp-step-label { color: #5b6b7b; }
+.cp-chip { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.15rem 0.4rem; border-radius: 6px; border: 1px solid #c9d2db; }
+.cp-chip.accepted, .cp-chip.approved { border-color: #2f6f4f; }
+.cp-chip.pending { border-color: #b8860b; border-style: dashed; }

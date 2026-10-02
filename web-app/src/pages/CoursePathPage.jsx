@@ -6,7 +6,7 @@ import "@xyflow/react/dist/style.css";
 import { decideCoursePathLink, fetchCourseLearningPath, restoreCoursePathLinks } from "../api";
 import ConfirmDialog from "../learning-path/ConfirmDialog";
 import UndoBar from "../learning-path/UndoBar";
-import { buildCourseGraph } from "../learning-path/coursePathModel";
+import { buildCourseGraph, learningOrder } from "../learning-path/coursePathModel";
 import "../learning-path/pathGraph.css";
 import "../learning-path/coursePath.css";
 
@@ -14,15 +14,19 @@ function TopicNode({ data }) {
   const { topic, empty } = data;
   return (
     <div className={`cp-topic${empty ? " empty" : ""}`} title={topic.title}>
-      <Handle type="target" position={Position.Left} isConnectable={false} />
+      <Handle type="target" position={Position.Top} isConnectable={false} />
       <span className="cp-topic-position">{topic.position + 1}</span>
       <span className="cp-topic-title">{topic.title}</span>
-      <Handle type="source" position={Position.Right} isConnectable={false} />
+      <Handle type="source" position={Position.Bottom} isConnectable={false} />
     </div>
   );
 }
 
-const NODE_TYPES = { topic: TopicNode };
+function LabelNode({ data }) {
+  return <div className="pg-label">{data.text}</div>;
+}
+
+const NODE_TYPES = { topic: TopicNode, label: LabelNode };
 
 export default function CoursePathPage() {
   const { courseId } = useParams();
@@ -40,6 +44,7 @@ export default function CoursePathPage() {
   }, [courseId]);
 
   const graph = useMemo(() => (path ? buildCourseGraph(path, selected) : { nodes: [], edges: [] }), [path, selected]);
+  const order = useMemo(() => (path ? learningOrder(path) : []), [path]);
   const arrow = path?.arrows.find((item) => `${item.from_topic}-${item.to_topic}` === selected) || null;
   const topicTitle = (id) => path?.topics.find((topic) => topic.id === id)?.title || "";
 
@@ -89,8 +94,9 @@ export default function CoursePathPage() {
         <Link to={`/courses/${courseId}`} style={{ color: "var(--muted)" }}>Back to course</Link>
         <h2>Course path: {path.course.title}</h2>
         <p className="muted-text">
-          Topics in your outline order. An arrow means a concept in one topic builds on a concept in another.
-          Green follows your outline, yellow is a suggestion, red contradicts your outline.
+          Topics flow top to bottom in your outline order. An arrow means a concept in one topic builds on a
+          concept in another. Green follows your outline, yellow is a suggestion, red contradicts your outline.
+          Below, the learning order shows where each step can send a learner back to an earlier topic.
         </p>
       </section>
       <div className="cp-layout">
@@ -136,6 +142,50 @@ export default function CoursePathPage() {
           </section>
         )}
       </div>
+      <section className="card cp-order" aria-labelledby="cp-order-title">
+        <h3 id="cp-order-title">Learning order</h3>
+        {order.length === 0 && <p className="muted-text">No topic has lessons yet.</p>}
+        <ol className="cp-order-topics">
+          {order.map(({ topic, published, steps }) => (
+            <li key={topic.id}>
+              <h4>
+                {topic.title}
+                {!published && <span className="cp-unpublished">not published yet</span>}
+              </h4>
+              <ol className="cp-order-steps">
+                {steps.map((step) => (
+                  <li key={step.concept_id}>
+                    <span className="cp-step-title">{step.title}</span>
+                    {step.revisit.length > 0 && (
+                      <div className="cp-step-links">
+                        <span className="cp-step-label">May revisit:</span>
+                        {step.revisit.map((link) => (
+                          <span key={link.id} className={`cp-chip ${link.status}`} title={link.reason}>
+                            {link.prerequisite.title} — {topicTitle(link.prerequisite.topic_id)}
+                            <button type="button" className="btn btn-small btn-secondary" onClick={() => ask(link, "rejected")}>Remove</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {step.suggestions.length > 0 && (
+                      <div className="cp-step-links">
+                        <span className="cp-step-label">Might build on:</span>
+                        {step.suggestions.map((link) => (
+                          <span key={link.id} className="cp-chip pending" title={link.reason}>
+                            {link.prerequisite.title} — {topicTitle(link.prerequisite.topic_id)}
+                            <button type="button" className="btn btn-small btn-primary" onClick={() => ask(link, "approved")}>Approve</button>
+                            <button type="button" className="btn btn-small btn-secondary" onClick={() => ask(link, "rejected")}>Dismiss</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </li>
+          ))}
+        </ol>
+      </section>
       {confirm && (
         <ConfirmDialog
           title={confirm.title}
