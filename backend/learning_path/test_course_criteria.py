@@ -172,3 +172,21 @@ class ShortlistRuleTests(SimpleTestCase):
 
     def test_the_strict_rule_is_still_the_default(self):
         self.assertEqual({row["evidence"]["rule"] for row in decide([[stamen(), petals()], [pollination()]]).values()}, {"course"})
+
+
+class ShortlistCacheOnlyEncoderTests(SimpleTestCase):
+    def test_titles_the_encoder_cannot_embed_fall_back_to_the_strict_rule(self):
+        """Lesson sentences may come from the vector cache while titles cannot be embedded."""
+        titles = {"Flower parts", "Flower reproduction", "Stamen", "Petals", "Pollination"}
+
+        def cache_only(sentences):
+            if any(sentence in titles for sentence in sentences):
+                raise EncoderUnavailable("offline")
+            return word_vectors(sentences)
+
+        decided = decide_by_shortlist([[stamen(), petals()], [pollination()]], ["Flower parts", "Flower reproduction"],
+                                      embed=cache_only)
+
+        self.assertEqual({row["verdict"] for row in decided.values()}, {PENDING})
+        self.assertEqual({row["evidence"]["rule"] for row in decided.values()}, {"course"})
+

@@ -161,8 +161,13 @@ def decide_course_pairs(topic_concepts, calibration=None, embed=None, rule=None,
 
     use_shortlist = rule == SHORTLIST and semantic and topic_titles is not None
     if use_shortlist:
-        similarities = topic_similarities(topic_titles, encode)
-        vectors = title_vectors(texts, encode)
+        try:
+            similarities = topic_similarities(topic_titles, encode)
+            vectors = title_vectors(texts, encode)
+        except embeddings.EncoderUnavailable:
+            # The lesson sentences came from the vector cache but the titles could
+            # not be embedded: run the strict rule, suggestions only.
+            use_shortlist, semantic = False, False
 
     decisions = []
     for first_index, earlier in enumerate(by_topic):

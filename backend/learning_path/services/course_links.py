@@ -81,8 +81,12 @@ def _concept_titles(topics):
 
 
 def _topic_steps(topic, titles):
-    """``(published, steps)``: the saved path's order, or the topic's current concept order."""
-    saved = list(
+    """``(published, steps)``: the saved path's order, or the topic's current concept order.
+
+    Saved steps outlive an unpublish (regrouping, a failed publish), so they
+    count only while the topic is published -- as for students' course links.
+    """
+    saved = [] if not topic.published else list(
         LearningPathStep.objects.filter(outline_node=topic).order_by("position").values_list("concept_id", "position")
     )
     if saved:

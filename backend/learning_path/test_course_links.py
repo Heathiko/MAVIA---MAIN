@@ -287,6 +287,8 @@ class CoursePathStepsTests(CourseFixture):
         self.assertEqual([step["position"] for step in topic["steps"]], [1, 2])
 
     def test_a_published_topic_lists_its_saved_order(self):
+        self.flowers.published = True
+        self.flowers.save(update_fields=["published"])
         LearningPathStep.objects.create(outline_node=self.flowers, concept=self.groups["Petals"], position=1, depth=0, published_at=timezone.now())
         LearningPathStep.objects.create(outline_node=self.flowers, concept=self.groups["Stamen"], position=2, depth=0, published_at=timezone.now())
 
@@ -320,3 +322,14 @@ class CoursePathStepsTests(CourseFixture):
 
         link.refresh_from_db()
         self.assertEqual(link.status, "rejected")
+
+    def test_saved_steps_of_an_unpublished_topic_are_not_shown_as_its_order(self):
+        """Regrouping or a failed publish unpublishes a topic but leaves its old steps behind."""
+        LearningPathStep.objects.create(outline_node=self.flowers, concept=self.groups["Petals"], position=1,
+                                        depth=0, published_at=timezone.now())
+
+        topic = next(item for item in course_path(self.course)["topics"] if item["id"] == self.flowers.id)
+
+        self.assertFalse(topic["published"])
+        self.assertEqual([step["title"] for step in topic["steps"]], ["Stamen", "Petals"])
+
