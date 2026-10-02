@@ -363,3 +363,16 @@ def vote_accuracy(data, concepts):
         for vote, value in votes.items():
             counts[vote]["right" if value == 1 else "wrong" if value == -1 else "silent"] += 1
     return counts
+
+
+def course_shortlist_hits(data, topic_concepts, decisions):
+    """Dependents with a key prerequisite, and how many were offered one (accepted or pending)."""
+    key = {concept.id: concept.key for topic in topic_concepts for concept in topic}
+    required = {tuple(edge) for edge in data["required"]}
+    offered = {
+        (key.get(row["prerequisite"].id), key.get(row["dependent"].id))
+        for row in decisions if row["verdict"] in (criteria.ACCEPTED, criteria.PENDING)
+    }
+    dependents = {after for _, after in required}
+    hit = {after for before, after in required if (before, after) in offered}
+    return {"dependents": len(dependents), "hit": len(hit), "offered": len(offered)}
