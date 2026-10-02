@@ -5,6 +5,7 @@ import "@xyflow/react/dist/style.css";
 
 import { decideCoursePathLink, fetchCourseLearningPath, restoreCoursePathLinks } from "../api";
 import ConfirmDialog from "../learning-path/ConfirmDialog";
+import CourseArrowDialog from "../learning-path/CourseArrowDialog";
 import UndoBar from "../learning-path/UndoBar";
 import { buildCourseGraph, learningOrder } from "../learning-path/coursePathModel";
 import "../learning-path/pathGraph.css";
@@ -116,33 +117,6 @@ export default function CoursePathPage() {
             <Controls showInteractive={false} />
           </ReactFlow>
         </div>
-        {arrow && (
-          <section className="pg-details cp-panel" aria-labelledby="cp-panel-title">
-            <h3 id="cp-panel-title">{topicTitle(arrow.from_topic)} → {topicTitle(arrow.to_topic)}</h3>
-            {arrow.contradicts_outline && (
-              <p className="cp-warning">
-                To follow these links, move “{topicTitle(arrow.from_topic)}” before “{topicTitle(arrow.to_topic)}” in the outline.
-              </p>
-            )}
-            <ul className="pg-details-list">
-              {arrow.links.map((link) => (
-                <li key={link.id} className={`cp-link ${link.status}`}>
-                  <strong>{link.prerequisite.title} → {link.dependent.title}</strong>
-                  <span className="cp-link-status">{link.status}</span>
-                  <p>{link.reason}</p>
-                  <div className="action-row">
-                    {link.status === "pending" && (
-                      <button type="button" className="btn btn-small btn-primary" onClick={() => ask(link, "approved")}>Approve</button>
-                    )}
-                    <button type="button" className="btn btn-small btn-secondary" onClick={() => ask(link, "rejected")}>
-                      {link.status === "pending" ? "Reject" : "Remove"}
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
       </div>
       <section className="card cp-order" aria-labelledby="cp-order-title">
         <h3 id="cp-order-title">Learning order</h3>
@@ -189,6 +163,15 @@ export default function CoursePathPage() {
         </ol>
       </section>
       </div>
+      {arrow && (
+        <CourseArrowDialog
+          arrow={arrow}
+          topicTitle={topicTitle}
+          onDecide={ask}
+          onClose={() => setSelected(null)}
+          paused={Boolean(confirm) || busy}
+        />
+      )}
       {confirm && (
         <ConfirmDialog
           title={confirm.title}
