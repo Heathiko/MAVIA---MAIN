@@ -126,14 +126,6 @@ def _looks_automatic(existing, members, group):
     return existing.casefold() in automatic_labels
 
 
-def choose_representative(members):
-    """Return a stable display fallback before a grouped original is classified."""
-    return sorted(
-        members,
-        key=lambda item: (item.material.created_at, item.material_id, item.id),
-    )[0]
-
-
 # ── Bundles and their roles ──
 
 
@@ -973,8 +965,6 @@ def release_from_group(learning_object, companions):
       who remain.
 
     Generated versions are never deleted here, including ones a teacher edited.
-    That is the difference from ``release_learning_object``, which drops every
-    generated row on the original.
     """
     companions = [item for item in companions if item.pk != learning_object.pk]
     if not companions:
@@ -1018,34 +1008,3 @@ def release_from_group(learning_object, companions):
         "was_original": was_original,
         "removed_version_slots": sorted({slot.lower() for slot in removed}),
     }
-
-
-def release_learning_object(learning_object):
-    """Undo representation for one object after a teacher ungroups it.
-
-    Generated rows on the representative are dropped because the object that
-    justified them is leaving.
-    """
-    # Read the flag from the database rather than the passed-in instance:
-    # settle_group() writes it through a separately loaded object, so a caller
-    # holding a reference from before that call still sees represented_by as
-    # None and would silently skip the release.
-    current = (
-        type(learning_object)
-        .objects.select_related("represented_by")
-        .filter(pk=learning_object.pk)
-        .first()
-    )
-    if current is None or current.represented_by is None:
-        return
-    representative = current.represented_by
-
-    LessonVariant.objects.filter(
-        learning_object=representative,
-        origin=LessonVariant.Origin.GENERATED,
-    ).delete()
-
-    current.represented_by = None
-    current.save(update_fields=["represented_by"])
-    # Keep the caller's instance consistent with what was just written.
-    learning_object.represented_by = None

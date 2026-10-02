@@ -4,6 +4,7 @@ import json
 
 import requests
 from django.conf import settings
+from config.groq_client import generate as groq_generate
 
 
 class VersionClassificationError(RuntimeError):
@@ -201,60 +202,61 @@ def classify_group_versions(members, *, representative=None):
     # time the model reached for ORIGINAL after one was already fixed.
     offered_slots = sorted(VALID_SLOTS - {"ORIGINAL"} if representative else VALID_SLOTS)
     correction = ""
+    schema = {
+        "type": "object",
+        "properties": {
+            "assignments": {
+                "type": "array",
+                "minItems": len(members),
+                "maxItems": len(members),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "position": {"type": "integer"},
+                        **{
+                            field: {"type": "array", "items": {"type": "string"}}
+                            for field in EVIDENCE_FIELDS
+                        },
+                        "slot": {"type": "string", "enum": offered_slots},
+                        "confidence": {"type": "number"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": [
+                        "position", *EVIDENCE_FIELDS, "slot", "confidence", "reason",
+                    ],
+                },
+            },
+        },
+        "required": ["assignments"],
+    }
     for attempt in range(2):
         try:
-            response = requests.post(
-                f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": base_prompt + correction,
-                    "stream": False,
-                    "keep_alive": settings.OLLAMA_KEEP_ALIVE,
-                    "format": {
-                        "type": "object",
-                        "properties": {
-                            "assignments": {
-                                "type": "array",
-                                "minItems": len(members),
-                                "maxItems": len(members),
-                                "items": {
-                                    "type": "object",
-                                    # The model writes fields in this order.
-                                    # Evidence comes before the role, so the
-                                    # role is chosen from what it found:
-                                    # asked for the role first, gemma3:4b
-                                    # committed to SIMPLIFIED and then
-                                    # listed additions that contradicted it.
-                                    "properties": {
-                                        "position": {"type": "integer"},
-                                        **{
-                                            field: {"type": "array", "items": {"type": "string"}}
-                                            for field in EVIDENCE_FIELDS
-                                        },
-                                        "slot": {
-                                            "type": "string",
-                                            "enum": offered_slots,
-                                        },
-                                        "confidence": {"type": "number"},
-                                        "reason": {"type": "string"},
-                                    },
-                                    "required": [
-                                        "position", *EVIDENCE_FIELDS,
-                                        "slot", "confidence", "reason",
-                                    ],
-                                },
-                            },
-                        },
-                        "required": ["assignments"],
+            if settings.LLM_PROVIDER == "groq":
+                raw, _metrics = groq_generate(
+                    base_prompt + correction,
+                    model=model,
+                    schema=schema,
+                    temperature=0.0,
+                    max_tokens=1024,
+                    timeout=settings.CONTENT_VERSION_LLM_TIMEOUT,
+                )
+            else:
+                response = requests.post(
+                    f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/generate",
+                    json={
+                        "model": model,
+                        "prompt": base_prompt + correction,
+                        "stream": False,
+                        "keep_alive": settings.OLLAMA_KEEP_ALIVE,
+                        "format": schema,
+                        "options": {"temperature": 0.0, "num_predict": 1024},
                     },
-                    "options": {"temperature": 0.0, "num_predict": 1024},
-                },
-                timeout=settings.CONTENT_VERSION_LLM_TIMEOUT,
-            )
-            response.raise_for_status()
-            raw = response.json().get("response")
+                    timeout=settings.CONTENT_VERSION_LLM_TIMEOUT,
+                )
+                response.raise_for_status()
+                raw = response.json().get("response")
         except (requests.RequestException, ValueError, TypeError) as exc:
-            raise VersionClassificationError(f"Gemma classification request failed: {exc}") from exc
+            raise VersionClassificationError(f"{model} classification request failed: {exc}") from exc
         try:
             return _parse(
                 raw,

@@ -370,11 +370,35 @@ def _draft_questions_for_node(
                 **metrics,
             )
 
+        def record_error(attempt, reason, order=thinking_order):
+            _emit(
+                on_event,
+                "question_generation_attempt_failed",
+                f"{order} question generation attempt {attempt} failed: {reason}",
+                node_id=node.id,
+                thinking_order=order,
+                attempt=attempt,
+                reason=reason,
+            )
+
+        def record_rate_limit_wait(seconds, retry, order=thinking_order):
+            _emit(
+                on_event,
+                "groq_rate_limit_wait",
+                f"Groq rate limit reached; waiting {seconds:.1f}s before retrying {order}",
+                node_id=node.id,
+                thinking_order=order,
+                wait_seconds=round(seconds, 1),
+                retry=retry,
+            )
+
         questions = generate_questions(
             content=concept_source_text(node),
             thinking_order=thinking_order,
             format_split=padded,
             on_metrics=record_metrics,
+            on_error=record_error,
+            on_rate_limit_wait=record_rate_limit_wait,
             correction=correction,
         )
         batch = [
@@ -799,7 +823,12 @@ def generate_questions_for_material(
         # Production background runs always provide the trace callback. Keep
         # direct service/test calls network-free unless they actually generate.
         if on_event:
-            _emit(on_event, "model_warming", "Loading question model into Ollama")
+            _emit(
+                on_event,
+                "model_warming",
+                "Question model is ready" if settings.LLM_PROVIDER == "groq"
+                else "Loading question model into Ollama",
+            )
 
             def record_warm_metrics(metrics):
                 _emit(

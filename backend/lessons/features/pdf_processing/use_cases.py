@@ -108,7 +108,26 @@ def upload_course_outline(
 ) -> tuple[CourseGroup, bool]:
     """Store an outline source and merge its hierarchy into the course."""
     fingerprint = _file_sha256(outline_file)
-    if _find_existing_outline(course, fingerprint) is not None:
+    existing = _find_existing_outline(course, fingerprint)
+    if existing is not None:
+        # A teacher can delete every extracted topic while the source PDF stays
+        # attached. Re-uploading that PDF should recover the empty hierarchy.
+        if not course.nodes.exists():
+            try:
+                with _temporary_pdf_copy(outline_file) as temporary_path:
+                    parsed_nodes = validate_course_outline_pdf(str(temporary_path))
+                    build_dag_from_outline(
+                        course,
+                        str(temporary_path),
+                        Path(outline_file.name).suffix,
+                        replace=False,
+                        parsed_nodes=parsed_nodes,
+                    )
+            except Exception as exc:
+                raise PdfProcessingUseCaseError(str(exc)) from exc
+            existing.is_approved = False
+            existing.approved_at = None
+            existing.save(update_fields=["is_approved", "approved_at"])
         return course, True
 
     try:

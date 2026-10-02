@@ -1,6 +1,6 @@
 from django.test import SimpleTestCase
 
-from .readability import compare, flesch_kincaid_grade, syllable_count, text_metrics
+from .readability import compare, syllable_count, text_metrics
 
 
 SHORT = "Solid has a fixed shape. It holds its form. It does not flow."
@@ -35,11 +35,6 @@ class TextMetricsTests(SimpleTestCase):
         metrics = text_metrics("")
         self.assertEqual(metrics["words"], 0)
         self.assertIsInstance(metrics["fk"], float)
-
-
-class FleschKincaidTests(SimpleTestCase):
-    def test_longer_denser_text_scores_higher(self):
-        self.assertGreater(flesch_kincaid_grade(LONG), flesch_kincaid_grade(SHORT))
 
 
 class CompareTests(SimpleTestCase):

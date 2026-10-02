@@ -9,6 +9,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from config.groq_client import generate as groq_generate
 from lessons.models import LearningObject
 
 from .models import LessonVariant
@@ -245,6 +246,26 @@ def _request_variants(learning_object, model):
 
 def _request_variants_once(learning_object, model, feedback=""):
     try:
+        if settings.LLM_PROVIDER == "groq":
+            raw, _metrics = groq_generate(
+                _prompt(learning_object, feedback),
+                model=model,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "simplified": {"type": "string"},
+                        "elaborated": {"type": "string"},
+                    },
+                    "required": ["simplified", "elaborated"],
+                },
+                temperature=0.1,
+                max_tokens=settings.GROQ_VARIANT_MAX_TOKENS,
+                timeout=settings.ADAPTIVE_VARIANT_TIMEOUT,
+            )
+            return _parse_response(
+                raw,
+                source_word_count=len(learning_object.content.split()),
+            )
         response = requests.post(
             f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/generate",
             json={
@@ -273,9 +294,9 @@ def _request_variants_once(learning_object, model, feedback=""):
             source_word_count=len(learning_object.content.split()),
         )
     except (requests.ConnectionError, requests.Timeout) as exc:
-        raise _UnreachableModelError(f"Gemma request failed: {exc}") from exc
+        raise _UnreachableModelError(f"{model} request failed: {exc}") from exc
     except (requests.RequestException, ValueError, TypeError) as exc:
-        raise VariantGenerationError(f"Gemma request failed: {exc}") from exc
+        raise VariantGenerationError(f"{model} request failed: {exc}") from exc
 
 
 def _confirmed_objects_for_topic(outline_node):

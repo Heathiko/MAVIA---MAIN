@@ -17,7 +17,6 @@ from .models import LessonVariant
 from .version_assignment import (
     assign_group_versions,
     assign_source_to_slot,
-    choose_representative,
     clean_group_label,
     set_bundle_role,
     version_bundles,
@@ -57,11 +56,6 @@ class VersionAssignmentTests(TestCase):
         return LearningObject.objects.create(
             material=material, group=self.group, title=title, content=content, order=0
         )
-
-    def test_representative_is_the_earliest_uploaded_member(self):
-        first = self._object(self._material("PDF one", 0), SHORT)
-        second = self._object(self._material("PDF two", 5), LONG)
-        self.assertEqual(choose_representative([second, first]), first)
 
     def test_group_label_cleaner_removes_only_structural_title_markers(self):
         self.assertEqual(clean_group_label("3.1 Matter (Part 1 of 2)"), "Matter")

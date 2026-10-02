@@ -131,6 +131,7 @@ class CumulativeCourseOutlineTests(TestCase):
             course=course,
             outline_file=SimpleUploadedFile("outline.pdf", pdf_bytes),
         )
+        OutlineNode.objects.create(course=course, title="Matter", order=0, depth=0)
         saved_outline = course.outlines.get()
         saved_outline.is_approved = True
         saved_outline.save(update_fields=["is_approved"])
@@ -147,6 +148,53 @@ class CumulativeCourseOutlineTests(TestCase):
         build_outline.assert_called_once()
 
         course.outlines.get().outline_file.delete(save=False)
+
+    def test_reupload_restores_deleted_outline_hierarchy_without_duplicate_pdf(self):
+        course = CourseGroup.objects.create(title="Science")
+        client = authenticated_api_client()
+        document = fitz.open()
+        page = document.new_page()
+        page.insert_text(
+            (72, 72),
+            "Course Code: SCI101\nContent Standards: Matter\n"
+            "Learning Outcomes: Classify matter\n"
+            "1. Matter\n1.1 Definition of matter\n1.2 States of matter",
+        )
+        pdf_bytes = document.tobytes()
+        document.close()
+        upload_url = f"/api/courses/{course.id}/upload-pdf/"
+
+        with tempfile.TemporaryDirectory() as media_root:
+            with self.settings(MEDIA_ROOT=media_root):
+                first = client.post(
+                    upload_url,
+                    {"pdf_file": SimpleUploadedFile("outline.pdf", pdf_bytes, content_type="application/pdf")},
+                    format="multipart",
+                )
+                self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+                self.assertEqual(first.data["hierarchy"][0]["title"], "Matter")
+                root_id = first.data["hierarchy"][0]["id"]
+
+                deleted = client.delete(f"/api/courses/{course.id}/outline-nodes/{root_id}/")
+                self.assertEqual(deleted.status_code, status.HTTP_200_OK)
+                self.assertEqual(deleted.data["hierarchy"], [])
+                self.assertEqual(course.outlines.count(), 1)
+
+                restored = client.post(
+                    upload_url,
+                    {"pdf_file": SimpleUploadedFile("outline.pdf", pdf_bytes, content_type="application/pdf")},
+                    format="multipart",
+                )
+                self.assertEqual(restored.status_code, status.HTTP_200_OK)
+                self.assertTrue(restored.data["upload_reused"])
+                self.assertTrue(restored.data["hierarchy_restored"])
+                self.assertEqual(course.outlines.count(), 1)
+                self.assertEqual(restored.data["hierarchy"][0]["title"], "Matter")
+                self.assertEqual(
+                    [child["title"] for child in restored.data["hierarchy"][0]["children"]],
+                    ["Definition of matter", "States of matter"],
+                )
+                self.assertFalse(course.outlines.get().is_approved)
 
     @patch("lessons.features.pdf_processing.use_cases.build_dag_from_outline")
     @patch("lessons.features.pdf_processing.use_cases.validate_course_outline_pdf")
@@ -1903,6 +1951,29 @@ class OutlineParserTests(TestCase):
         """
 
         self.assertTrue(is_course_outline_document(text))
+
+    def test_numbered_outline_keeps_parent_and_children(self):
+        text = """
+        Course Code: SCI101
+        Content Standards: Matter
+        Learning Outcomes: Classify matter
+        1. Matter
+        1.1 Definition of matter
+        1.2 States of matter
+        2. Motion
+        2.1 Distance and displacement
+        """
+
+        self.assertTrue(is_course_outline_document(text))
+        nodes = parse_outline_text(text)
+        self.assertEqual(
+            [(node.title, node.depth, [child.title for child in node.children]) for node in nodes],
+            [
+                ("Matter", 0, ["Definition of matter", "States of matter"]),
+                ("Motion", 0, ["Distance and displacement"]),
+            ],
+        )
+        self.assertEqual([child.depth for child in nodes[0].children], [1, 1])
 
     def test_teacher_module_bullets_stay_under_declared_module(self):
         text = """
@@ -4871,6 +4942,35 @@ class LearningObjectPreservationTests(TestCase):
 
         self.assertEqual(matched, grouping)
         self.assertNotEqual(matched, mixtures)
+
+    def test_visible_lesson_heading_breaks_misleading_whole_pdf_tfidf_tie(self):
+        course = CourseGroup.objects.create(title="Matter")
+        module_properties = OutlineNode.objects.create(
+            course=course, title="Properties of Matter", order=0, depth=0,
+        )
+        module_changes = OutlineNode.objects.create(
+            course=course, title="Changes that Materials Undergo", order=1, depth=0,
+        )
+        mixtures = OutlineNode.objects.create(
+            course=course, parent=module_properties,
+            title="Mixtures and Their Characteristics", order=0, depth=1,
+        )
+        OutlineNode.objects.create(
+            course=course, parent=module_changes,
+            title="Separating Mixture", order=0, depth=1,
+        )
+        text = (
+            "Lesson 4: Mixtures and Their Characteristics\n"
+            "Module 1: Properties of Matter\n"
+            "A mixture has components with their own characteristics. "
+            "Separating mixture components is possible because a mixture "
+            "retains their properties. Separating mixture examples help show "
+            "the characteristics of a mixture."
+        )
+
+        matched = choose_outline_node_for_material(course, "unhelpful filename", text)
+
+        self.assertEqual(matched, mixtures)
 
     def test_selected_outline_topic_still_requires_pdf_content_match(self):
         course = CourseGroup.objects.create(title="Science 7")

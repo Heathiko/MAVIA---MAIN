@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 
 import requests
 from django.conf import settings
+from config.groq_client import generate as groq_generate
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,8 @@ def _base_url() -> str:
 
 def _service_reachable() -> bool:
     """Cache successful checks briefly; failures remain immediately retryable."""
+    if _cfg("LLM_PROVIDER", "ollama") == "groq":
+        return bool(_cfg("GROQ_API_KEY", ""))
     global _reachable_until
     now = time.monotonic()
     with _reachability_lock:
@@ -793,13 +796,24 @@ def describe_image_for_lesson(
         },
     }
     try:
-        response = requests.post(
-            f"{_base_url()}/api/generate",
-            json=payload,
-            timeout=int(_cfg("IMAGE_DESCRIPTION_TIMEOUT", 300)),
-        )
-        response.raise_for_status()
-        text = (response.json().get("response") or "").strip()
+        if _cfg("LLM_PROVIDER", "ollama") == "groq":
+            text, _metrics = groq_generate(
+                prompt,
+                model=model,
+                image_bytes=image_bytes,
+                temperature=0.2,
+                max_tokens=512,
+                timeout=int(_cfg("IMAGE_DESCRIPTION_TIMEOUT", 300)),
+            )
+            text = text.strip()
+        else:
+            response = requests.post(
+                f"{_base_url()}/api/generate",
+                json=payload,
+                timeout=int(_cfg("IMAGE_DESCRIPTION_TIMEOUT", 300)),
+            )
+            response.raise_for_status()
+            text = (response.json().get("response") or "").strip()
     except (requests.RequestException, ValueError) as exc:
         logger.warning(
             "figure description failed (%s): %s",
@@ -1000,7 +1014,11 @@ def populate_missing_image_descriptions(material) -> dict:
         if not description:
             errors.append({
                 "learning_object_id": learning_object.id,
-                "detail": "Gemma did not return an image narration. Confirm Ollama is running and retry.",
+                "detail": (
+                    "Groq did not return an image narration. Check the API connection and retry."
+                    if _cfg("LLM_PROVIDER", "ollama") == "groq"
+                    else "Gemma did not return an image narration. Confirm Ollama is running and retry."
+                ),
             })
             continue
         # The same check upload makes: when the author's own paragraph beside

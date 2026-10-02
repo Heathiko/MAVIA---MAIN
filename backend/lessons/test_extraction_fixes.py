@@ -122,6 +122,53 @@ class QuestionHeadingTests(SimpleTestCase):
         self.assertEqual(result[0]["category"], "assessment")
 
 
+class ContentsListTests(SimpleTestCase):
+    """A contents page names lesson sections; it does not teach their content."""
+
+    def test_contents_block_does_not_absorb_the_first_numbered_section(self):
+        blocks = [
+            text_block(1, "About this guide: This guide explains the lesson layout and navigation.", y=10),
+            text_block(2, "In This Guide", y=40, bold=True, size=14),
+            text_block(3, "1.\u200b What is matter?\n2.\u200b Solids\n3.\u200b Liquids", y=70, lines=3),
+            text_block(4, "1. What Is Matter?", y=140, bold=True, size=14),
+            text_block(5, "Matter is anything that takes up space and has mass, such as air and water.", y=170, lines=2),
+            text_block(6, "2. Solids", y=210, bold=True, size=14),
+            text_block(7, "A solid keeps its shape because its particles stay close together.", y=240, lines=2),
+        ]
+
+        result = classified(blocks)
+        self.assertEqual([result[1]["category"], result[2]["category"]], ["navigation", "navigation"])
+        self.assertEqual(result[3]["category"], "lesson_content")
+        objects = build_section_learning_objects(result, [])
+        by_title = {item["title"]: item for item in objects}
+        self.assertNotIn("In This Guide", by_title)
+        self.assertIn("What Is Matter?", by_title)
+        self.assertIn("Matter is anything", by_title["What Is Matter?"]["content"])
+        self.assertNotIn("2.\u200b Solids", by_title["What Is Matter?"]["content"])
+
+    def test_separate_contents_entries_are_not_section_headings(self):
+        blocks = [
+            text_block(1, "In This Guide", y=10, bold=True, size=14),
+            text_block(2, "1. What is matter?", y=30),
+            text_block(3, "2. Solids", y=50),
+            text_block(4, "3. Liquids", y=70),
+            text_block(5, "1. What Is Matter?", y=100, bold=True, size=14),
+            text_block(6, "Matter is anything that takes up space and has mass, such as air and water.", y=130, lines=2),
+        ]
+
+        result = classified(blocks)
+        self.assertEqual([block["category"] for block in result[:4]], ["navigation"] * 4)
+        objects = build_section_learning_objects(result, [])
+        self.assertEqual([item["title"] for item in objects], ["What Is Matter?"])
+
+    def test_numbered_quiz_prompt_remains_an_assessment(self):
+        result = classified([
+            text_block(1, "1. What is matter?", y=10, bold=True, size=11),
+            text_block(2, "Matter is anything that takes up space and has mass, such as air and water.", y=40, size=11, lines=2),
+        ])
+        self.assertEqual(result[0]["category"], "assessment")
+
+
 class DashLeadinTests(SimpleTestCase):
     def test_a_dash_leadin_under_a_heading_keeps_the_heading_and_the_sentence(self):
         sentence = (

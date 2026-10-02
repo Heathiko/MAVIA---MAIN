@@ -81,7 +81,9 @@ export default function CourseDetailPage() {
 
       if (updatedCourse.upload_type === "outline") {
         setOutlineMessage(
-          updatedCourse.upload_reused
+          updatedCourse.hierarchy_restored
+            ? "The PDF was already attached, but its topics had been deleted. The hierarchy was extracted again. Review it before confirming."
+            : updatedCourse.upload_reused
             ? "This course outline was already uploaded. No duplicate was added and the existing hierarchy was left unchanged."
             : course?.outline
             ? "Course outline detected and merged automatically. Existing hierarchy nodes were preserved and new topics were added for review."
@@ -243,6 +245,9 @@ export default function CourseDetailPage() {
             {!course.outline.is_approved && (
               <small>New outline content is pending teacher confirmation.</small>
             )}
+            {course.hierarchy?.length === 0 && (
+              <small>No topics remain. Re-upload an attached outline PDF to extract its topics again.</small>
+            )}
           </div>
         )}
       </section>
@@ -295,7 +300,7 @@ export default function CourseDetailPage() {
             <h3 id="delete-node-title">Delete topic?</h3>
             <p>
               This will remove "{nodeToDelete.title}" from the hierarchy. Any subtopics under it
-              will also be removed.
+              will also be removed. The uploaded outline PDF will remain attached.
             </p>
             <div className="modal-actions">
               <button

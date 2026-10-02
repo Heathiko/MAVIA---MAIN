@@ -2110,6 +2110,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="upload-outline")
     def upload_outline(self, request, pk=None):
         course = self.get_object()
+        had_hierarchy = OutlineNode.objects.filter(course_id=course.pk).exists()
         input_serializer = CourseOutlineUploadInputSerializer(data=request.data)
         if not input_serializer.is_valid():
             return Response(
@@ -2127,6 +2128,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         response = self._serialize_course_detail(course, request)
         response.data["upload_type"] = "outline"
         response.data["upload_reused"] = reused
+        response.data["hierarchy_restored"] = (
+            reused and not had_hierarchy and OutlineNode.objects.filter(course_id=course.pk).exists()
+        )
         response.status_code = status.HTTP_200_OK if reused else status.HTTP_201_CREATED
         return response
 
@@ -2134,6 +2138,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
     def upload_pdf(self, request, pk=None):
         """Accept one PDF and automatically route outlines and lesson materials."""
         course = self.get_object()
+        had_hierarchy = OutlineNode.objects.filter(course_id=course.pk).exists()
         input_serializer = CoursePdfUploadInputSerializer(data=request.data)
         if not input_serializer.is_valid():
             detail = input_serializer.errors.get("detail")
@@ -2152,6 +2157,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         response = self._serialize_course_detail(course, request)
         response.data["upload_type"] = upload_type
         response.data["upload_reused"] = reused
+        response.data["hierarchy_restored"] = (
+            upload_type == "outline" and reused and not had_hierarchy
+            and OutlineNode.objects.filter(course_id=course.pk).exists()
+        )
         if material is not None:
             response.data["uploaded_material_id"] = material.id
         response.status_code = status.HTTP_200_OK if reused else status.HTTP_201_CREATED

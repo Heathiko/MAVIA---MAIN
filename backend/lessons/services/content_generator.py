@@ -195,22 +195,6 @@ def _split_preserved_paragraphs(cleaned_text: str) -> list[str]:
     return [paragraph for paragraph in paragraphs if paragraph]
 
 
-def build_teacher_text_narration(cleaned_text: str) -> list[dict]:
-    narration_items = []
-    for index, paragraph in enumerate(_split_preserved_paragraphs(cleaned_text), start=1):
-        narration_items.append(
-            {
-                "order": index,
-                "type": "teacher_text",
-                "page": None,
-                "section_title": "",
-                "content": paragraph,
-                "source": "pdf_exact_text",
-            }
-        )
-    return narration_items
-
-
 def build_fallback_learning_objects_from_text(cleaned_text: str) -> list[dict]:
     learning_objects = []
     for paragraph in _split_preserved_paragraphs(cleaned_text):
@@ -867,6 +851,33 @@ def _rank_outline_nodes_by_tfidf(
     )
 
 
+def _explicit_lesson_heading_node(course: CourseGroup, text: str) -> OutlineNode | None:
+    """Prefer an exact visible lesson heading when the PDF also supports it."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()][:5]
+    if not lines:
+        return None
+
+    def normalized(value: str) -> str:
+        value = re.sub(
+            r"^(?:lesson|topic)\s+\d+(?:\.\d+)*\s*[:.)-]\s*",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+        return " ".join(re.findall(r"\w+", value.casefold()))
+
+    headings = {normalized(line) for line in lines}
+    candidates = [
+        node for node in course.nodes.filter(children__isnull=True).distinct()
+        if normalized(node.title) in headings
+    ]
+    if len(candidates) != 1:
+        return None
+    candidate = candidates[0]
+    scores = dict(_rank_outline_nodes_by_tfidf(course, "", text))
+    return candidate if scores.get(candidate, 0.0) >= TFIDF_COSINE_THRESHOLD else None
+
+
 def _choose_outline_node_by_tfidf(course: CourseGroup, title: str, text: str) -> OutlineNode | None:
     """Match a learning material to the most similar outline node.
 
@@ -883,6 +894,10 @@ def _choose_outline_node_by_tfidf(course: CourseGroup, title: str, text: str) ->
            floor because a positive but tiny angle similarity is not stable IR
            evidence.
     """
+    heading_node = _explicit_lesson_heading_node(course, text)
+    if heading_node is not None:
+        return heading_node
+
     ranked = _rank_outline_nodes_by_tfidf(course, title, text)
     # Only a topic can receive a PDF: a module with topics under it is a
     # heading, and a PDF filed there is grouped with none of its topics' PDFs.
@@ -1257,14 +1272,6 @@ def _mark_figure_descriptions(classified_blocks: list[dict], image_descriptions:
         if block.get("block_id") in described else block
         for block in classified_blocks
     ]
-
-
-def _format_image_learning_content(description: str, visible_text: str = "") -> str:
-    description = re.sub(r"\s+", " ", description or "").strip()
-    visible_text = re.sub(r"\s+", " ", visible_text or "").strip()
-    if description and visible_text:
-        return f"{description}\n\nVisible text: {visible_text}"
-    return description or (f"Visible text: {visible_text}" if visible_text else "")
 
 
 # "Solids - figure", "Solids - table 2": the name extraction gives a figure that
@@ -1925,6 +1932,8 @@ def _raw_learning_object_heading_title(block: dict) -> str | None:
 def _learning_object_heading_title(block: dict) -> str | None:
     if block.get("teacher_override") or block.get("is_bullet_item"):
         return None
+    if block.get("category") == "navigation":
+        return None
     if _is_symbolic_relation_text(block.get("text", "")):
         return None
     numbered_title = _section_heading_title(block.get("text", ""))
@@ -1935,11 +1944,6 @@ def _learning_object_heading_title(block: dict) -> str | None:
     return block.get("_layout_heading_title") or _looks_like_plain_subtopic_heading(
         block.get("text", "")
     )
-
-
-def _heading_only_allowed(block: dict) -> bool:
-    text = block.get("text", "") or ""
-    return bool(re.fullmatch(r"\s*\d+\.\d+(?:\.\d+)*\.?\s+.+", text))
 
 
 def _normalized_heading_label(text: str) -> str:
@@ -3440,7 +3444,6 @@ def build_section_learning_objects(classified_blocks: list[dict], image_descript
             item["title"] = f"{section} - {kind}{suffix}"[:255]
 
     for order, item in enumerate(learning_objects):
-        item.pop("heading_only_allowed", None)
         item.pop("source_x", None)
         item.pop("from_layout_heading", None)
         item["order"] = order
@@ -3887,11 +3890,6 @@ def _is_continuation_callout_label(title: str) -> bool:
     )
 
 
-def _starts_with_continuation_callout(unit: str) -> bool:
-    first_line = (unit or "").splitlines()[0].rstrip(":").strip()
-    return _is_continuation_callout_label(first_line)
-
-
 def _is_short_continuation_callout(item: dict) -> bool:
     """Return whether an object is a short conclusion to the prior concept."""
     if item.get("type") != "lesson_content" or _learning_object_word_count(item) > 20:
@@ -4121,86 +4119,6 @@ def build_narration_script_from_learning_objects(learning_objects: list[dict]) -
     return narration
 
 
-def build_narration_script(teacher_items: list[dict], image_descriptions: list[dict]) -> list[dict]:
-    narration = []
-    order = 1
-    for item in teacher_items:
-        item = {**item, "order": order}
-        narration.append(item)
-        order += 1
-    for image in image_descriptions:
-        narration.append(
-            {
-                "order": order,
-                "type": "image_description",
-                "page": image.get("page_number"),
-                "image_index": image.get("index"),
-                "content": image.get("description", ""),
-                "source": "teacher_image_description",
-                "placement": "inferred_after_teacher_text",
-            }
-        )
-        order += 1
-    return narration
-
-
-def build_narration_script_from_classified(classified_blocks: list[dict], image_descriptions: list[dict]) -> list[dict]:
-    narration = []
-    order = 1
-    for block in classified_blocks:
-        if not block.get("include_in_narration"):
-            continue
-        narration.append(
-            {
-                "order": order,
-                "type": block.get("category") or "lesson_content",
-                "page": block.get("page"),
-                "content": block.get("text", ""),
-                "source": "teacher_pdf",
-                "source_block_id": block.get("block_id"),
-                "category": block.get("category"),
-            }
-        )
-        order += 1
-
-    for image in image_descriptions:
-        narration.append(
-            {
-                "order": order,
-                "type": "image_description",
-                "page": image.get("page_number"),
-                "image_index": image.get("index"),
-                "content": image.get("description", ""),
-                "source": "teacher_image_description",
-                "placement": "inferred_after_lesson_content",
-            }
-        )
-        order += 1
-    return narration
-
-
-def build_learning_objects_from_narration(narration_script: list[dict]) -> list[dict]:
-    learning_objects = []
-    for item in narration_script:
-        if item.get("type") not in {"teacher_text", "lesson_content"}:
-            continue
-        source = "teacher_pdf" if item.get("type") == "lesson_content" else "pdf_exact_text"
-        learning_objects.append(
-            {
-                "order": len(learning_objects),
-                "title": _title_from_teacher_text(item.get("content", "")),
-                "type": item.get("type"),
-                "content": item.get("content", ""),
-                "source": source,
-                "source_page": item.get("page"),
-                "source_block_id": item.get("source_block_id"),
-                "source_excerpt": item.get("content", ""),
-                "narration_item_order": item.get("order"),
-            }
-        )
-    return learning_objects
-
-
 def build_lesson_playlist(narration_script: list[dict]) -> list[dict]:
     playlist = []
     for item in narration_script:
@@ -4294,12 +4212,6 @@ def review_learning_objects_for_bvi_learners(learning_objects: list[dict]) -> li
     for order, item in enumerate(reviewed):
         item["order"] = order
     return reviewed
-
-
-def json_dumps_for_prompt(value) -> str:
-    import json
-
-    return json.dumps(value, ensure_ascii=False, indent=2)
 
 
 def _sync_learning_objects(material: LearningMaterial, generated_json: dict):
@@ -4579,19 +4491,13 @@ def generate_material_outputs(
             # even when it contains prose-like prompts or answer choices.
             learning_objects = []
         fallback_used = False
-        has_lesson_content = any(
-            item.get("type") in {"teacher_text", "lesson_content"} and item.get("content", "").strip()
-            for item in learning_objects
-        )
         if (
             document_role != "assessment"
             and not sections["assessments"]
-            and not has_lesson_content
             and not learning_objects
         ):
-            image_objects = [item for item in learning_objects if item.get("type") == "image_description"]
             fallback_objects = build_fallback_learning_objects_from_text(cleaned_preserved_text)
-            learning_objects = image_objects + fallback_objects
+            learning_objects = fallback_objects
             for order, item in enumerate(learning_objects):
                 item["order"] = order
             fallback_used = bool(fallback_objects)
