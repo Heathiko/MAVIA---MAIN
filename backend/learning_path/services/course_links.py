@@ -19,10 +19,13 @@ from .course_criteria import course_topics, decide_course_pairs
 from .reasons import link_reason
 
 
-def refresh_course_links(course, embed=None):
+def refresh_course_links(course, embed=None, rule=None):
     """Re-derive the course's cross-topic links, keeping every teacher decision."""
     topics = course_topics(course)
-    decisions = decide_course_pairs([list(concepts_for_topic(topic)) for topic in topics], embed=embed)
+    decisions = decide_course_pairs(
+        [list(concepts_for_topic(topic)) for topic in topics], embed=embed, rule=rule,
+        topic_titles=[topic.title for topic in topics],
+    )
     fresh = {(row["prerequisite"].id, row["dependent"].id): row for row in decisions}
 
     with transaction.atomic():

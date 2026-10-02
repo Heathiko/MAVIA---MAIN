@@ -12,6 +12,7 @@ from . import embeddings
 from .calibration import load_calibration
 from .clues import clue_records, find_term_owners, meaning_vote, name_vote, term_vote
 from .concept_text import prepare
+from .course_shortlist import TOPIC_TITLE_CUTOFF, shortlist, title_vectors, topic_similarities
 from .fusion import ACCEPTED, PARALLEL, PENDING
 from .relatedness import relatedness
 
@@ -20,6 +21,12 @@ from .relatedness import relatedness
 # links): every link resting on the meaning clue (8 accepted) or on a single
 # clue (31 suggestions) was wrong -- topics of one subject share vocabulary.
 COURSE_CLUES = ("name", "terms")
+
+STRICT = "strict"
+SHORTLIST = "shortlist"
+COURSE_RULES = (STRICT, SHORTLIST)
+# The strict rule until the shortlist passes the final check (course spec 2026-10-02, section 5).
+COURSE_DEFAULT_RULE = STRICT
 
 
 def course_topics(course, with_content=True):
@@ -65,57 +72,86 @@ def course_verdict(votes, semantic=True):
     return PENDING, direction
 
 
+def _votes(first, second, owners, calibration, semantic):
+    return {
+        "name": name_vote(first, second)[0],
+        "terms": term_vote(first, second, owners)[0],
+        "meaning": meaning_vote(first, second, calibration["meaning_cutoff"])[0] if semantic else 0,
+        "outline": 1,
+    }
+
+
+def _row(first, second, votes, outcome, direction, owners, calibration, semantic, score, extra=None):
+    prerequisite, dependent = (first, second) if direction > 0 else (second, first)
+    oriented = {clue: vote * direction for clue, vote in votes.items()}
+    voting = [clue for clue in oriented if oriented[clue]]
+    records = clue_records(prerequisite, dependent, owners, {}, calibration["meaning_cutoff"], semantic)
+    records.pop("heading", None)
+    records.pop("order", None)
+    evidence = {
+        "rule": "course",
+        "relatedness": None if score is None else round(score, 3),
+        "confidence": round(sum(1 for clue in voting if oriented[clue] == 1) / len(voting), 3) if voting else 0.0,
+        "votes": oriented,
+        "records": records,
+        "contradicts_outline": direction < 0,
+        "semantic": semantic,
+    }
+    evidence.update(extra or {})
+    return {"prerequisite": prerequisite.concept, "dependent": dependent.concept, "verdict": outcome, "evidence": evidence}
+
+
 def _decide(first, second, owners, calibration, semantic):
-    """The link between ``first`` (earlier topic) and ``second`` (later topic), or ``None``."""
+    """The strict rule's link between ``first`` (earlier topic) and ``second`` (later topic), or ``None``."""
     if not (first.sentences and second.sentences):
         return None
     score = relatedness(first, second) if semantic else None
     if semantic and score < calibration["related_cutoff"]:
         return None
-    meaning_cutoff = calibration["meaning_cutoff"]
-    votes = {
-        "name": name_vote(first, second)[0],
-        "terms": term_vote(first, second, owners)[0],
-        "meaning": meaning_vote(first, second, meaning_cutoff)[0] if semantic else 0,
-        "outline": 1,
-    }
+    votes = _votes(first, second, owners, calibration, semantic)
     outcome, direction = course_verdict(votes, semantic)
     if outcome not in (ACCEPTED, PENDING):
         return None
-    prerequisite, dependent = (first, second) if direction > 0 else (second, first)
-    oriented = {clue: vote * direction for clue, vote in votes.items()}
-    voting = [clue for clue in oriented if oriented[clue]]
-    records = clue_records(prerequisite, dependent, owners, {}, meaning_cutoff, semantic)
-    records.pop("heading", None)
-    records.pop("order", None)
-    return {
-        "prerequisite": prerequisite.concept,
-        "dependent": dependent.concept,
-        "verdict": outcome,
-        "evidence": {
-            "rule": "course",
-            "relatedness": None if score is None else round(score, 3),
-            "confidence": round(sum(1 for clue in voting if oriented[clue] == 1) / len(voting), 3),
-            "votes": oriented,
-            "records": records,
-            "contradicts_outline": direction < 0,
-            "semantic": semantic,
-        },
-    }
+    return _row(first, second, votes, outcome, direction, owners, calibration, semantic, score)
 
 
-def decide_course_pairs(topic_concepts, calibration=None, embed=None):
+def _shortlisted(earlier, later, owners, calibration, vectors, similarity):
+    """Course spec 2026-10-02 section 3, levels 2 and 3, for one related pair of topics."""
+    rows = []
+    for second in later:
+        if not second.sentences:
+            continue
+        for first, rank, score, ranked_by in shortlist(earlier, second, vectors):
+            votes = _votes(first, second, owners, calibration, True)
+            outcome, direction = course_verdict(votes, True)
+            confirmed = outcome == ACCEPTED
+            if outcome not in (ACCEPTED, PENDING):
+                outcome, direction = PENDING, 1
+            extra = {"rule": "course-shortlist", "rank": rank, "ranked_by": ranked_by, "score": score,
+                     "topic_similarity": similarity, "confirmed": confirmed}
+            rows.append(_row(first, second, votes, outcome, direction, owners, calibration, True,
+                             relatedness(first, second), extra))
+    return rows
+
+
+def decide_course_pairs(topic_concepts, calibration=None, embed=None, rule=None, topic_titles=None):
     """Every cross-topic pair the evidence accepts or sends to the teacher.
 
-    ``topic_concepts`` lists each topic's concepts, topics in outline order.
+    ``topic_concepts`` lists each topic's concepts, topics in outline order;
+    ``topic_titles`` their outline titles. ``rule`` is ``STRICT`` (name and
+    terms must agree) or ``SHORTLIST`` (outline gate, concept shortlist, strict
+    confirmation); default ``COURSE_DEFAULT_RULE``. The shortlist needs the
+    encoder and the titles; without either the strict rule runs.
     Term ownership is read over the two topics of a pair together, so a term a
     later topic introduces can point back at an earlier topic's concept.
     """
     calibration = calibration or load_calibration()
+    rule = rule or COURSE_DEFAULT_RULE
+    encode = embed or embeddings.embed
     concepts = [concept for topic in topic_concepts for concept in topic]
     semantic = True
     try:
-        texts = prepare(concepts, embed=embed or embeddings.embed)
+        texts = prepare(concepts, embed=encode)
     except embeddings.EncoderUnavailable:
         texts, semantic = prepare(concepts), False
     by_topic, start = [], 0
@@ -123,10 +159,21 @@ def decide_course_pairs(topic_concepts, calibration=None, embed=None):
         by_topic.append(texts[start:start + len(topic)])
         start += len(topic)
 
+    use_shortlist = rule == SHORTLIST and semantic and topic_titles is not None
+    if use_shortlist:
+        similarities = topic_similarities(topic_titles, encode)
+        vectors = title_vectors(texts, encode)
+
     decisions = []
     for first_index, earlier in enumerate(by_topic):
-        for later in by_topic[first_index + 1:]:
+        for second_index in range(first_index + 1, len(by_topic)):
+            later = by_topic[second_index]
             owners = find_term_owners(earlier + later)
+            if use_shortlist:
+                similarity = similarities[(first_index, second_index)]
+                if similarity >= TOPIC_TITLE_CUTOFF:
+                    decisions.extend(_shortlisted(earlier, later, owners, calibration, vectors, similarity))
+                continue
             for first in earlier:
                 for second in later:
                     row = _decide(first, second, owners, calibration, semantic)

@@ -4,7 +4,7 @@ from django.test import SimpleTestCase, TestCase
 
 from lessons.models import CourseGroup, LearningObjectGroup, OutlineNode
 
-from .services.course_criteria import course_topics, course_verdict, decide_course_pairs
+from .services.course_criteria import SHORTLIST, course_topics, course_verdict, decide_course_pairs
 from .services.embeddings import EncoderUnavailable
 from .services.fusion import ACCEPTED, PARALLEL, PENDING
 from .testing import concept, word_vectors
@@ -126,3 +126,49 @@ class CourseTopicsTests(TestCase):
             [topic.id for topic in course_topics(course, with_content=False)],
             [states.id, grouping.id, empty.id, changes.id],
         )
+
+
+def decide_by_shortlist(topic_concepts, titles, embed=word_vectors):
+    return {
+        (row["prerequisite"].id, row["dependent"].id): row
+        for row in decide_course_pairs(topic_concepts, calibration=CALIBRATION, embed=embed,
+                                       rule=SHORTLIST, topic_titles=titles)
+    }
+
+
+class ShortlistRuleTests(SimpleTestCase):
+    """Course spec 2026-10-02, section 3."""
+
+    titles = ["Flower parts", "Flower reproduction"]
+
+    def test_a_shortlisted_link_the_text_confirms_is_accepted(self):
+        row = decide_by_shortlist([[stamen(), petals()], [pollination()]], self.titles)[(1, 2)]
+
+        self.assertEqual(row["verdict"], ACCEPTED)
+        self.assertEqual(row["evidence"]["rule"], "course-shortlist")
+        self.assertTrue(row["evidence"]["confirmed"])
+        self.assertEqual(row["evidence"]["rank"], 1)
+
+    def test_other_shortlisted_concepts_go_to_the_teacher(self):
+        row = decide_by_shortlist([[stamen(), petals()], [pollination()]], self.titles)[(4, 2)]
+
+        self.assertEqual(row["verdict"], PENDING)
+        self.assertFalse(row["evidence"]["confirmed"])
+        self.assertEqual(row["evidence"]["rank"], 2)
+
+    def test_topics_with_unrelated_titles_are_never_compared(self):
+        self.assertEqual(decide_by_shortlist([[stamen(), petals()], [pollination()]], ["Flower parts", "Weather"]), {})
+
+    def test_without_the_encoder_the_strict_rule_runs(self):
+        decided = decide_by_shortlist([[stamen(), petals()], [pollination()]], self.titles, embed=no_encoder)
+
+        self.assertEqual({row["verdict"] for row in decided.values()}, {PENDING})
+        self.assertEqual({row["evidence"]["rule"] for row in decided.values()}, {"course"})
+
+    def test_evidence_is_json_serialisable(self):
+        import json
+
+        json.dumps([row["evidence"] for row in decide_by_shortlist([[stamen(), petals()], [pollination()]], self.titles).values()])
+
+    def test_the_strict_rule_is_still_the_default(self):
+        self.assertEqual({row["evidence"]["rule"] for row in decide([[stamen(), petals()], [pollination()]]).values()}, {"course"})

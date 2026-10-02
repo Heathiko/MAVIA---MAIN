@@ -159,6 +159,13 @@ def _three_vote_reason(evidence, a, b):
     return " ".join(parts)
 
 
+def _shortlist_reason(evidence, a, b):
+    if evidence.get("confirmed"):
+        return _course_reason(evidence, a, b)
+    return (f"One of the 3 closest matches for {b} in its earlier topic (rank {evidence.get('rank')}). "
+            "Please confirm or dismiss.")
+
+
 def link_reason(evidence, prerequisite_title, dependent_title):
     a, b = prerequisite_title, dependent_title
     evidence = evidence or {}
@@ -166,6 +173,8 @@ def link_reason(evidence, prerequisite_title, dependent_title):
 
     if rule == "course":
         return _course_reason(evidence, a, b)
+    if rule == "course-shortlist":
+        return _shortlist_reason(evidence, a, b)
     if rule == "three-votes":
         return _three_vote_reason(evidence, a, b)
     if rule == "reference-order":

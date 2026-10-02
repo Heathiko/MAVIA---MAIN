@@ -294,3 +294,22 @@ class SingleWordReasonTests(SimpleTestCase):
             "As a general rule comes first in the lesson. "
             "Only single shared words link them (energy, movement, spread); please confirm.",
         )
+
+
+class ShortlistReasonTests(SimpleTestCase):
+    def test_an_unconfirmed_entry_says_it_is_a_close_match(self):
+        evidence = {"rule": "course-shortlist", "confirmed": False, "rank": 2, "votes": {}, "records": {}}
+
+        self.assertEqual(
+            link_reason(evidence, "Liquid", "Solutions"),
+            "One of the 3 closest matches for Solutions in its earlier topic (rank 2). Please confirm or dismiss.",
+        )
+
+    def test_a_confirmed_entry_reads_like_a_course_link(self):
+        evidence = {"rule": "course-shortlist", "confirmed": True, "rank": 1,
+                    "votes": {"name": 1, "terms": 1}, "records": {"terms": {"owned": ["flow"]}}}
+
+        self.assertEqual(
+            link_reason(evidence, "Liquid", "Solutions"),
+            "Solutions uses terms Liquid explains (flow). Solutions names Liquid. This follows your outline.",
+        )
