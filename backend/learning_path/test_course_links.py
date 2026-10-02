@@ -276,3 +276,47 @@ class UnitWithContentTests(CourseFixture):
 
         self.assertIn(unit.id, [topic["id"] for topic in path["topics"]])
         self.assertEqual([(arrow["from_topic"], arrow["to_topic"]) for arrow in path["arrows"]], [(unit.id, self.reproduction.id)])
+
+
+class CoursePathStepsTests(CourseFixture):
+    def test_an_unpublished_topic_lists_its_concepts_in_order(self):
+        topic = next(item for item in course_path(self.course)["topics"] if item["id"] == self.flowers.id)
+
+        self.assertFalse(topic["published"])
+        self.assertEqual([step["title"] for step in topic["steps"]], ["Stamen", "Petals"])
+        self.assertEqual([step["position"] for step in topic["steps"]], [1, 2])
+
+    def test_a_published_topic_lists_its_saved_order(self):
+        LearningPathStep.objects.create(outline_node=self.flowers, concept=self.groups["Petals"], position=1, depth=0, published_at=timezone.now())
+        LearningPathStep.objects.create(outline_node=self.flowers, concept=self.groups["Stamen"], position=2, depth=0, published_at=timezone.now())
+
+        topic = next(item for item in course_path(self.course)["topics"] if item["id"] == self.flowers.id)
+
+        self.assertTrue(topic["published"])
+        self.assertEqual([step["title"] for step in topic["steps"]], ["Petals", "Stamen"])
+
+    def test_a_topic_without_content_has_no_steps(self):
+        topic = next(item for item in course_path(self.course)["topics"] if item["id"] == self.empty.id)
+
+        self.assertEqual(topic["steps"], [])
+
+    def test_each_link_carries_its_shortlist_rank(self):
+        CourseConceptLink.objects.create(
+            course=self.course, prerequisite=self.groups["Stamen"], dependent=self.groups["Pollination"],
+            status="pending", evidence={"rule": "course-shortlist", "rank": 2, "confirmed": False},
+        )
+
+        [arrow] = course_path(self.course)["arrows"]
+
+        self.assertEqual(arrow["links"][0]["rank"], 2)
+
+    def test_a_dismissed_entry_stays_dismissed_after_re_deriving(self):
+        link = CourseConceptLink.objects.create(
+            course=self.course, prerequisite=self.groups["Petals"], dependent=self.groups["Pollination"],
+            status="rejected", evidence={"rule": "course-shortlist", "rank": 2, "confirmed": False},
+        )
+
+        refresh_course_links(self.course, embed=word_vectors, rule="shortlist")
+
+        link.refresh_from_db()
+        self.assertEqual(link.status, "rejected")

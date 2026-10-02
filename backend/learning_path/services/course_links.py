@@ -13,7 +13,7 @@ from django.utils.dateparse import parse_datetime
 
 from lessons.models import LearningObjectGroup
 
-from ..models import CourseConceptLink
+from ..models import CourseConceptLink, LearningPathStep
 from .concept_units import concepts_for_topic
 from .course_criteria import course_topics, decide_course_pairs
 from .reasons import link_reason
@@ -80,6 +80,22 @@ def _concept_titles(topics):
     return {concept.id: concept.title for topic in topics for concept in concepts_for_topic(topic)}
 
 
+def _topic_steps(topic, titles):
+    """``(published, steps)``: the saved path's order, or the topic's current concept order."""
+    saved = list(
+        LearningPathStep.objects.filter(outline_node=topic).order_by("position").values_list("concept_id", "position")
+    )
+    if saved:
+        return True, [
+            {"concept_id": concept_id, "title": titles.get(concept_id, "Untitled concept"), "position": position}
+            for concept_id, position in saved
+        ]
+    return False, [
+        {"concept_id": concept.id, "title": concept.title or "Untitled concept", "position": index}
+        for index, concept in enumerate(concepts_for_topic(topic), start=1)
+    ]
+
+
 def course_path(course):
     """The Course path page: outline topics, and one arrow per pair of topics with links."""
     topics = course_topics(course, with_content=False)
@@ -105,15 +121,21 @@ def course_path(course):
             "prerequisite": {"concept_id": row.prerequisite_id, "title": before, "topic_id": from_topic},
             "dependent": {"concept_id": row.dependent_id, "title": after, "topic_id": to_topic},
             "reason": link_reason(row.evidence, before, after),
+            "rank": (row.evidence or {}).get("rank"),
             "contradicts_outline": position[from_topic] > position[to_topic],
+        })
+
+    topic_rows = []
+    for topic in topics:
+        published, steps = _topic_steps(topic, titles) if topic.id in with_content else (False, [])
+        topic_rows.append({
+            "id": topic.id, "title": topic.title, "position": position[topic.id],
+            "has_content": topic.id in with_content, "published": published, "steps": steps,
         })
 
     return {
         "course": {"id": course.id, "title": course.title},
-        "topics": [
-            {"id": topic.id, "title": topic.title, "position": position[topic.id], "has_content": topic.id in with_content}
-            for topic in topics
-        ],
+        "topics": topic_rows,
         "arrows": [
             {
                 "from_topic": from_topic,
