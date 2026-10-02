@@ -57,7 +57,7 @@ class VariantRequestRetryTests(SimpleTestCase):
     def test_unreachable_ollama_is_not_retried(self, post):
         post.side_effect = requests.Timeout("timed out")
 
-        with self.assertRaisesMessage(VariantGenerationError, "Gemma request failed"):
+        with self.assertRaisesMessage(VariantGenerationError, "gemma3:4b request failed"):
             _request_variants(self.learning_object, "gemma3:4b")
         self.assertEqual(post.call_count, 1)
 
