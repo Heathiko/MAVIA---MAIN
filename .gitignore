@@ -53,6 +53,7 @@ backend/db.sqlite3.pre-*
 MAVIA MANUSCRIPT.docx
 MAVIA CHAPTER 3.docx
 MAVIA MANUSCRIPT*
+THESIS INPUT MATERIALS
 
 # Editor and office lock files
 ~$*
@@ -62,3 +63,12 @@ tmp/
 
 # Scratch folder for building the defense deck; not part of the app.
 .deckbuild/
+
+# Defense slide decks and their traces
+docs/pipeline-run-through-2026-10-02/
+
+# Source lesson PDFs kept at the repo root for re-uploading
+/Science*.pdf
+
+# Local-only gold map, not part of the evaluation sets
+backend/learning_path/fixtures/gold_map_308.json
