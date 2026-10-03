@@ -4,7 +4,7 @@ from django.test import SimpleTestCase, TestCase
 
 from lessons.models import CourseGroup, LearningObjectGroup, OutlineNode
 
-from .services.course_criteria import SHORTLIST, course_topics, course_verdict, decide_course_pairs
+from .services.course_criteria import CLOSEST, SHORTLIST, course_topics, course_verdict, decide_course_pairs
 from .services.embeddings import EncoderUnavailable
 from .services.fusion import ACCEPTED, PARALLEL, PENDING
 from .testing import concept, word_vectors
@@ -190,3 +190,48 @@ class ShortlistCacheOnlyEncoderTests(SimpleTestCase):
         self.assertEqual({row["verdict"] for row in decided.values()}, {PENDING})
         self.assertEqual({row["evidence"]["rule"] for row in decided.values()}, {"course"})
 
+
+
+def decide_by_closest(topic_concepts, embed=word_vectors):
+    return {
+        (row["prerequisite"].id, row["dependent"].id): row
+        for row in decide_course_pairs(topic_concepts, calibration=CALIBRATION, embed=embed, rule=CLOSEST)
+    }
+
+
+class ClosestRuleTests(SimpleTestCase):
+    def test_a_named_closest_concept_sharing_two_words_is_accepted(self):
+        decided = decide_by_closest([[stamen(), petals()], [pollination()]])
+
+        self.assertEqual(set(decided), {(1, 2)})
+        self.assertEqual(decided[(1, 2)]["verdict"], ACCEPTED)
+        self.assertEqual(decided[(1, 2)]["evidence"]["rule"], "course-closest")
+
+    def test_an_unrelated_later_topic_gets_no_link(self):
+        self.assertEqual(decide_by_closest([[stamen(), petals()], [weather()]]), {})
+
+    def test_at_most_one_link_per_later_concept_for_each_earlier_topic(self):
+        decided = decide_by_closest([[stamen(), petals()], [weather()], [pollination()]])
+
+        self.assertEqual(set(decided), {(1, 2)})
+
+    def test_concepts_without_a_full_sentence_give_no_link(self):
+        no_sentences = [concept(1, "Stamen", "Anther."), concept(4, "Petals", "Bright.")]
+
+        self.assertEqual(decide_by_closest([no_sentences, [pollination()]]), {})
+        self.assertEqual(decide_by_closest([[stamen(), petals()], [concept(2, "Pollination", "Pollen.")]]), {})
+
+    def test_without_the_encoder_the_strict_rule_runs(self):
+        decided = decide_by_closest([[stamen(), petals()], [pollination()]], embed=no_encoder)
+
+        self.assertTrue(decided)
+        self.assertEqual({row["verdict"] for row in decided.values()}, {PENDING})
+        self.assertEqual({row["evidence"]["rule"] for row in decided.values()}, {"course"})
+
+    def test_evidence_is_json_serialisable(self):
+        import json
+
+        decided = decide_by_closest([[stamen(), petals()], [pollination(names_stamen=False), weather()]])
+
+        self.assertEqual({row["verdict"] for row in decided.values()}, {PENDING})
+        json.dumps([row["evidence"] for row in decided.values()])

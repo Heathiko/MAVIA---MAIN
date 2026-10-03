@@ -12,6 +12,7 @@ from . import embeddings
 from .calibration import load_calibration
 from .clues import clue_records, find_term_owners, meaning_vote, name_vote, term_vote
 from .concept_text import prepare
+from .course_closest import closest_earlier, closest_verdict, own_topic_median
 from .course_shortlist import TOPIC_TITLE_CUTOFF, shortlist, title_vectors, topic_similarities
 from .fusion import ACCEPTED, PARALLEL, PENDING
 from .relatedness import relatedness
@@ -24,8 +25,9 @@ COURSE_CLUES = ("name", "terms")
 
 STRICT = "strict"
 SHORTLIST = "shortlist"
-COURSE_RULES = (STRICT, SHORTLIST)
-# The strict rule until the shortlist passes the final check (course spec 2026-10-02, section 5).
+CLOSEST = "closest"
+COURSE_RULES = (STRICT, SHORTLIST, CLOSEST)
+# The strict rule until the closest rule passes its final check (course spec 2026-10-03, section 5).
 COURSE_DEFAULT_RULE = STRICT
 
 
@@ -134,14 +136,32 @@ def _shortlisted(earlier, later, owners, calibration, vectors, similarity):
     return rows
 
 
+def _closest(earlier, later, owners):
+    """Course spec 2026-10-03 section 3: each later concept against its closest earlier concept."""
+    rows = []
+    for second in later:
+        if not second.sentences:
+            continue
+        first, score = closest_earlier(earlier, second)
+        if first is None:
+            continue
+        verdict, evidence = closest_verdict(first, second, score, own_topic_median(second, later), owners)
+        if verdict is not None:
+            rows.append({"prerequisite": first.concept, "dependent": second.concept,
+                         "verdict": verdict, "evidence": evidence})
+    return rows
+
+
 def decide_course_pairs(topic_concepts, calibration=None, embed=None, rule=None, topic_titles=None):
     """Every cross-topic pair the evidence accepts or sends to the teacher.
 
     ``topic_concepts`` lists each topic's concepts, topics in outline order;
     ``topic_titles`` their outline titles. ``rule`` is ``STRICT`` (name and
-    terms must agree) or ``SHORTLIST`` (outline gate, concept shortlist, strict
-    confirmation); default ``COURSE_DEFAULT_RULE``. The shortlist needs the
-    encoder and the titles; without either the strict rule runs.
+    terms must agree), ``SHORTLIST`` (outline gate, concept shortlist, strict
+    confirmation) or ``CLOSEST`` (each later concept's closest earlier concept,
+    course spec 2026-10-03); default ``COURSE_DEFAULT_RULE``. The shortlist
+    needs the encoder and the titles, the closest rule the encoder; without
+    them the strict rule runs.
     Term ownership is read over the two topics of a pair together, so a term a
     later topic introduces can point back at an earlier topic's concept.
     """
@@ -169,11 +189,16 @@ def decide_course_pairs(topic_concepts, calibration=None, embed=None, rule=None,
             # not be embedded: run the strict rule, suggestions only.
             use_shortlist, semantic = False, False
 
+    use_closest = rule == CLOSEST and semantic
+
     decisions = []
     for first_index, earlier in enumerate(by_topic):
         for second_index in range(first_index + 1, len(by_topic)):
             later = by_topic[second_index]
             owners = find_term_owners(earlier + later)
+            if use_closest:
+                decisions.extend(_closest(earlier, later, owners))
+                continue
             if use_shortlist:
                 similarity = similarities[(first_index, second_index)]
                 if similarity >= TOPIC_TITLE_CUTOFF:

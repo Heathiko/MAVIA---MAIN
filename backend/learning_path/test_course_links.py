@@ -333,3 +333,24 @@ class CoursePathStepsTests(CourseFixture):
         self.assertFalse(topic["published"])
         self.assertEqual([step["title"] for step in topic["steps"]], ["Stamen", "Petals"])
 
+
+
+class ClosestRuleLinksTests(CourseFixture):
+    def _refresh_closest(self):
+        with patch("learning_path.services.embeddings.embed", word_vectors):
+            return refresh_course_links(self.course, rule="closest")
+
+    def test_the_closest_rule_stores_its_link(self):
+        self._refresh_closest()
+
+        link = CourseConceptLink.objects.get()
+        self.assertEqual((link.prerequisite, link.dependent), (self.groups["Stamen"], self.groups["Pollination"]))
+        self.assertEqual((link.status, link.evidence["rule"]), ("accepted", "course-closest"))
+
+    def test_a_teacher_rejection_survives_the_closest_rule(self):
+        self._refresh_closest()
+        CourseConceptLink.objects.update(status="rejected", source="teacher")
+
+        self._refresh_closest()
+
+        self.assertEqual(CourseConceptLink.objects.get().status, "rejected")
