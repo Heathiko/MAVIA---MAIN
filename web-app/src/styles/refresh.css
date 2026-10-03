@@ -562,3 +562,135 @@ body {
 .cp-layout > .cp-panel::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* --- Review steps: tracker on top, Back/Next bottom-right ---------------- */
+
+/* A block, not a grid: a sticky grid item can only move inside its own grid
+   row, so the tracker would scroll away with the first step's content. */
+.review-steps-frame {
+  display: block;
+  min-width: 0;
+}
+
+.review-step-indicator.is-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin-bottom: 1rem;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+}
+
+/* Room under the last row so the pinned buttons never sit on top of it. */
+.topic-workspace-shell > .topic-detail-page {
+  padding-bottom: 7rem;
+}
+
+.review-step-dock {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  z-index: 60;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  max-width: calc(100vw - 3rem);
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--mv-border);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
+  font-family: var(--mv-font);
+  line-height: 1.4;
+  box-sizing: border-box;
+}
+
+.review-step-dock .publish-status {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.review-step-dock small,
+.review-step-dock-note {
+  max-width: 20rem;
+  color: var(--mv-muted);
+  font-size: 0.82rem;
+}
+
+@media (max-width: 640px) {
+  .review-step-dock {
+    right: 1rem;
+    bottom: 1rem;
+    left: 1rem;
+    max-width: none;
+  }
+}
+
+.topic-detail-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+/* A tip for a control that cannot be used yet. It sits on a wrapper because a
+   disabled control does not reliably receive hover. */
+.has-tip {
+  position: relative;
+  display: inline-flex;
+}
+
+.has-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  left: 0;
+  z-index: 70;
+  width: max-content;
+  max-width: 20rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  color: #ffffff;
+  background: #1f2a37;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.2);
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.has-tip:hover::after,
+.has-tip:focus-within::after {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Generate / Manual: one area, two views. */
+.question-mode-tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--mv-border);
+}
+
+.question-mode-tabs > button {
+  margin-bottom: -1px;
+  padding: 0.6rem 1.1rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--mv-muted);
+  background: none;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.question-mode-tabs > button[aria-selected="true"] {
+  color: var(--mv-brand-600);
+  border-bottom-color: var(--mv-brand-600);
+}

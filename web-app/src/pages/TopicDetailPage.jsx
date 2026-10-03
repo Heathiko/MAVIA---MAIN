@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { uploadedMaterialFromResponse } from "../uploadNavigation";
 import {
@@ -272,6 +273,43 @@ function logLearningObjectMatchDebug(payload) {
   console.groupEnd();
 }
 
+// The five review steps in order. One tracker is drawn above every step and
+// sticks to the top of the panel, so the teacher always sees where they are.
+const REVIEW_STEPS = [
+  { key: "objects", label: "Object pairs" },
+  { key: "versions", label: "Content versions" },
+  { key: "questions", label: "Question pairs" },
+  { key: "publish", label: "Content & questions" },
+  { key: "path", label: "Learning path" },
+];
+
+function ReviewSteps({ step }) {
+  const current = REVIEW_STEPS.findIndex((item) => item.key === step);
+  return (
+    <div className="review-step-indicator has-five-steps is-sticky" aria-label="Review progress">
+      {REVIEW_STEPS.map((item, index) => (
+        <Fragment key={item.key}>
+          {index > 0 && <div aria-hidden="true" />}
+          <span
+            className={index === current ? "is-active" : index < current ? "is-complete" : undefined}
+            aria-current={index === current ? "step" : undefined}
+          >
+            {index + 1}
+          </span>
+        </Fragment>
+      ))}
+      <strong>{REVIEW_STEPS[current]?.label}</strong>
+    </div>
+  );
+}
+
+// Back and Next for a review step, pinned to the bottom-right of the window so
+// moving on never means scrolling to the end of a long list. Rendered into
+// <body> so no scrolling panel around it can carry it away.
+function StepDock({ children }) {
+  return createPortal(<div className="review-step-dock">{children}</div>, document.body);
+}
+
 function ReviewQueueNavigator({ index, count, onChange, disabled, itemLabel }) {
   if (!count) return null;
   return (
@@ -317,18 +355,6 @@ function ObjectPairsPanel({
           <h4 id="object-pairs-panel-title">Review object pairs</h4>
         </div>
         <span>{suggestions.length} to review</span>
-      </div>
-      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
-        <span className="is-active">1</span>
-        <div aria-hidden="true" />
-        <span>2</span>
-        <div aria-hidden="true" />
-        <span>3</span>
-        <div aria-hidden="true" />
-        <span>4</span>
-        <div aria-hidden="true" />
-        <span>5</span>
-        <strong>Object pairs</strong>
       </div>
 
       {!suggestions.length ? (
@@ -410,11 +436,11 @@ function ObjectPairsPanel({
           </div>
         </>
       )}
-      <div className="review-step-actions review-step-actions-next">
+      <StepDock>
         <button type="button" className="btn btn-primary" disabled={Boolean(busyAction)} onClick={() => onReviewStepChange("versions")}>
           Next step: Content versions
         </button>
-      </div>
+      </StepDock>
     </aside>
   );
 }
@@ -426,6 +452,24 @@ export const VERSION_ROLES = [
   { key: "simplified", label: "Simplified" },
   { key: "elaborated", label: "Elaborated" },
 ];
+
+// What still stands between the teacher and the learning path: concepts
+// missing a Simplified or Elaborated version, and concepts with no question.
+// The Question pairs step waits on the first; the Learning path button on both.
+export function contentGaps(groups) {
+  const concepts = (groups || []).filter((group) => group.versions?.representative_id);
+  const missingVersions = concepts.filter((group) => (
+    group.versions?.classification_complete === false
+    || !group.versions?.slots?.simplified
+    || !group.versions?.slots?.elaborated
+  )).length;
+  const missingQuestions = concepts.filter((group) => !group.questions?.length).length;
+  return {
+    missingVersions,
+    missingQuestions,
+    ready: concepts.length > 0 && missingVersions === 0 && missingQuestions === 0,
+  };
+}
 
 // "3 versions from 2 files" rather than "6 variations": the old count was the
 // concept's object count, which is not the number of versions a learner is
@@ -474,7 +518,11 @@ function ReviewQueuePanel({
   busyAction,
   onReviewStepChange,
   generationProps,
+  manualPanel,
 }) {
+  // Both views stay mounted so a running generation or a half-written
+  // question survives switching tabs.
+  const [mode, setMode] = useState("generate");
   return (
     <section className="connection-review-panel" aria-labelledby="match-suggestion-title">
       <div className="connection-review-heading">
@@ -485,26 +533,44 @@ function ReviewQueuePanel({
         </div>
         <span className="connection-source-count">{questionPairings.length} question{questionPairings.length === 1 ? "" : "s"}</span>
       </div>
-      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
-        <span className="is-complete">1</span>
-        <div aria-hidden="true" />
-        <span className="is-complete">2</span>
-        <div aria-hidden="true" />
-        <span className="is-active">3</span>
-        <div aria-hidden="true" />
-        <span>4</span>
-        <div aria-hidden="true" />
-        <span>5</span>
-        <strong>Question pairs</strong>
+
+      <div className="question-mode-tabs" role="tablist" aria-label="How to add questions">
+        {[["generate", "Generate"], ["manual", "Manual"]].map(([key, label]) => (
+          <button
+            type="button"
+            role="tab"
+            key={key}
+            id={`question-mode-${key}`}
+            aria-selected={mode === key}
+            aria-controls={`question-mode-${key}-panel`}
+            onClick={() => setMode(key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div
+        role="tabpanel"
+        id="question-mode-generate-panel"
+        aria-labelledby="question-mode-generate"
+        hidden={mode !== "generate"}
+      >
+        <QuestionGenerationTool
+          {...generationProps}
+          groups={groups}
+          materialById={materialById}
+        />
+      </div>
+      <div
+        role="tabpanel"
+        id="question-mode-manual-panel"
+        aria-labelledby="question-mode-manual"
+        hidden={mode !== "manual"}
+      >
+        {manualPanel}
       </div>
 
-      <QuestionGenerationTool
-        {...generationProps}
-        groups={groups}
-        materialById={materialById}
-      />
-
-      <div className="review-step-actions-row">
+      <StepDock>
         <button
           type="button"
           className="btn btn-secondary"
@@ -521,7 +587,7 @@ function ReviewQueuePanel({
         >
           Next: Final Review
         </button>
-      </div>
+      </StepDock>
     </section>
   );
 }
@@ -803,6 +869,9 @@ function VersionReviewPanel({
     const slots = item.versions?.slots || {};
     return count + (slots.simplified ? 0 : 1) + (slots.elaborated ? 0 : 1);
   }, 0);
+  // Question pairs wait until every concept has all three versions, whether a
+  // PDF supplied it or it was generated.
+  const incompleteCount = contentGaps(chunks).missingVersions;
   const representative = chunk?.learning_objects?.find(
     (item) => Number(item.id) === Number(versions?.representative_id),
   );
@@ -884,18 +953,6 @@ function VersionReviewPanel({
           }
         />
       )}
-      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
-        <span className="is-complete">1</span>
-        <div aria-hidden="true" />
-        <span className="is-active">2</span>
-        <div aria-hidden="true" />
-        <span>3</span>
-        <div aria-hidden="true" />
-        <span>4</span>
-        <div aria-hidden="true" />
-        <span>5</span>
-        <strong>Content versions</strong>
-      </div>
 
       {!chunks.length ? (
         <div className="review-queue-empty">No concepts to review yet.</div>
@@ -1067,7 +1124,7 @@ function VersionReviewPanel({
         </>
       )}
 
-      <div className="review-step-actions-row">
+      <StepDock>
         <button
           type="button"
           className="btn btn-secondary"
@@ -1076,15 +1133,22 @@ function VersionReviewPanel({
         >
           Back to object pairs
         </button>
+        {incompleteCount > 0 && (
+          <small className="review-step-dock-note">
+            {incompleteCount} concept{incompleteCount === 1 ? " still needs" : "s still need"} a
+            Simplified or Elaborated version
+          </small>
+        )}
         <button
           type="button"
           className="btn btn-primary"
-          disabled={Boolean(busyAction)}
+          disabled={Boolean(busyAction) || incompleteCount > 0}
+          title={incompleteCount > 0 ? "Give every concept a Normal, Simplified and Elaborated version first." : undefined}
           onClick={() => onReviewStepChange("questions")}
         >
           Next step: Question pairs
         </button>
-      </div>
+      </StepDock>
     </section>
   );
 }
@@ -1806,18 +1870,6 @@ ${question.prompt}`,
           {groups.length} concept{groups.length === 1 ? "" : "s"}
         </span>
       </div>
-      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
-        <span className="is-complete">1</span>
-        <div aria-hidden="true" />
-        <span className="is-complete">2</span>
-        <div aria-hidden="true" />
-        <span className="is-complete">3</span>
-        <div aria-hidden="true" />
-        <span className="is-active">4</span>
-        <div aria-hidden="true" />
-        <span>5</span>
-        <strong>Content &amp; questions</strong>
-      </div>
 
       {!groups.length ? (
         <div className="review-queue-empty">No confirmed learning objects are available yet.</div>
@@ -1954,7 +2006,7 @@ ${question.prompt}`,
         </div>
       )}
 
-      <div className="review-step-actions-row">
+      <StepDock>
         <button
           type="button"
           className="btn btn-secondary"
@@ -1971,7 +2023,7 @@ ${question.prompt}`,
         >
           Next: review learning path
         </button>
-      </div>
+      </StepDock>
     </section>
   );
 }
@@ -2132,6 +2184,7 @@ function LearningObjectConnections({
   reviewStep,
   onReviewStepChange,
   onCourseChange,
+  onGapsChange,
   onError,
   onMessage,
 }) {
@@ -2217,6 +2270,12 @@ function LearningObjectConnections({
     && (sawPublishedRef.current || Boolean(topic?.published));
 
   const groups = resources?.learning_object_groups || [];
+  // The page header's Learning path button needs this, and it is only known
+  // here, where the concepts are loaded.
+  const gaps = contentGaps(groups);
+  useEffect(() => {
+    if (resources) onGapsChange(gaps);
+  }, [resources, gaps.ready, gaps.missingVersions, gaps.missingQuestions]); // eslint-disable-line react-hooks/exhaustive-deps
   const matchSuggestions = resources?.match_suggestions || [];
   const allQuestionPairings = resources?.question_pairings || [];
   const questionReviewQueue = allQuestionPairings.filter((question) => {
@@ -2859,7 +2918,9 @@ function LearningObjectConnections({
   }
 
   return (
-    <div className={`connection-review-layout ${["publish", "path"].includes(reviewStep) ? "" : "has-recommendations"}`.trim()}>
+    <div className="review-steps-frame">
+    <ReviewSteps step={reviewStep} />
+    <div className={`connection-review-layout ${["questions", "publish", "path"].includes(reviewStep) ? "" : "has-recommendations"}`.trim()}>
       {reviewStep === "objects" && (
       <>
       {/* The heading sits on the page, not inside the scrolling panel below
@@ -3310,23 +3371,25 @@ function LearningObjectConnections({
                 (material) => material.generated_json?.learning_objects_confirmed && material.learning_objects?.length,
               ),
             }}
-          />
-          <ManualQuestionPanel
-            courseId={courseId}
-            topicId={topicId}
-            groups={groups}
-            onResourcesChange={setResources}
-            onCourseChange={onCourseChange}
-            onError={onError}
-            onMessage={onMessage}
-            lessonMaterials={materials.filter(
-              (material) => material.generated_json?.learning_objects_confirmed && material.learning_objects?.length,
+            manualPanel={(
+              <ManualQuestionPanel
+                courseId={courseId}
+                topicId={topicId}
+                groups={groups}
+                onResourcesChange={setResources}
+                onCourseChange={onCourseChange}
+                onError={onError}
+                onMessage={onMessage}
+                lessonMaterials={materials.filter(
+                  (material) => material.generated_json?.learning_objects_confirmed && material.learning_objects?.length,
+                )}
+                questionPairings={allQuestionPairings}
+                materialById={materialById}
+                busyAction={busyAction}
+                onEditQuestion={editQuestion}
+                onDeleteQuestion={deleteQuestion}
+              />
             )}
-            questionPairings={allQuestionPairings}
-            materialById={materialById}
-            busyAction={busyAction}
-            onEditQuestion={editQuestion}
-            onDeleteQuestion={deleteQuestion}
           />
         </>
       )}
@@ -3360,6 +3423,7 @@ function LearningObjectConnections({
           onMessage={onMessage}
         />
       )}
+    </div>
     </div>
   );
 }
@@ -3524,18 +3588,6 @@ function LearningPathReviewPanel({
           {(paths[0]?.diagnostics?.material_count ?? 0) === 1 ? "" : "s"}
         </span>
       </div>
-      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
-        <span className="is-complete">1</span>
-        <div aria-hidden="true" />
-        <span className="is-complete">2</span>
-        <div aria-hidden="true" />
-        <span className="is-complete">3</span>
-        <div aria-hidden="true" />
-        <span className="is-complete">4</span>
-        <div aria-hidden="true" />
-        <span className="is-active">5</span>
-        <strong>Learning path</strong>
-      </div>
 
       {loadingPath && !pathData && <p className="muted-text">Deriving the path…</p>}
 
@@ -3586,7 +3638,7 @@ function LearningPathReviewPanel({
         />
       )}
 
-      <div className="review-step-actions-row">
+      <StepDock>
         <button
           type="button"
           className="btn btn-secondary"
@@ -3605,10 +3657,10 @@ function LearningPathReviewPanel({
             disabled={publishing || Boolean(busyAction) || confirmedSourceCount === 0}
             onClick={handlePublish}
           >
-            {publishing ? "Publishing..." : topic?.published ? "Republish course" : "Publish course"}
+            {publishing ? "Publishing..." : topic?.published ? "Republish subtopic" : "Publish subtopic"}
           </button>
         </div>
-      </div>
+      </StepDock>
 
       {(publishing || publishEvents.length > 0) && (
         <RunProgress
@@ -4355,6 +4407,39 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
 // A PDF with many figures narrates only the first few during upload; the
 // rest are narrated when the topic is published. Say so, with the count,
 // while any are still waiting.
+// Opens the learning path step. It stays unavailable until every concept has
+// its three versions and at least one question, and says what is missing.
+function LearningPathButton({ gaps, onOpen }) {
+  const ready = Boolean(gaps?.ready);
+  let tip = "Prepare the content first: open Review Connections to check the versions and questions.";
+  if (gaps && !ready) {
+    const parts = [];
+    if (gaps.missingVersions) {
+      parts.push(`${gaps.missingVersions} concept${gaps.missingVersions === 1 ? " needs" : "s need"} a Simplified or Elaborated version`);
+    }
+    if (gaps.missingQuestions) {
+      parts.push(`${gaps.missingQuestions} concept${gaps.missingQuestions === 1 ? " has" : "s have"} no questions yet`);
+    }
+    tip = parts.length
+      ? `Prepare the content first: ${parts.join(", and ")}.`
+      : "Prepare the content first: there are no concepts yet.";
+  }
+  return (
+    <span className={ready ? undefined : "has-tip"} data-tip={ready ? undefined : tip}>
+      <button
+        type="button"
+        className="btn btn-primary btn-small"
+        aria-disabled={!ready}
+        aria-describedby={ready ? undefined : "learning-path-tip"}
+        onClick={() => ready && onOpen()}
+      >
+        Learning path
+      </button>
+      {!ready && <span id="learning-path-tip" className="sr-only">{tip}</span>}
+    </span>
+  );
+}
+
 function figureNarrationNotice(status) {
   if (!status || !status.pending) return "";
   const pending = `${status.pending} figure${status.pending === 1 ? "" : "s"}`;
@@ -4377,6 +4462,8 @@ export default function TopicDetailPage() {
   const [activeSource, setActiveSource] = useState(uploadedMaterialId || "connections");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [connectionReviewStep, setConnectionReviewStep] = useState("objects");
+  // Null until the review view has loaded the concepts once.
+  const [contentGapsState, setContentGapsState] = useState(null);
 
   // Only a genuine change of URL should move the teacher. This used to run on
   // every re-render caused by refreshed resources, so generating versions --
@@ -4666,9 +4753,18 @@ export default function TopicDetailPage() {
 
       <main className="topic-detail-page">
         <section className="card topic-detail-overview-card">
-          <Link to={`/courses/${courseId}`} style={{ color: "var(--muted)" }}>
-            Back to hierarchy
-          </Link>
+          <div className="topic-detail-nav">
+            <Link to={`/courses/${courseId}`} className="btn btn-secondary btn-small">
+              Back to hierarchy
+            </Link>
+            <LearningPathButton
+              gaps={contentGapsState}
+              onOpen={() => {
+                setActiveSource("connections");
+                setConnectionReviewStep("path");
+              }}
+            />
+          </div>
           <div className="topic-detail-header">
             <div>
               <h2>{topic.title}</h2>
@@ -4676,7 +4772,7 @@ export default function TopicDetailPage() {
                 Selected module/topic: {selectedModule?.title || topic.title} / {topic.title}
               </p>
             </div>
-            {!(activeSource === "connections" && ["versions", "questions"].includes(connectionReviewStep)) && (
+            {!(activeSource === "connections" && connectionReviewStep !== "objects") && (
               <label className="btn btn-primary">
                 {uploading ? "Processing..." : "Upload PDF"}
                 <input
@@ -4708,6 +4804,7 @@ export default function TopicDetailPage() {
             reviewStep={connectionReviewStep}
             onReviewStepChange={setConnectionReviewStep}
             onCourseChange={setCourse}
+            onGapsChange={setContentGapsState}
             onError={setError}
             onMessage={setMessage}
           />
