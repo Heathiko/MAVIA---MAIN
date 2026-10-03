@@ -17,7 +17,9 @@ from learning_path.services.course_shortlist import TOPIC_TITLE_CUTOFF, topic_si
 from learning_path.services.gold import FIXTURES, course_gold_report, course_shortlist_hits, load_course_gold
 
 DESIGN_PAIRS = ["340-341", "340-343", "340-347", "343-348", "340-357", "341-357", "343-357", "347-357", "348-357"]
-FINAL_CHECK_PAIRS = {"351-353", "341-343", "341-347", "347-348", "351-365", "353-365"}
+# 2026-10-02 shortlist final check (spent), then the 2026-10-03 closest-match final check (live ids).
+FINAL_CHECK_PAIRS = {"351-353", "341-343", "341-347", "347-348", "351-365", "353-365",
+                     "2-10", "3-10", "5-7", "13-19", "15-19", "19-27"}
 
 
 class Command(BaseCommand):
