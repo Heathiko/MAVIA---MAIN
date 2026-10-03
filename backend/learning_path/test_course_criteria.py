@@ -215,6 +215,14 @@ class ClosestRuleTests(SimpleTestCase):
 
         self.assertEqual(set(decided), {(1, 2)})
 
+    def test_only_the_closest_of_two_qualifying_concepts_is_linked(self):
+        pistil = concept(9, "Pistil", "The stigma catches sticky pollen tubes. " * 8)
+        both = concept(2, "Pollination", "Pollen grains travel from the stamen anther to the pistil stigma and grow a tube.")
+
+        decided = decide_by_closest([[stamen(), pistil], [both]])
+
+        self.assertEqual(set(decided), {(1, 2)})
+
     def test_concepts_without_a_full_sentence_give_no_link(self):
         no_sentences = [concept(1, "Stamen", "Anther."), concept(4, "Petals", "Bright.")]
 
