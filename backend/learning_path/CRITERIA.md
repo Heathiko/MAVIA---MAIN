@@ -100,6 +100,16 @@ related pairs and meaningless titles filled the slots), so `"strict"` stays the 
 `docs/course-path-v2-evaluation-2026-10-03.md`. Final pairs 351-353, 341-343, 341-347, 347-348,
 351-365, 353-365 are spent.
 
+A third rule, `rule="closest"` (`services/course_closest.py`, spec
+`docs/superpowers/specs/2026-10-03-course-path-closest-match-design.md`), links each later concept to
+the earlier concept whose lesson text is closest: accepted when it is also named and shares two
+distinctive words, suggested when it is 0.10 closer than the later concept's own topic-mates. On the
+design pairs it accepted 3 links, all right, and none between unrelated topics. It failed its final
+check on 2026-10-03: the six new pairs needed 5 links, all implicit (an idea reused without its
+words), and it offered none of them (strict: none either, and 5 wrong accepted links). `"strict"`
+stays the default. Report: `docs/course-path-closest-evaluation-2026-10-03.md`. Final pairs (live ids)
+2-10, 3-10, 5-7, 13-19, 15-19, 19-27 are spent.
+
 ## v7 (tried 2026-10-01, not adopted)
 
 Three equal direction votes (hierarchy, order, references) on a block x concept matrix
