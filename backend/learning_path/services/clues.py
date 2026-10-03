@@ -94,7 +94,7 @@ def term_use(holder, target, term_owners, min_terms=1):
     ) / len(passages)
 
 
-def _owned_words(holder, owner, term_owners):
+def owned_words(holder, owner, term_owners):
     return sorted({
         holder.spelling.get(term, term)
         for passage in holder.passages for term in passage
@@ -105,11 +105,11 @@ def _owned_words(holder, owner, term_owners):
 def term_vote(prerequisite, dependent, term_owners, min_terms=1):
     use = term_use(dependent, prerequisite, term_owners, min_terms)
     use_back = term_use(prerequisite, dependent, term_owners, min_terms)
-    record = {"owned": _owned_words(dependent, prerequisite, term_owners),
+    record = {"owned": owned_words(dependent, prerequisite, term_owners),
               "use": round(use, 3), "use_back": round(use_back, 3)}
     if min_terms > 1:
         record.update(
-            owned_back=_owned_words(prerequisite, dependent, term_owners),
+            owned_back=owned_words(prerequisite, dependent, term_owners),
             single_word_use=round(term_use(dependent, prerequisite, term_owners), 3),
             single_word_use_back=round(term_use(prerequisite, dependent, term_owners), 3),
         )
