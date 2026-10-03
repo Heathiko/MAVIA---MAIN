@@ -40,8 +40,11 @@ def own_topic_median(later, topic):
 
 
 def name_sentences(holder, target):
-    """How many of the holder's sentences contain every stem of the target's name."""
-    if not target.name:
+    """How many of the holder's sentences contain every stem of the target's name.
+
+    One title on both ("What I Need to Know" in two lessons) names neither, as in ``name_vote``.
+    """
+    if not target.name or set(target.name) == set(holder.name):
         return 0
     needed = set(target.name)
     return sum(1 for stems in holder.sentence_terms if needed <= set(stems))

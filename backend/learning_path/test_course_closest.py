@@ -107,3 +107,11 @@ class ClosestVerdictTests(SimpleTestCase):
 
         self.assertIsNone(verdict)
         self.assertEqual((evidence["own_median"], evidence["margin"]), (None, None))
+
+    def test_a_concept_with_the_same_title_is_not_named_by_it(self):
+        same_title = concept(2, "Stamen", "The stamen anther holds pollen for the bees.")
+
+        verdict, closest, evidence = judge([stamen(), petals()], [same_title])[2]
+
+        self.assertEqual((verdict, closest), (None, 1))
+        self.assertEqual(evidence["name_sentences"], 0)
