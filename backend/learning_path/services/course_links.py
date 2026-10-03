@@ -18,9 +18,15 @@ from .concept_units import concepts_for_topic
 from .course_criteria import course_topics, decide_course_pairs
 from .reasons import link_reason
 
+# 2026-10-03: two final checks found no rule whose automatic course links can be
+# trusted (docs/course-path-closest-evaluation-2026-10-03.md), so every derived
+# course link is stored as a suggestion; only a teacher's approval lets it reach
+# learners. The rules' own verdicts are still measured by evaluate_course_paths.
+DERIVED_STATUS = CourseConceptLink.Status.PENDING
+
 
 def refresh_course_links(course, embed=None, rule=None):
-    """Re-derive the course's cross-topic links, keeping every teacher decision."""
+    """Re-derive the course's cross-topic links as suggestions, keeping every teacher decision."""
     topics = course_topics(course)
     decisions = decide_course_pairs(
         [list(concepts_for_topic(topic)) for topic in topics], embed=embed, rule=rule,
@@ -42,7 +48,7 @@ def refresh_course_links(course, embed=None, rule=None):
                     dependent_id=pair[1],
                     defaults={
                         "course": course,
-                        "status": decision["verdict"],
+                        "status": DERIVED_STATUS,
                         "source": CourseConceptLink.Source.DERIVED,
                         "evidence": decision["evidence"],
                     },
@@ -56,7 +62,7 @@ def refresh_course_links(course, embed=None, rule=None):
             CourseConceptLink.objects.filter(pk=row.pk).exclude(
                 status__in=CourseConceptLink.TEACHER_DECIDED,
             ).update(
-                status=decision["verdict"],
+                status=DERIVED_STATUS,
                 source=CourseConceptLink.Source.DERIVED,
                 evidence=decision["evidence"],
                 updated_at=timezone.now(),
@@ -70,9 +76,9 @@ def refresh_course_links(course, embed=None, rule=None):
         ).delete()
 
     counts = {"accepted": 0, "pending": 0, "teacher_decided": len(decided)}
-    for pair, decision in fresh.items():
+    for pair in fresh:
         if pair not in decided:
-            counts[decision["verdict"]] += 1
+            counts[DERIVED_STATUS] += 1
     return counts
 
 

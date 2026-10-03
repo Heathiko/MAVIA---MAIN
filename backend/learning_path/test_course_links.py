@@ -72,8 +72,13 @@ class RefreshCourseLinksTests(CourseFixture):
 
         link = CourseConceptLink.objects.get()
         self.assertEqual((link.prerequisite, link.dependent), (self.groups["Stamen"], self.groups["Pollination"]))
-        self.assertEqual(link.status, "accepted")
-        self.assertEqual(counts["accepted"], 1)
+        self.assertEqual(link.status, "pending")
+        self.assertEqual((counts["accepted"], counts["pending"]), (0, 1))
+
+    def test_a_link_the_rule_would_accept_waits_for_the_teacher(self):
+        self._refresh()
+
+        self.assertFalse(CourseConceptLink.objects.filter(status="accepted").exists())
 
     def test_a_teacher_rejection_is_never_overwritten(self):
         self._refresh()
@@ -112,7 +117,7 @@ class CoursePathTests(CourseFixture):
         [arrow] = course_path(self.course)["arrows"]
 
         self.assertEqual((arrow["from_topic"], arrow["to_topic"]), (self.flowers.id, self.reproduction.id))
-        self.assertEqual((arrow["shaping"], arrow["pending"], arrow["contradicts_outline"]), (1, 0, False))
+        self.assertEqual((arrow["shaping"], arrow["pending"], arrow["contradicts_outline"]), (0, 1, False))
         self.assertEqual(arrow["links"][0]["prerequisite"]["title"], "Stamen")
         self.assertTrue(arrow["links"][0]["reason"])
 
@@ -345,7 +350,7 @@ class ClosestRuleLinksTests(CourseFixture):
 
         link = CourseConceptLink.objects.get()
         self.assertEqual((link.prerequisite, link.dependent), (self.groups["Stamen"], self.groups["Pollination"]))
-        self.assertEqual((link.status, link.evidence["rule"]), ("accepted", "course-closest"))
+        self.assertEqual((link.status, link.evidence["rule"]), ("pending", "course-closest"))
 
     def test_a_teacher_rejection_survives_the_closest_rule(self):
         self._refresh_closest()

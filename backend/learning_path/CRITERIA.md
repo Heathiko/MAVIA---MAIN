@@ -110,6 +110,12 @@ words), and it offered none of them (strict: none either, and 5 wrong accepted l
 stays the default. Report: `docs/course-path-closest-evaluation-2026-10-03.md`. Final pairs (live ids)
 2-10, 3-10, 5-7, 13-19, 15-19, 19-27 are spent.
 
+**Since 2026-10-03 every derived course link is stored as a suggestion** (`course_links.DERIVED_STATUS`,
+the user's decision after the two failed final checks, not a pre-registered outcome). A rule's
+"accepted" verdict still shows in its evidence and its reason text, but only a teacher's approval
+lets a course link reach learners (`published.course_prerequisites` reads accepted and approved;
+nothing is stored as accepted any more).
+
 ## v7 (tried 2026-10-01, not adopted)
 
 Three equal direction votes (hierarchy, order, references) on a block x concept matrix
