@@ -72,3 +72,6 @@ docs/pipeline-run-through-2026-10-02/
 
 # Local-only gold map, not part of the evaluation sets
 backend/learning_path/fixtures/gold_map_308.json
+
+# Course-level slide deck and its generator
+docs/course-level-deck/
