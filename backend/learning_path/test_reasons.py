@@ -313,3 +313,22 @@ class ShortlistReasonTests(SimpleTestCase):
             link_reason(evidence, "Liquid", "Solutions"),
             "Solutions uses terms Liquid explains (flow). Solutions names Liquid. This follows your outline.",
         )
+
+
+class ClosestReasonTests(SimpleTestCase):
+    def test_an_accepted_closest_match_names_its_evidence(self):
+        evidence = {"rule": "course-closest", "confirmed": True, "shared_words": ["anther", "pollen"]}
+
+        self.assertEqual(
+            link_reason(evidence, "Stamen", "Pollination"),
+            "Pollination is closest in meaning to Stamen, names it, and shares anther, pollen.",
+        )
+
+    def test_a_suggested_closest_match_asks_the_teacher(self):
+        evidence = {"rule": "course-closest", "confirmed": False, "shared_words": ["pollen"]}
+
+        self.assertEqual(
+            link_reason(evidence, "Stamen", "Pollination"),
+            "Pollination is closest in meaning to Stamen, clearly closer than the concepts of its own "
+            "topic. Please confirm or dismiss.",
+        )

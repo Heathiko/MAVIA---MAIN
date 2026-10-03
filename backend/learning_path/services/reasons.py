@@ -166,6 +166,13 @@ def _shortlist_reason(evidence, a, b):
             "Please confirm or dismiss.")
 
 
+def _closest_reason(evidence, a, b):
+    if evidence.get("confirmed"):
+        return f"{b} is closest in meaning to {a}, names it, and shares {', '.join(evidence.get('shared_words') or [])}."
+    return (f"{b} is closest in meaning to {a}, clearly closer than the concepts of its own topic. "
+            "Please confirm or dismiss.")
+
+
 def link_reason(evidence, prerequisite_title, dependent_title):
     a, b = prerequisite_title, dependent_title
     evidence = evidence or {}
@@ -175,6 +182,8 @@ def link_reason(evidence, prerequisite_title, dependent_title):
         return _course_reason(evidence, a, b)
     if rule == "course-shortlist":
         return _shortlist_reason(evidence, a, b)
+    if rule == "course-closest":
+        return _closest_reason(evidence, a, b)
     if rule == "three-votes":
         return _three_vote_reason(evidence, a, b)
     if rule == "reference-order":
