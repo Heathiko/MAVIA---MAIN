@@ -9,6 +9,10 @@ const STRIP_COLUMNS = 5;
 const COLUMN_STEP = NODE_WIDTH + 30;
 const ROW_STEP = NODE_HEIGHT + 30;
 const MARGIN = 20;
+// Room left of the concepts for each tier's name, and how far a tier's band
+// reaches above and below its row.
+const TIER_GUTTER = 96;
+const TIER_PAD = 18;
 const EDGE_COLOR = "#6b7a8c";
 
 const byPosition = (steps) => [...steps].sort((a, b) => a.position - b.position);
@@ -59,19 +63,39 @@ export function buildGraph(steps, selectedId = null) {
 
   // dagre returns centres; React Flow positions are top-left corners.
   const positions = new Map();
+  const tiers = [];
   let bottom = 0;
   if (linked.length) {
     const graph = new dagre.graphlib.Graph();
-    graph.setGraph({ rankdir: "TB", nodesep: 40, ranksep: 70, marginx: MARGIN, marginy: MARGIN });
+    graph.setGraph({ rankdir: "TB", nodesep: 50, ranksep: 110, marginx: MARGIN, marginy: MARGIN });
     graph.setDefaultEdgeLabel(() => ({}));
     for (const step of linked) graph.setNode(String(step.concept_id), { width: NODE_WIDTH, height: NODE_HEIGHT });
     for (const edge of edges) graph.setEdge(String(edge.from), String(edge.to));
     dagre.layout(graph);
+    const rows = new Set();
     for (const step of linked) {
       const { x, y } = graph.node(String(step.concept_id));
-      positions.set(step.concept_id, { x: x - NODE_WIDTH / 2, y: y - NODE_HEIGHT / 2 });
+      positions.set(step.concept_id, { x: TIER_GUTTER + x - NODE_WIDTH / 2, y: y - NODE_HEIGHT / 2 });
+      rows.add(y);
       bottom = Math.max(bottom, y + NODE_HEIGHT / 2);
     }
+    // dagre puts every concept of one rank on the same row, so a tier is
+    // simply a row: everything in it can be taught once the rows above are.
+    const width = TIER_GUTTER + graph.graph().width;
+    [...rows].sort((a, b) => a - b).forEach((y, index) => {
+      tiers.push({
+        id: `tier-${index + 1}`,
+        type: "tier",
+        position: { x: 0, y: y - NODE_HEIGHT / 2 - TIER_PAD },
+        data: { number: index + 1, width, height: NODE_HEIGHT + TIER_PAD * 2 },
+        draggable: false,
+        selectable: false,
+        // Behind the concepts, and clicks pass through to the canvas so a
+        // click on empty band still clears the selection.
+        zIndex: -1,
+        style: { pointerEvents: "none" },
+      });
+    });
   }
 
   const stripTop = linked.length ? bottom + STRIP_GAP : MARGIN + 34;
@@ -82,12 +106,12 @@ export function buildGraph(steps, selectedId = null) {
     });
   });
 
-  const nodes = byPosition(steps).map((step) => ({
+  const nodes = [...tiers, ...byPosition(steps).map((step) => ({
     id: String(step.concept_id),
     type: "concept",
     position: positions.get(step.concept_id),
     data: { step, role: roleOf(step.concept_id), pending: (step.suggestions || []).length },
-  }));
+  }))];
   if (unlinked.length) {
     nodes.push({
       id: "not-linked-label",
@@ -105,6 +129,10 @@ export function buildGraph(steps, selectedId = null) {
       id: `link-${edge.linkId}`,
       source: String(edge.from),
       target: String(edge.to),
+      // Right-angle lines run down the gaps between tiers instead of cutting
+      // diagonally across the concepts in between.
+      type: "smoothstep",
+      pathOptions: { borderRadius: 10 },
       markerEnd: { type: "arrowclosed", width: 18, height: 18, color: EDGE_COLOR },
       style: { stroke: EDGE_COLOR, strokeWidth: 1.5 },
     })),

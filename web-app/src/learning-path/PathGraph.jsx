@@ -41,7 +41,19 @@ function LabelNode({ data }) {
   return <div className="pg-label">{data.text}</div>;
 }
 
-const NODE_TYPES = { concept: ConceptNode, label: LabelNode };
+// A row of the path: everything in it can be taught once the rows above it are.
+function TierNode({ data }) {
+  return (
+    <div className={`pg-tier ${data.number % 2 === 0 ? "is-alt" : ""}`.trim()} style={{ width: data.width, height: data.height }}>
+      <span className="pg-tier-name">
+        Tier {data.number}
+        {data.number === 1 && <small>Start here</small>}
+      </span>
+    </div>
+  );
+}
+
+const NODE_TYPES = { concept: ConceptNode, label: LabelNode, tier: TierNode };
 
 function Canvas({ steps, selectedId, onSelect, editable, showPending = false, onDrop }) {
   const layout = useMemo(() => {
