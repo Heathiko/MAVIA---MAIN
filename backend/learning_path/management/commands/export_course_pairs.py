@@ -40,7 +40,7 @@ class Command(BaseCommand):
             for node, concepts in topics:
                 lines += [f"## {node.title} (topic {node.id})", ""]
                 for index, concept in enumerate(concepts, start=1):
-                    lines.append(f"{index}. {concept.title}")
+                    lines.append(f"{index}. {concept.title} (concept {concept.id})")
                     for member in concept.members:
                         lines.append(f"   - [{member.material.title}] {' '.join((member.content or '').split())}")
                     lines.append("")
