@@ -10,7 +10,7 @@ import unittest
 
 from django.test import SimpleTestCase
 
-from .services.course_criteria import decide_course_pairs
+from .services.course_criteria import CLOSEST, decide_course_pairs
 from .services.embeddings import EncoderUnavailable, load_encoder
 from .services.gold import FIXTURES, course_gold_report, load_course_gold
 
@@ -48,3 +48,12 @@ class CourseGoldPathTests(SimpleTestCase):
                 self.assertGreaterEqual(report["reachable_count"], reach, details)
                 if precision is not None:
                     self.assertGreaterEqual(report["accepted_precision"], precision, details)
+
+    def test_the_closest_rule_accepts_nothing_between_different_subjects(self):
+        for first, second in UNRELATED:
+            with self.subTest(pair=(first, second)):
+                if not (FIXTURES / f"gold_course_{first}_{second}.json").exists():
+                    self.skipTest(f"fixture gold_course_{first}_{second}.json missing")
+                data, topics = load_course_gold(first, second)
+                report = course_gold_report(data, topics, decide_course_pairs(topics, rule=CLOSEST))
+                self.assertEqual(report["unrelated_accepted"], 0, json.dumps(report, indent=2))
