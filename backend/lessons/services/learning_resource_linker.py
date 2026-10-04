@@ -1580,6 +1580,15 @@ def synchronize_detected_questions(material: LearningMaterial, classified_blocks
 
 def refresh_material_learning_relationships(material: LearningMaterial) -> None:
     """Refresh neutral groups and pairs after teacher edits to learning objects."""
+    if not learning_objects_are_confirmed(material):
+        # A draft is never matched against other PDFs, and its edits must not
+        # reach the approved ones: releasing and redoing section joins works
+        # on every PDF in the topic. The draft only keeps its own neutral
+        # groups and question pairs until the teacher confirms it.
+        ensure_learning_object_groups(material)
+        remove_empty_learning_object_groups(material)
+        refresh_question_learning_object_links(material)
+        return
     # Parts joined to their sections are separated again first, so this PDF
     # is matched against the real "Solid", not a "Matter" that swallowed it.
     release_section_joins(material)

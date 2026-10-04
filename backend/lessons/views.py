@@ -2280,7 +2280,13 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                 .distinct()
             )
             for question_material in related_question_materials:
-                refresh_material_learning_relationships(question_material)
+                if confirmed:
+                    refresh_material_learning_relationships(question_material)
+                else:
+                    # A draft edit only changes which questions can pair with
+                    # what; it must not regroup the other PDFs, approved ones
+                    # included.
+                    refresh_question_learning_object_links(question_material)
                 question_json = question_material.generated_json or {}
                 question_json["questions"] = question_snapshots(question_material)
                 question_material.generated_json = question_json
