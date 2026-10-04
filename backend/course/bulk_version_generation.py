@@ -59,7 +59,8 @@ def classify_all_source_versions(outline_node, on_event=None):
             emit(
                 "version_classification_finished",
                 f"Classified {group.label or f'concept {group.id}'}: "
-                f"{len(state['assigned'])} version role(s) set, {state['extras']} kept as extra",
+                f"{len(state['assigned'])} version role(s) set, "
+                f"{len(state['kept_as_own_step'])} kept as a step of their own",
                 index=classification_index,
                 total=len(connected_group_ids),
                 group_id=group.id,
