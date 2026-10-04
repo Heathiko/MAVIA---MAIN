@@ -110,6 +110,7 @@ from question_generation.services.bank_status import (
     refile_bank_before_delete,
     settle_bank_owner,
 )
+from question_generation.services.pipeline import question_minimum
 from .services.regrouping import (
     RegroupingUnavailable,
     apply_regrouping,
@@ -117,6 +118,8 @@ from .services.regrouping import (
     propose_regrouping,
 )
 from .services.question_workflow import (
+    TIERS,
+    counts_toward_minimum,
     label_printed_questions,
     delete_generated_questions_for,
     duplicate_for_topic,
@@ -307,13 +310,20 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             .order_by("material_id", "order", "id")
         ) if has_confirmed_learning_objects else []
         confirmed_questions_by_group = defaultdict(list)
+        minimum = question_minimum()
+        # Toward each concept's minimum: the same rule generation uses, so the
+        # counter and the Generate button agree on who is short.
+        counted_by_group = defaultdict(set)
         for question in all_questions:
-            group_ids = {
-                link.learning_object.group_id
-                for link in question.learning_object_links.all()
-                if link.review_status in CONFIRMED_QUESTION_PAIRING_STATUSES
-                and link.learning_object.group_id is not None
-            }
+            group_ids = set()
+            for link in question.learning_object_links.all():
+                group_id = link.learning_object.group_id
+                if group_id is None:
+                    continue
+                if link.review_status in CONFIRMED_QUESTION_PAIRING_STATUSES:
+                    group_ids.add(group_id)
+                if counts_toward_minimum(question, link):
+                    counted_by_group[group_id].add(question)
             for group_id in group_ids:
                 confirmed_questions_by_group[group_id].append(question)
 
@@ -540,6 +550,11 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                         many=True,
                         context={"request": request},
                     ).data,
+                    "question_counts": {
+                        tier: sum(question.thinking_order == tier for question in counted_by_group[group.id])
+                        for tier in TIERS
+                    },
+                    "question_minimum": minimum,
                     # Written before the concept's text last changed; the
                     # teacher keeps or regenerates it before publishing.
                     "question_bank_out_of_date": bank_out_of_date(group),
@@ -572,6 +587,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             # knows whether "Review grouping changes" is worth enabling.
             "regrouping": {"changed_count": len(changed_learning_objects(node))},
             "learning_object_groups": groups,
+            "question_minimum": minimum,
             "matching_debug": learning_object_match_debug_configuration(),
             "question_pairing_debug": question_pairing_debug_configuration(),
             "question_pairings": QuestionSerializer(
@@ -1500,8 +1516,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                         )
             for field, value in values.items():
                 setattr(question, field, value)
-            if question.source_type == Question.SourceType.GENERATED:
-                # Kept through a regeneration of its concept's bank.
+            if question.source_type != Question.SourceType.MANUAL:
+                # A generated one is kept through a regeneration of its
+                # concept's bank; a printed one now counts toward the
+                # concept's minimum once its pairing is confirmed too.
                 question.teacher_edited = True
                 values["teacher_edited"] = True
             question.save(update_fields=list(values))

@@ -1,6 +1,5 @@
 """Shared intake, validation, classification and adaptive-bank synchronization."""
 
-from functools import lru_cache
 import hashlib
 import logging
 import re
@@ -22,14 +21,11 @@ def question_fingerprint(text: str) -> str:
     return hashlib.sha256(normalized_question_text(text).encode("utf-8")).hexdigest()
 
 
-@lru_cache(maxsize=1)
-def _bloom_classifier():
-    from question_generation.services.bloom_classifier import BloomClassifier
-    return BloomClassifier()
-
-
 def classify_question(text: str) -> dict:
-    return _bloom_classifier().classify(text)
+    # The generation pipeline's instance: a second copy of RoBERTa here was
+    # loaded again by the same Questions step.
+    from question_generation.services.pipeline import _get_classifier
+    return _get_classifier().classify(text)
 
 
 def parse_question_structure(prompt: str, source_excerpt: str = "") -> dict:
@@ -174,6 +170,50 @@ def question_is_approved(question: Question) -> bool:
         ),
         is_primary=True,
     ).exists()
+
+
+TIERS = ("LOT", "HOT")
+
+
+def counts_toward_minimum(question: Question, link: QuestionLearningObjectLink) -> bool:
+    """Whether ``question``, paired to a concept by ``link``, fills its minimum.
+
+    A generated question counts once paired. A teacher's own question counts
+    once the teacher pairs it. A printed one counts only after the teacher has
+    both edited it and confirmed its pairing: it arrives as extraction left it,
+    and the matcher's confidence is not the teacher's.
+    """
+    if (
+        question.thinking_order not in TIERS
+        or question.validation_status != Question.ValidationStatus.READY
+        or not link.is_primary
+    ):
+        return False
+    status = link.review_status
+    if question.source_type == Question.SourceType.GENERATED:
+        return status in (
+            QuestionLearningObjectLink.ReviewStatus.AUTO_CONFIRMED,
+            QuestionLearningObjectLink.ReviewStatus.TEACHER_CONFIRMED,
+        )
+    if status != QuestionLearningObjectLink.ReviewStatus.TEACHER_CONFIRMED:
+        return False
+    return question.source_type == Question.SourceType.MANUAL or question.teacher_edited
+
+
+def concept_tier_counts(learning_object) -> dict:
+    """LOTS and HOTS questions counting toward the minimum of the concept
+    ``learning_object`` belongs to (just the object, when it has none)."""
+    scope = (
+        models.Q(learning_object__group_id=learning_object.group_id)
+        if learning_object.group_id
+        else models.Q(learning_object=learning_object)
+    )
+    links = QuestionLearningObjectLink.objects.filter(
+        scope,
+        learning_object__material__generated_json__learning_objects_confirmed=True,
+    ).select_related("question")
+    counted = {link.question for link in links if counts_toward_minimum(link.question, link)}
+    return {tier: sum(question.thinking_order == tier for question in counted) for tier in TIERS}
 
 
 @transaction.atomic

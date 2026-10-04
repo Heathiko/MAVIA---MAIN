@@ -1296,114 +1296,64 @@ TEACHER_QUESTION_PAIRING_STATUSES = (
 )
 
 
+QUESTION_PAIRING_METHOD = "sbert_concept"
+
+
 def question_pairing_debug_configuration() -> dict:
+    """Cut-offs for pairing a printed question to the concept it asks about.
+
+    Scores are sentence-encoder cosines between the question and a concept's
+    text. Confirming needs both a high score and a clear lead over the
+    runner-up concept; anything closer waits for the teacher.
+    """
     auto_threshold = _env_score("QUESTION_PAIR_AUTO_THRESHOLD", 0.55)
-    review_threshold = min(
-        auto_threshold,
-        _env_score("QUESTION_PAIR_REVIEW_THRESHOLD", 0.25),
-    )
-    weights = {
-        "lexical_tfidf": _env_score("QUESTION_PAIR_LEXICAL_WEIGHT", 0.70),
-        "source_block_proximity": _env_score(
-            "QUESTION_PAIR_BLOCK_PROXIMITY_WEIGHT",
-            0.20,
-        ),
-        "same_page": _env_score("QUESTION_PAIR_SAME_PAGE_WEIGHT", 0.10),
-    }
-    weight_total = sum(weights.values()) or 1.0
     return {
-        "method": "layout_tfidf",
-        "weights": {
-            name: value / weight_total
-            for name, value in weights.items()
-        },
+        "method": QUESTION_PAIRING_METHOD,
+        "weights": {},
         "thresholds": {
             "auto_confirm": auto_threshold,
-            "teacher_review": review_threshold,
+            "teacher_review": min(auto_threshold, _env_score("QUESTION_PAIR_REVIEW_THRESHOLD", 0.30)),
+            "minimum_margin": _env_score("QUESTION_PAIR_MINIMUM_MARGIN", 0.05),
         },
     }
 
 
-def _lexical_scores(question: Question, learning_objects: list[LearningObject]) -> list[float]:
-    documents = [question.prompt] + [f"{item.title} {item.content}" for item in learning_objects]
-    try:
-        matrix = TfidfVectorizer(lowercase=True, stop_words="english", ngram_range=(1, 2)).fit_transform(documents)
-    except (TypeError, ValueError):
-        return [0.0] * len(learning_objects)
-    base_scores = cosine_similarity(matrix[0:1], matrix[1:]).ravel()
-
-    # Character n-grams compare related word forms such as "fill" and "fills"
-    # without using subject-specific rules.
-    content_documents = [question.prompt] + [item.content for item in learning_objects]
-    try:
-        character_matrix = TfidfVectorizer(
-            lowercase=True,
-            analyzer="char_wb",
-            ngram_range=(3, 5),
-        ).fit_transform(content_documents)
-        character_scores = cosine_similarity(
-            character_matrix[0:1], character_matrix[1:]
-        ).ravel()
-    except (TypeError, ValueError):
-        character_scores = [0.0] * len(learning_objects)
-
-    generic_title_words = {
-        "example", "examples", "fact", "facts", "key", "lesson", "matter",
-        "part", "point", "points", "remember", "state", "states", "student",
-        "students",
-    }
-    question_words = set(normalize_learning_object_title(question.prompt).split()) - generic_title_words
-    scores = []
-    for learning_object, base_score, character_score in zip(
-        learning_objects,
-        base_scores,
-        character_scores,
-    ):
-        title_words = (
-            set(normalize_learning_object_title(learning_object.title).split())
-            - generic_title_words
-        )
-        title_coverage = (
-            len(title_words & question_words) / len(title_words)
-            if title_words
-            else 0.0
-        )
-        direct_title_score = (0.65 * float(base_score)) + (0.35 * title_coverage)
-        morphology_score = (0.65 * float(base_score)) + (0.35 * float(character_score))
-        scores.append(max(float(base_score), direct_title_score, morphology_score))
-    return scores
+# The label a printed question is numbered with: "Question 1", "2.", "3)".
+_QUESTION_NUMBER = re.compile(r"^\s*(?:question\s*)?\d+\s*(?:[.)-]\s*|$)", re.I)
 
 
-def _pairing_score(
-    question: Question,
-    learning_object: LearningObject,
-    lexical_score: float,
-    weights: dict[str, float] | None = None,
-) -> float:
-    weights = weights or question_pairing_debug_configuration()["weights"]
-    same_material = question.material_id == learning_object.material_id
-    if not same_material:
-        # Page and block positions have no meaning across different PDFs. Use
-        # the full lexical score when pairing a question-only document to its topic.
-        return min(1.0, lexical_score)
-    same_page = bool(
-        question.source_page
-        and learning_object.source_page
-        and question.source_page == learning_object.source_page
-    )
-    proximity = 0.0
-    if question.source_block_id and learning_object.source_block_id:
-        distance = question.source_block_id - learning_object.source_block_id
-        if distance >= 0:
-            proximity = 1.0 / (1.0 + (distance / 5.0))
-        else:
-            proximity = 0.15 / (1.0 + (abs(distance) / 5.0))
-    return min(
-        1.0,
-        (weights["lexical_tfidf"] * lexical_score)
-        + (weights["source_block_proximity"] * proximity)
-        + (weights["same_page"] if same_page else 0.0),
-    )
+def is_empty_prompt(prompt: str) -> bool:
+    """True for a printed "question" with nothing to ask once its number is gone.
+
+    Extraction stores the "Question 1" heading above a question as a question
+    of its own, and sometimes an empty prompt. Neither can be paired.
+    """
+    return not re.sub(r"[\W_]+", "", _QUESTION_NUMBER.sub("", prompt or ""))
+
+
+def _question_encoder():
+    """The sentence encoder grouping uses; unavailable while it is switched off."""
+    from . import semantic_grouping
+
+    if semantic_grouping.mode() == "legacy":
+        raise semantic_grouping.SemanticUnavailable("semantic grouping is switched off")
+    return semantic_grouping.runtime()
+
+
+def _rank_concepts(question_vector, members):
+    """``[(score, learning_object)]``, one per concept, best first.
+
+    A concept scores its best-matching object: a question asks about one part
+    of a concept, so averaging would mark a concept down for teaching more
+    than the question covers.
+    """
+    best = {}
+    for learning_object, vector in members:
+        score = sum(a * b for a, b in zip(question_vector, vector))
+        key = learning_object.group_id or f"object:{learning_object.id}"
+        if key not in best or score > best[key][0]:
+            best[key] = (score, learning_object)
+    return sorted(best.values(), key=lambda row: (-row[0], row[1].order, row[1].id))
 
 
 # The link a generated question is born with. It records which learning object
@@ -1488,58 +1438,67 @@ def refresh_question_learning_object_links(material: LearningMaterial) -> None:
         ).exclude(review_status__in=TEACHER_QUESTION_PAIRING_STATUSES).delete()
         return
 
-    configuration = question_pairing_debug_configuration()
-    thresholds = configuration["thresholds"]
-    weights = configuration["weights"]
+    from . import semantic_grouping
+    from .question_workflow import sync_question_to_adaptive
+
+    open_questions = []
     for question in questions:
         existing = question.learning_object_links.order_by("-is_primary", "-relevance_score", "id").first()
         if existing and existing.review_status in TEACHER_QUESTION_PAIRING_STATUSES:
             continue
-        question.learning_object_links.all().delete()
-        lexical_scores = _lexical_scores(question, learning_objects)
-        ranked = [
-            (
-                _pairing_score(
-                    question,
-                    learning_object,
-                    lexical_score,
-                    weights,
-                ),
-                learning_object,
-            )
-            for learning_object, lexical_score in zip(learning_objects, lexical_scores)
-        ]
-        score, best = max(ranked, key=lambda pair: (pair[0], -pair[1].order, -pair[1].id))
-        if score >= thresholds["auto_confirm"]:
+        if is_empty_prompt(question.prompt):
+            # Nothing to pair: it stays unpaired, and out of the learners' bank.
+            question.learning_object_links.all().delete()
+            sync_question_to_adaptive(question)
+            continue
+        open_questions.append(question)
+    if not open_questions:
+        return
+
+    # Scored by meaning against each concept's text: a question and the
+    # passage that answers it often share few words, so word overlap paired
+    # them with whichever object repeated the question's vocabulary.
+    try:
+        engine = _question_encoder()
+        members = [item for item in learning_objects if engine.supports(item.content)]
+        member_vectors = engine.embeddings([item.content for item in members])
+        prompts = [question for question in open_questions if engine.supports(question.prompt)]
+        question_vectors = engine.embeddings([question.prompt for question in prompts])
+    except semantic_grouping.SemanticUnavailable as exc:
+        logger.warning(
+            "[Questions] PDF %s  printed questions left as they are: %s", material.id, exc,
+        )
+        return
+
+    thresholds = question_pairing_debug_configuration()["thresholds"]
+    candidates = list(zip(members, member_vectors))
+    for question, vector in zip(prompts, question_vectors):
+        ranked = _rank_concepts(vector, candidates)
+        if not ranked:
+            continue
+        score, best = ranked[0]
+        margin = score - ranked[1][0] if len(ranked) > 1 else score
+        if score >= thresholds["auto_confirm"] and margin >= thresholds["minimum_margin"]:
             review_status = QuestionLearningObjectLink.ReviewStatus.AUTO_CONFIRMED
-            is_primary = True
         elif score >= thresholds["teacher_review"]:
             review_status = QuestionLearningObjectLink.ReviewStatus.PENDING_REVIEW
-            is_primary = False
         else:
             review_status = QuestionLearningObjectLink.ReviewStatus.UNMATCHED
-            is_primary = False
+        question.learning_object_links.all().delete()
         QuestionLearningObjectLink.objects.create(
             question=question,
             learning_object=best,
             relevance_score=round(score, 6),
-            method="topic_tfidf" if uses_topic_candidates else "layout_tfidf",
-            is_primary=is_primary,
+            method=QUESTION_PAIRING_METHOD,
+            is_primary=review_status == QuestionLearningObjectLink.ReviewStatus.AUTO_CONFIRMED,
             review_status=review_status,
         )
-        from .question_workflow import sync_question_to_adaptive
         question.refresh_from_db()
         sync_question_to_adaptive(question)
         logger.debug(
             "Question pairing: question=%s learning_object=%s group=%s score=%.4f "
-            "auto_threshold=%.4f review_threshold=%.4f status=%s",
-            question.id,
-            best.id,
-            best.group_id,
-            score,
-            thresholds["auto_confirm"],
-            thresholds["teacher_review"],
-            review_status,
+            "margin=%.4f status=%s",
+            question.id, best.id, best.group_id, score, margin, review_status,
         )
 
 

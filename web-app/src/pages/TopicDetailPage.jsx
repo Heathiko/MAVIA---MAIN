@@ -34,6 +34,7 @@ import {
   reorderObject,
   reviewQuestionPairing,
   startQuestionGeneration,
+  startTopicQuestionGeneration,
   updateLearningObject,
   updateTopicQuestion,
   uploadLearningMaterial,
@@ -464,26 +465,18 @@ export function isUnlabelled(question) {
   return (question.source_type || "pdf") === "pdf" && !question.bloom_level;
 }
 
-// Every concept needs at least these many LOTS and HOTS questions, from any
-// source -- generated, written by the teacher, or printed in a PDF and paired
-// to it -- before the teacher moves past the Questions step. Set by what the
-// adaptive engine draws per concept. Generation asks for more (5 each), so a
-// few lost to malformed replies or the grounding check still leave enough.
-export const MIN_QUESTIONS = { LOT: 4, HOT: 2 };
-// Rounds one Generate click runs before stopping and reporting what is left.
-const GENERATION_ROUNDS = 3;
-const MIN_TEXT = `${MIN_QUESTIONS.LOT} LOTS and ${MIN_QUESTIONS.HOT} HOTS`;
-
-export function isShortOfQuestions(questions = []) {
-  const counts = tierCounts(questions);
-  return counts.LOT < MIN_QUESTIONS.LOT || counts.HOT < MIN_QUESTIONS.HOT;
+// Every concept needs a minimum of LOTS and HOTS questions before the teacher
+// moves past the Questions step. Both the minimum and the counts come from the
+// server, which also decides what counts: generated questions, the teacher's
+// own, and printed ones the teacher has edited and confirmed.
+export function isShortOfQuestions(group) {
+  const counts = group?.question_counts || {};
+  const minimum = group?.question_minimum || {};
+  return Object.keys(minimum).some((tier) => (counts[tier] || 0) < minimum[tier]);
 }
 
-export function tierCounts(questions = []) {
-  return {
-    LOT: questions.filter((question) => question.thinking_order === "LOT").length,
-    HOT: questions.filter((question) => question.thinking_order === "HOT").length,
-  };
+export function minimumText(minimum) {
+  return minimum ? `${minimum.LOT} LOTS and ${minimum.HOT} HOTS` : "the minimum questions";
 }
 
 export function contentGaps(groups, questions = []) {
@@ -493,7 +486,7 @@ export function contentGaps(groups, questions = []) {
     || !group.versions?.slots?.simplified
     || !group.versions?.slots?.elaborated
   )).length;
-  const shortQuestions = concepts.filter((group) => isShortOfQuestions(group.questions)).length;
+  const shortQuestions = concepts.filter(isShortOfQuestions).length;
   const outOfDateQuestions = concepts.filter((group) => group.question_bank_out_of_date).length;
   const unlabelledQuestions = questions.filter(isUnlabelled).length;
   return {
@@ -501,6 +494,7 @@ export function contentGaps(groups, questions = []) {
     shortQuestions,
     outOfDateQuestions,
     unlabelledQuestions,
+    minimumText: minimumText(concepts[0]?.question_minimum),
     ready: concepts.length > 0 && missingVersions === 0 && shortQuestions === 0
       && outOfDateQuestions === 0 && unlabelledQuestions === 0,
   };
@@ -568,7 +562,7 @@ function ReviewQueuePanel({
   const gaps = contentGaps(groups, questionPairings);
   const blockers = [
     unlabelledCount > 0 && `${unlabelledCount} printed question${unlabelledCount === 1 ? " still needs" : "s still need"} labelling`,
-    gaps.shortQuestions > 0 && `${gaps.shortQuestions} concept${gaps.shortQuestions === 1 ? " needs" : "s need"} ${MIN_TEXT}`,
+    gaps.shortQuestions > 0 && `${gaps.shortQuestions} concept${gaps.shortQuestions === 1 ? " needs" : "s need"} ${gaps.minimumText}`,
     gaps.outOfDateQuestions > 0 && `${gaps.outOfDateQuestions} concept${gaps.outOfDateQuestions === 1 ? " has" : "s have"} questions to check`,
   ].filter(Boolean);
   // Both views stay mounted so a running generation or a half-written
@@ -1263,8 +1257,8 @@ function VersionReviewPanel({
 }
 
 // One square per question the tier needs, filled up to the count: red at 1,
-// yellow in between, green once the minimum is met. Counts every paired,
-// labelled question.
+// yellow in between, green once the minimum is met. Counts what the server
+// counts toward the minimum.
 function TierCounter({ label, count, needed }) {
   const filled = Math.min(count, needed);
   const level = count >= needed ? "is-enough" : count <= 1 ? "is-one" : "is-two";
@@ -1318,6 +1312,9 @@ function QuestionGenerationTool({
         // Spreading the representative alone dropped these, which is why the
         // board could only ever say "generating" and never "here is the result".
         questions: group.questions || [],
+        questionCounts: group.question_counts || {},
+        questionMinimum: group.question_minimum || {},
+        isShort: isShortOfQuestions(group),
         groupId: group.id,
         questionsOutOfDate: Boolean(group.question_bank_out_of_date),
         canGenerate: Boolean(
@@ -1334,17 +1331,27 @@ function QuestionGenerationTool({
   // the trace with only the run in flight made the log collapse to two lines
   // and grow back for every concept, over and over. Its own seq is therefore
   // paired with the run it belongs to, so the accumulated lines stay distinct.
-  async function waitForGeneration(runId, carried = []) {
+  //
+  // `onEvents` sees every poll's events. A topic run lasts as long as its
+  // rounds take, so polling stops only when the run ends or stops reporting
+  // progress for `stallSeconds`.
+  async function waitForGeneration(runId, carried = [], { onEvents, stallSeconds = 300 } = {}) {
     let result;
+    let seen = 0;
+    let quietSeconds = 0;
     const tag = (events) => (events || []).map(
       (event) => ({ ...event, uid: `${runId}:${event.seq}` }),
     );
-    for (let attempt = 0; attempt < 300; attempt += 1) {
+    while (quietSeconds < stallSeconds) {
       await new Promise((resolve) => window.setTimeout(resolve, 1000));
       result = await fetchQuestionGenerationTrace(runId);
+      const events = result.events || [];
+      quietSeconds = events.length > seen ? 0 : quietSeconds + 1;
+      seen = events.length;
       // The endpoint returns this run's whole event list each poll, so its own
       // lines replace while everything before them is kept.
-      setRunEvents([...carried, ...tag(result.events)]);
+      setRunEvents([...carried, ...tag(events)]);
+      if (onEvents) await onEvents(events);
       if (["finished", "failed"].includes(result.run.status)) break;
     }
     if (!result || result.run.status === "running") {
@@ -1394,84 +1401,69 @@ function QuestionGenerationTool({
   }
 
   // One button for the whole topic. The first click writes every concept's
-  // questions; after that it is "Generate more", which adds a batch only to
-  // the concepts still short of the minimum. It never replaces questions.
+  // questions; after that it is "Generate more". Either way the server adds
+  // questions only to the concepts short of the minimum, and only in the
+  // tier they lack. It never replaces questions.
   const hasGenerated = learningObjects.some((item) => (item.questions || []).some(
     (question) => (question.source_type || "pdf") === "generated",
   ));
-  const isShort = (item) => isShortOfQuestions(item.questions);
-  const targets = learningObjects.filter(
-    (item) => item.canGenerate && (!hasGenerated || isShort(item)),
-  );
+  const targets = learningObjects.filter((item) => item.canGenerate && item.isShort);
+  const goal = minimumText(learningObjects[0]?.questionMinimum);
 
-  // One click keeps going: after each round, the concepts still short of the
-  // minimum run again, up to GENERATION_ROUNDS rounds. Same cost as clicking
-  // that many times, but the teacher clicks once.
+  // One click, one run: the server goes round by round until every concept
+  // meets the minimum or its rounds are used up. The page follows the run's
+  // events, and reloads the counters as each concept finishes.
   async function handleGenerateAll() {
     if (!targets.length) return;
     setGeneratingKey("all");
     onError("");
-    const failed = [];
-    let carried = [];
-    let roundTargets = targets;
+    onMessage(hasGenerated
+      ? `Adding questions to the concepts still short of ${goal}.`
+      : "Generating questions from the Normal version of each concept.");
+    let finishedConcepts = 0;
     try {
-      for (let round = 1; round <= GENERATION_ROUNDS && roundTargets.length; round += 1) {
-        onMessage(round === 1 && !hasGenerated
-          ? "Generating questions from the Normal version of each concept."
-          : `Round ${round} of ${GENERATION_ROUNDS}: adding questions to the ${roundTargets.length} concept${roundTargets.length === 1 ? "" : "s"} still short of ${MIN_TEXT}.`);
-        let latest = null;
-        for (let index = 0; index < roundTargets.length; index += 1) {
-          const item = roundTargets[index];
-          setOuterProgress({
-            index: index + 1,
-            total: roundTargets.length,
-            label: GENERATION_ROUNDS > 1 ? `${item.conceptLabel} (round ${round} of ${GENERATION_ROUNDS})` : item.conceptLabel,
-          });
-          // One concept failing does not stop the others -- except when the
-          // server already has a run going (started before a page reload, or
-          // in another tab): every concept would be refused the same way.
-          try {
-            const started = await startQuestionGeneration(item.material, item.id, { append: true });
-            carried = [...carried, ...await waitForGeneration(started.run_id, carried)];
-          } catch (err) {
-            if (/already in progress/i.test(err.message)) {
-              throw new Error(
-                "A question generation is already running for this topic, started before a page "
-                + "reload or in another tab. Wait a few minutes for it to finish, then reload the page.",
-              );
-            }
-            failed.push(`${item.conceptLabel}: ${err.message}`);
+      const started = await startTopicQuestionGeneration(topicId);
+      const events = await waitForGeneration(started.run_id, [], {
+        onEvents: async (latest) => {
+          const current = [...latest].reverse().find((event) => event.event_type === "node_started");
+          if (current?.data) {
+            const { index, total, round, rounds, title } = current.data;
+            setOuterProgress({
+              index,
+              total,
+              label: rounds > 1 ? `${title} (round ${round} of ${rounds})` : title,
+            });
           }
-          // Reloaded after every concept, so the counters move as each one
-          // finishes and stay right even if a later one fails.
-          latest = await fetchLearningResources(courseId, topicId);
-          onResourcesChange(latest);
-        }
-        // The next round is decided from what the server now holds, not from
-        // this screen's copy, which predates the round.
-        const stillShort = new Set(
-          (latest?.learning_object_groups || [])
-            .filter((group) => isShortOfQuestions(group.questions))
-            .map((group) => group.id),
-        );
-        roundTargets = roundTargets.filter(
-          (item) => stillShort.has(item.groupId) && !failed.some((line) => line.startsWith(`${item.conceptLabel}:`)),
-        );
-      }
+          const finished = latest.filter(
+            (event) => ["node_finished", "node_failed"].includes(event.event_type),
+          ).length;
+          if (finished > finishedConcepts) {
+            finishedConcepts = finished;
+            onResourcesChange(await fetchLearningResources(courseId, topicId));
+          }
+        },
+      });
+      onResourcesChange(await fetchLearningResources(courseId, topicId));
       onMessage("");
+      const outcome = [...events].reverse().find((event) => event.event_type === "topic_finished")?.data || {};
+      const failed = outcome.failed || [];
+      const stillShort = outcome.still_short || [];
       const problems = [];
       if (failed.length) {
         problems.push(`Questions could not be generated for ${failed.length} concept${failed.length === 1 ? "" : "s"}: ${failed.join("; ")}`);
       }
-      if (roundTargets.length) {
+      if (stillShort.length) {
         problems.push(
-          `After ${GENERATION_ROUNDS} rounds, ${roundTargets.length} concept${roundTargets.length === 1 ? " is" : "s are"} still short of ${MIN_TEXT}: `
-          + `${roundTargets.map((item) => item.conceptLabel).join(", ")}. Click Generate more to try again, or add questions in the Manual tab.`,
+          `${stillShort.length} concept${stillShort.length === 1 ? " is" : "s are"} still short of ${goal}: `
+          + `${stillShort.join(", ")}. Click Generate more to try again, or add questions in the Manual tab.`,
         );
       }
       if (problems.length) onError(problems.join(" "));
     } catch (err) {
-      onError(err.message);
+      onError(/already in progress/i.test(err.message)
+        ? "A question generation is already running for this topic, started before a page "
+          + "reload or in another tab. Wait a few minutes for it to finish, then reload the page."
+        : err.message);
     } finally {
       setGeneratingKey("");
       setOuterProgress(null);
@@ -1489,7 +1481,7 @@ function QuestionGenerationTool({
           type="button"
           className="btn btn-primary"
           disabled={Boolean(generatingKey) || !targets.length}
-          title={hasGenerated && !targets.length ? `Every concept has ${MIN_TEXT}.` : undefined}
+          title={hasGenerated && !targets.length ? `Every concept has ${goal}.` : undefined}
           onClick={handleGenerateAll}
         >
           {generatingKey === "all"
@@ -1583,8 +1575,8 @@ function QuestionGenerationTool({
                       {produced.length} generated question{produced.length === 1 ? "" : "s"}
                     </h5>
                     <div className="tier-counters">
-                      <TierCounter label="LOTS" count={tierCounts(item.questions).LOT} needed={MIN_QUESTIONS.LOT} />
-                      <TierCounter label="HOTS" count={tierCounts(item.questions).HOT} needed={MIN_QUESTIONS.HOT} />
+                      <TierCounter label="LOTS" count={item.questionCounts.LOT || 0} needed={item.questionMinimum.LOT || 0} />
+                      <TierCounter label="HOTS" count={item.questionCounts.HOT || 0} needed={item.questionMinimum.HOT || 0} />
                     </div>
                   </div>
                   {!produced.length ? (
@@ -4780,7 +4772,7 @@ function LearningPathButton({ gaps, onOpen }) {
       parts.push(`${gaps.missingVersions} concept${gaps.missingVersions === 1 ? " needs" : "s need"} a Simplified or Elaborated version`);
     }
     if (gaps.shortQuestions) {
-      parts.push(`${gaps.shortQuestions} concept${gaps.shortQuestions === 1 ? " has" : "s have"} fewer than ${MIN_TEXT} questions`);
+      parts.push(`${gaps.shortQuestions} concept${gaps.shortQuestions === 1 ? " has" : "s have"} fewer than ${gaps.minimumText}`);
     }
     if (gaps.unlabelledQuestions) {
       parts.push(`${gaps.unlabelledQuestions} printed question${gaps.unlabelledQuestions === 1 ? " needs" : "s need"} labelling in the Questions step`);
