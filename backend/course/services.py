@@ -11,7 +11,7 @@ from .models import (
     bundle_segments,
     normal_bundle_for,
 )
-from .version_assignment import version_bundles
+from .version_assignment import served_version_bundles
 
 
 VARIANT_KEYS = ("normal", "elaborated", "simplified")
@@ -332,7 +332,7 @@ def _build_chunk(learning_object):
     # A version a PDF supplies is that PDF's own objects -- nothing is copied
     # into a row -- and it outranks anything generated for the same role.
     if learning_object.group_id is not None:
-        for role, objects in version_bundles(learning_object.group).items():
+        for role, objects in served_version_bundles(learning_object.group).items():
             if role == "NORMAL":
                 continue
             variants[role.lower()] = _version_from_segments(

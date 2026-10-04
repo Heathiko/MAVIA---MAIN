@@ -16,11 +16,12 @@ from django.db import DatabaseError, transaction
 
 from course.models import bundle_segments, normal_bundle_for
 from course.services import _generated_versions, _version_from_segments
-from course.version_assignment import assign_group_versions, version_bundles
+from course.version_assignment import assign_group_versions, served_version_bundles
 from question_generation.models import GeneratedQuestion
 
 from ..models import ConceptPrerequisite, CourseConceptLink, LearningPathStep
 from lessons.services.concept_bundles import bundles_for_group
+from lessons.services.concept_titles import display_titles
 
 from .concept_units import concepts_for_topic
 from .course_criteria import course_topics
@@ -184,7 +185,7 @@ def _versions(parts, group=None):
             versions[role.lower()] = _slot(generated["segments"])
 
     if group is not None:
-        for role, objects in version_bundles(group).items():
+        for role, objects in served_version_bundles(group).items():
             if role == "NORMAL":
                 continue
             versions[role.lower()] = _slot(bundle_segments(objects))
@@ -316,6 +317,7 @@ def get_published_path(node, *, include_answers=True):
     concepts = {concept.id: concept for concept in concepts_for_topic(node)}
 
     payload_steps = []
+    title_entries = []
     for step in steps:
         group = step.concept
         concept = concepts.get(group.id)
@@ -356,6 +358,7 @@ def get_published_path(node, *, include_answers=True):
             seen.update(part.id for part in alternate_parts)
             alternates.append(alternate_parts)
 
+        title_entries.append((group, members, step.position))
         payload_steps.append({
             "position": step.position,
             "depth": step.depth,
@@ -381,6 +384,13 @@ def get_published_path(node, *, include_answers=True):
             "leads_to": sorted(leads[group.id], key=position_of.get),
             "course_prerequisites": earlier_topics.get(group.id, []),
         })
+
+    # Named as the teacher saw the concept while reviewing it -- "Comparing
+    # the Three States", numbered when two share a name -- not after its first
+    # object ("Shape"), which is only the start of what the step teaches.
+    titles = display_titles(title_entries)
+    for entry in payload_steps:
+        entry["title"] = titles.get(entry["concept_id"]) or entry["title"]
 
     return {
         "topic": {"id": node.id, "title": node.title},

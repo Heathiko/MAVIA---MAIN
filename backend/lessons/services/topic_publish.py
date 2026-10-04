@@ -62,7 +62,7 @@ def concepts_missing_a_version(node, materials):
     over confirmed materials only, so un-confirming one PDF after grouping
     would otherwise publish a version with nothing to play.
     """
-    from course.version_assignment import PRIMARY_SLOTS, version_bundles
+    from course.version_assignment import PRIMARY_SLOTS, served_version_bundles
 
     confirmed_ids = {material.id for material in materials}
     filled = {
@@ -87,7 +87,7 @@ def concepts_missing_a_version(node, materials):
             normal, supplied = [candidate], set()
         else:
             if candidate.group_id not in bundles_by_group:
-                bundles_by_group[candidate.group_id] = version_bundles(candidate.group)
+                bundles_by_group[candidate.group_id] = served_version_bundles(candidate.group)
             bundles = bundles_by_group[candidate.group_id]
             normal = bundles.get("NORMAL") or []
             supplied = {
@@ -200,17 +200,18 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
         variant_generated.extend(outcome["generated"])
         variant_errors.extend(outcome["errors"])
         for pending in outcome["needs_confirmation"]:
-            detail = (
-                "A PDF source has no confirmed content-version role. "
-                "Choose Simplified or Elaborated, or separate it from this concept."
-            )
-            error = {
-                "learning_object_id": pending["learning_object_id"],
-                "detail": detail,
-            }
-            variant_errors.append(error)
+            # A flag, not a fault: the PDF's text may become a version once a
+            # teacher confirms it. Until then it is not served and the written
+            # versions stand in, so publishing goes ahead and only says so.
+            source = LearningObject.objects.select_related("material").filter(
+                pk=pending["learning_object_id"],
+            ).first()
+            file_name = (source.material.title if source else "") or "a PDF"
             emit(
-                "versions_failed", detail,
+                "versions_flagged",
+                f"“{group.label or f'Concept {index}'}”: the version from “{file_name}” "
+                "is still flagged, so learners get the written versions instead. "
+                "Confirm it in Content versions to use it.",
                 group_id=group.id,
                 learning_object_id=pending["learning_object_id"],
             )
@@ -265,7 +266,17 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
 
     audio_generated = 0
     audio_errors = []
-    for index, material in enumerate(materials, start=1):
+    # Everything above already decides that this publish cannot succeed.
+    # Audio is the slow phase -- 104 of 106 seconds of a publish that failed on
+    # three unconfirmed versions found in its first second -- so it is made
+    # only when the publish can actually go through.
+    blocked = bool(image_errors or variant_errors or incomplete_versions or stale_banks)
+    if blocked:
+        emit(
+            "audio_skipped",
+            "Audio was not generated: resolve the problems above, then publish again.",
+        )
+    for index, material in enumerate([] if blocked else materials, start=1):
         emit(
             "audio_started",
             f"Generating audio for {material.title}",

@@ -7,7 +7,9 @@ The preview uses the same ordering the publish step saves
 what a teacher reviews is what publishing would save.
 """
 
+from course.models import normal_bundle_for
 from lessons.models import OutlineNode
+from lessons.services.concept_bundles import bundle_text
 
 from ..models import ConceptPrerequisite, LearningPathStep
 from .concept_units import concepts_for_topic
@@ -72,6 +74,22 @@ def build_topic_path(node_id):
         named = {member.material_id: member.material.title for member in concept.members}
         return [{"id": material_id, "title": named[material_id]} for material_id in sorted(named)]
 
+    def normal_objects(concept):
+        if concept.representative is None:
+            return []
+        return [item for item in normal_bundle_for(concept.representative) if (item.content or "").strip()]
+
+    def normal_text(concept):
+        return bundle_text(normal_objects(concept)) or concept.content
+
+    def normal_parts(concept):
+        # Each object of the Normal version with its own title, as every other
+        # place that shows a bundle lists it.
+        return [
+            {"id": item.id, "title": item.title or "", "text": item.content.strip()}
+            for item in normal_objects(concept)
+        ]
+
     steps = []
     for position, concept in enumerate(ordered, start=1):
         steps.append({
@@ -86,7 +104,12 @@ def build_topic_path(node_id):
             "title": concept.title,
             "section_title": concept.section_title,
             "kind": concept.kind,
-            "content": concept.content,
+            # Shown on the concept's card. Every object of its Normal version,
+            # not the representative alone -- a concept taught as Shape,
+            # Volume, Particle arrangement and Flow read as only "Shape".
+            # Display only: the path criteria keep reading concept.content.
+            "content": normal_text(concept),
+            "parts": normal_parts(concept),
             "source_material_ids": concept.source_material_ids,
             "source_materials": sources(concept),
             "source_count": len(concept.members),

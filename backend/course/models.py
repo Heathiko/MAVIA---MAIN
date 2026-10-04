@@ -184,6 +184,8 @@ def bundle_segments(objects):
         segments.append({
             "text": (clip.get("narration") or item.content or "").strip(),
             "audio_url": clip.get("audio_url") or "",
+            # Which object the clip speaks for, so a player can label it.
+            "title": item.title or "",
         })
     return segments
 

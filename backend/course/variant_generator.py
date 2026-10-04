@@ -569,7 +569,12 @@ def fill_missing_bundle_slots(group, target_slots=None, *, replace_stale=False):
     would otherwise be silently suppressed until a teacher confirms, leaving
     the concept with no Simplified (or Elaborated) at all in the meantime.
     """
-    from .version_assignment import assign_group_versions, bundle_roles, version_bundles
+    from .version_assignment import (
+        assign_group_versions,
+        bundle_roles,
+        served_version_bundles,
+        version_bundles,
+    )
 
     bundles = version_bundles(group)
     normal = bundles.get("NORMAL") or []
@@ -580,9 +585,13 @@ def fill_missing_bundle_slots(group, target_slots=None, *, replace_stale=False):
             "errors": [{"learning_object_id": None, "detail": "Choose a replacement Normal PDF before generating versions."}],
         }
     pending_ids = {entry["material_id"] for entry in outcome["needs_confirmation"]}
+    # Covered only by a PDF version learners are actually given; a flagged or
+    # unconfirmed one is not, so the written version is still needed.
+    served = served_version_bundles(group)
     supplied = {
         role for material_id, role in bundle_roles(group).items()
         if role in ("SIMPLIFIED", "ELABORATED") and material_id not in pending_ids
+        and role in served
     }
     requested = [
         slot for slot in (target_slots or ("SIMPLIFIED", "ELABORATED"))

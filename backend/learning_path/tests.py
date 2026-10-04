@@ -501,12 +501,14 @@ class SplitPassageTests(TestCase):
         normal = self.path["steps"][0]["versions"]["normal"]
 
         self.assertEqual(
-            normal["parts"],
+            [{"text": part["text"], "audio_url": part["audio_url"]} for part in normal["parts"]],
             [
                 {"text": "Flowering plants reproduce sexually.", "audio_url": "/media/part-1.mp3"},
                 {"text": "A flower holds male and female parts.", "audio_url": "/media/part-2.mp3"},
             ],
         )
+        # Each part names the object it narrates, so a player can label it.
+        self.assertTrue(all(part["title"] for part in normal["parts"]))
         # No single file covers both parts, so the legacy field stays empty
         # rather than pointing at a recording of half the text.
         self.assertEqual(normal["audio_url"], "")

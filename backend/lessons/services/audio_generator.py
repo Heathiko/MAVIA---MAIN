@@ -284,7 +284,7 @@ def bundle_version_objects(material: LearningMaterial) -> list:
     represented -- they are not teaching steps of their own material's lesson
     -- so nothing else in the audio pipeline reaches them.
     """
-    from course.version_assignment import version_bundles
+    from course.version_assignment import served_version_bundles
 
     supplying = {}
     objects = []
@@ -296,7 +296,7 @@ def bundle_version_objects(material: LearningMaterial) -> list:
         if item.group_id not in supplying:
             supplying[item.group_id] = {
                 member.id
-                for role, bundle in version_bundles(item.group).items()
+                for role, bundle in served_version_bundles(item.group).items()
                 # Normal is the lesson itself and already has clips.
                 if role != "NORMAL"
                 for member in bundle

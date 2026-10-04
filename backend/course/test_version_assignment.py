@@ -336,6 +336,33 @@ class VersionAssignmentTests(TestCase):
         self.assertEqual(classify.call_count, 1)
 
     @patch("course.version_assignment.classify_group_versions")
+    def test_reading_a_concept_again_reuses_the_role_check(self, classify):
+        """Every page load reads the concept; re-measuring there loaded the
+        grouping models and logged on screens that have nothing to do with versions."""
+        second, _first_run = self._assign(classify, self._row("ELABORATED"), adds_content=True)
+        self.group.refresh_from_db()
+
+        with self._measures(adds_content=True) as measure:
+            again = assign_group_versions(self.group)
+
+        measure.assert_not_called()
+        self.assertEqual(again["bundle_roles"], {second.material_id: "ELABORATED"})
+
+    @patch("course.version_assignment.classify_group_versions")
+    def test_a_changed_text_is_checked_again(self, classify):
+        second, _first_run = self._assign(classify, self._row("ELABORATED"), adds_content=True)
+        second.content += " Particles also move faster when heated."
+        second.save()
+        self.group.refresh_from_db()
+
+        # A changed text voids the stored answer; the next sort asks again and
+        # the stored check is not reused for text it never measured.
+        with self._measures(adds_content=True) as measure:
+            assign_group_versions(self.group, use_llm=True)
+
+        measure.assert_called()
+
+    @patch("course.version_assignment.classify_group_versions")
     def test_first_relevant_pdf_stays_normal_even_if_llm_prefers_second(self, classify):
         first = self._object(self._material("PDF one", 0), SHORT)
         second = self._object(self._material("PDF two", 5), LONG)

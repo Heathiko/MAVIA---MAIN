@@ -16,6 +16,7 @@ and a role a teacher set is never overwritten.
 
 import logging
 import hashlib
+import json
 import re
 from types import SimpleNamespace
 
@@ -311,6 +312,33 @@ def prune_bundle_role(group, material_id):
     return dropped
 
 
+# Who may make a PDF's text a learner-facing version: a teacher, or the model
+# with the text measurements agreeing. A role set any other way -- readability
+# alone, or one still flagged for review -- is a candidate, not a version.
+CONFIRMED_ROLE_SOURCES = frozenset({
+    LessonVariant.AssignedBy.TEACHER,
+    LessonVariant.AssignedBy.LLM_VALIDATED,
+})
+
+
+def served_version_bundles(group):
+    """``version_bundles`` limited to what learners are actually given.
+
+    A flagged PDF version does not hold publishing back and is not served
+    either: until someone confirms it, the concept's written Simplified or
+    Elaborated stands in. Everything that decides what a learner gets -- the
+    published path, the lesson package, the audio, the publish check and the
+    version writer -- reads this, so they cannot disagree about a version.
+    """
+    bundles = version_bundles(group)
+    provenance = bundle_role_provenance(group)
+    return {
+        role: objects for role, objects in bundles.items()
+        if role == "NORMAL"
+        or provenance.get(objects[0].material_id) in CONFIRMED_ROLE_SOURCES
+    }
+
+
 def version_bundles(group):
     """``{role: [objects]}`` for the versions a PDF supplies."""
     bundles = _eligible_bundles(group)
@@ -357,6 +385,18 @@ def _roles_signature(bundles, ordered_ids):
             for material_id in ordered_ids
         ),
     ]).encode()).hexdigest()
+
+
+ROLE_REVIEW_CACHE_KEY = "role_review_cache"
+
+
+def _review_key(llm, normal_text, candidate_text):
+    """What a role check depends on: the model's answer and both texts."""
+    payload = json.dumps(
+        {"llm": llm, "normal": normal_text, "candidate": candidate_text},
+        sort_keys=True, default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def assign_group_versions(group, *, use_llm=False):
@@ -457,6 +497,13 @@ def assign_group_versions(group, *, use_llm=False):
                 group.id,
             )
 
+    # The check of each model-proposed role measures the two texts with the
+    # grouping encoder. Its result only changes when a text or the model's
+    # answer does, so it is stored and reused: reading the concept (every page
+    # load, on every step) no longer re-measures, loads models or logs.
+    review_cache = dict(selection.get(ROLE_REVIEW_CACHE_KEY) or {})
+    review_cache_changed = False
+
     proposals = []
     for material_id in candidate_ids:
         objects = bundles[material_id]
@@ -470,10 +517,17 @@ def assign_group_versions(group, *, use_llm=False):
         # (facts kept, content added, easier to read). FKGL and confidence are
         # recorded, never decisive. (Readability still proposes a role on its
         # own only when Gemma gave no answer at all, as before.)
-        review = (
-            review_gemma_role(llm, verdict, normal_text, bundle_text(objects))
-            if llm_slot else None
-        )
+        review = None
+        reviewed_now = False
+        if llm_slot:
+            review_key = _review_key(llm, normal_text, bundle_text(objects))
+            cached = review_cache.get(str(material_id)) or {}
+            if cached.get("key") == review_key:
+                review = cached["review"]
+            else:
+                review = review_gemma_role(llm, verdict, normal_text, bundle_text(objects))
+                review_cache[str(material_id)] = {"key": review_key, "review": review}
+                review_cache_changed = reviewed_now = True
         accepted = bool(review and review["accepted"])
         proposals.append({
             "material_id": material_id,
@@ -503,7 +557,7 @@ def assign_group_versions(group, *, use_llm=False):
                 else LessonVariant.AssignedBy.HEURISTIC
             ),
         })
-        if llm_slot:
+        if reviewed_now:
             logger.info(
                 "[Versions] %s  PDF %s: model says %s%s, reading level says %s%s -> %s  (concept %s)",
                 name(group.label), material_id, llm_slot.lower(),
@@ -667,6 +721,11 @@ def assign_group_versions(group, *, use_llm=False):
         selection.pop("roles_signature", None)
         changed = True
         classification_complete = False
+    if review_cache_changed:
+        selection[ROLE_REVIEW_CACHE_KEY] = {
+            key: value for key, value in review_cache.items() if int(key) in candidate_ids
+        }
+        changed = True
     if changed:
         group.version_selection = selection
         group.save(update_fields=["version_selection"])
