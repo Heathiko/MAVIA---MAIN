@@ -41,6 +41,7 @@ import {
 // The same path display the standalone page uses, so review step 5 and that
 // page cannot drift apart.
 import { MaterialPath } from "./LearningPathPage";
+import BundleParts from "../learning-path/BundleParts";
 import PublishedDialog from "../learning-path/PublishedDialog";
 
 function flattenNodes(nodes = []) {
@@ -463,6 +464,28 @@ export function isUnlabelled(question) {
   return (question.source_type || "pdf") === "pdf" && !question.bloom_level;
 }
 
+// Every concept needs at least these many LOTS and HOTS questions, from any
+// source -- generated, written by the teacher, or printed in a PDF and paired
+// to it -- before the teacher moves past the Questions step. Set by what the
+// adaptive engine draws per concept. Generation asks for more (5 each), so a
+// few lost to malformed replies or the grounding check still leave enough.
+export const MIN_QUESTIONS = { LOT: 4, HOT: 2 };
+// Rounds one Generate click runs before stopping and reporting what is left.
+const GENERATION_ROUNDS = 3;
+const MIN_TEXT = `${MIN_QUESTIONS.LOT} LOTS and ${MIN_QUESTIONS.HOT} HOTS`;
+
+export function isShortOfQuestions(questions = []) {
+  const counts = tierCounts(questions);
+  return counts.LOT < MIN_QUESTIONS.LOT || counts.HOT < MIN_QUESTIONS.HOT;
+}
+
+export function tierCounts(questions = []) {
+  return {
+    LOT: questions.filter((question) => question.thinking_order === "LOT").length,
+    HOT: questions.filter((question) => question.thinking_order === "HOT").length,
+  };
+}
+
 export function contentGaps(groups, questions = []) {
   const concepts = (groups || []).filter((group) => group.versions?.representative_id);
   const missingVersions = concepts.filter((group) => (
@@ -470,15 +493,15 @@ export function contentGaps(groups, questions = []) {
     || !group.versions?.slots?.simplified
     || !group.versions?.slots?.elaborated
   )).length;
-  const missingQuestions = concepts.filter((group) => !group.questions?.length).length;
+  const shortQuestions = concepts.filter((group) => isShortOfQuestions(group.questions)).length;
   const outOfDateQuestions = concepts.filter((group) => group.question_bank_out_of_date).length;
   const unlabelledQuestions = questions.filter(isUnlabelled).length;
   return {
     missingVersions,
-    missingQuestions,
+    shortQuestions,
     outOfDateQuestions,
     unlabelledQuestions,
-    ready: concepts.length > 0 && missingVersions === 0 && missingQuestions === 0
+    ready: concepts.length > 0 && missingVersions === 0 && shortQuestions === 0
       && outOfDateQuestions === 0 && unlabelledQuestions === 0,
   };
 }
@@ -540,6 +563,14 @@ function ReviewQueuePanel({
   labelling = { running: false, error: "" },
   onRetryLabelling,
 }) {
+  // Final review waits until every concept has its minimum LOTS and HOTS,
+  // no bank is out of date, and every printed question is labelled.
+  const gaps = contentGaps(groups, questionPairings);
+  const blockers = [
+    unlabelledCount > 0 && `${unlabelledCount} printed question${unlabelledCount === 1 ? " still needs" : "s still need"} labelling`,
+    gaps.shortQuestions > 0 && `${gaps.shortQuestions} concept${gaps.shortQuestions === 1 ? " needs" : "s need"} ${MIN_TEXT}`,
+    gaps.outOfDateQuestions > 0 && `${gaps.outOfDateQuestions} concept${gaps.outOfDateQuestions === 1 ? " has" : "s have"} questions to check`,
+  ].filter(Boolean);
   // Both views stay mounted so a running generation or a half-written
   // question survives switching tabs.
   const [mode, setMode] = useState("generate");
@@ -609,20 +640,18 @@ function ReviewQueuePanel({
           type="button"
           className="btn btn-secondary"
           disabled={Boolean(busyAction)}
-          onClick={() => onReviewStepChange("objects")}
+          onClick={() => onReviewStepChange("versions")}
         >
-          Back to object pairs
+          Back to content versions
         </button>
-        {unlabelledCount > 0 && (
-          <small className="review-step-dock-note">
-            {unlabelledCount} printed question{unlabelledCount === 1 ? " still needs" : "s still need"} labelling
-          </small>
+        {blockers.length > 0 && (
+          <small className="review-step-dock-note">{blockers.join("; ")}</small>
         )}
         <button
           type="button"
           className="btn btn-primary"
-          disabled={Boolean(busyAction) || unlabelledCount > 0 || labelling.running}
-          title={unlabelledCount > 0 ? "Every printed question has to be labelled first." : undefined}
+          disabled={Boolean(busyAction) || blockers.length > 0 || labelling.running}
+          title={blockers.length ? `Before final review: ${blockers.join("; ")}.` : undefined}
           onClick={() => onReviewStepChange("publish")}
         >
           Next: Final Review
@@ -705,6 +734,8 @@ function VersionSlotCard({
   heading,
   entry,
   text,
+  // The objects a bundle version is taught as; shown one by one when more than one.
+  parts = null,
   originLabel,
   readOnly,
   busy,
@@ -806,7 +837,9 @@ function VersionSlotCard({
           </div>
         ) : (
           <>
-            <p className="version-slot-text">{text}</p>
+            {(parts || []).length > 1
+              ? <BundleParts parts={parts} className="version-slot-text" />
+              : <p className="version-slot-text">{text}</p>}
             {!readOnly && (
               <div className="version-slot-actions">
                 <button type="button" className="btn btn-secondary btn-small" disabled={busy} onClick={onBeginEdit}>
@@ -1013,7 +1046,7 @@ function VersionReviewPanel({
             itemLabel="Concept"
           />
 
-          <h4 className="version-chunk-title">{representative?.title || "Untitled concept"}</h4>
+          <h4 className="version-chunk-title">{chunk.display_title || chunk.label || representative?.title || "Untitled concept"}</h4>
           <p className="muted-text">
             {chunk.learning_objects.length} grouped PDF variant{chunk.learning_objects.length === 1 ? "" : "s"}
             {versions?.classification_complete === false
@@ -1126,6 +1159,7 @@ function VersionReviewPanel({
               slotKey="original"
               heading={versions?.original_selected ? "Normal" : "Normal candidate"}
               text={normalEntry?.text || representative?.content}
+              parts={normalEntry?.objects}
               originLabel={versions?.original_selected
                 ? `Primary PDF: ${originalMaterial?.filename || originalMaterial?.title || "this PDF"}`
                 : "Choose a replacement Normal PDF before continuing"}
@@ -1228,6 +1262,27 @@ function VersionReviewPanel({
   );
 }
 
+// One square per question the tier needs, filled up to the count: red at 1,
+// yellow in between, green once the minimum is met. Counts every paired,
+// labelled question.
+function TierCounter({ label, count, needed }) {
+  const filled = Math.min(count, needed);
+  const level = count >= needed ? "is-enough" : count <= 1 ? "is-one" : "is-two";
+  return (
+    <div className="tier-counter" aria-label={`${label}: ${count} of ${needed} needed`}>
+      <span className="tier-counter-label">{label} QUESTION COUNTER</span>
+      <span className="tier-counter-boxes" aria-hidden="true">
+        {Array.from({ length: needed }, (_, index) => (
+          <span key={index} className={index < filled ? `tier-box ${level}` : "tier-box"} />
+        ))}
+      </span>
+      {/* Always shown, so every counter reads the same way: at the minimum,
+          above it, or short of it. */}
+      <small className="tier-counter-extra">{count}</small>
+    </div>
+  );
+}
+
 function QuestionGenerationTool({
   courseId,
   topicId,
@@ -1255,6 +1310,10 @@ function QuestionGenerationTool({
       return [{
         ...representative,
         conceptLabel: group.display_title || group.label || representative.title || "Untitled concept",
+        // The concept's whole Normal text, every object of the Normal PDF, not
+        // just its first: that first object is only where the bank is filed.
+        content: group.versions?.slots?.normal?.text || representative.content,
+        normalParts: group.versions?.slots?.normal?.objects || [],
         // Carried through so each concept can show what was generated from it.
         // Spreading the representative alone dropped these, which is why the
         // board could only ever say "generating" and never "here is the result".
@@ -1298,6 +1357,8 @@ function QuestionGenerationTool({
     return tag(result.events);
   }
 
+  // Regenerate one out-of-date concept: replaces its questions the teacher
+  // has not edited. The only per-concept generation left on this screen.
   async function handleGenerateObject(item) {
     if (!item.canGenerate) return;
     setGeneratingKey(`object-${item.id}`);
@@ -1311,7 +1372,7 @@ function QuestionGenerationTool({
       const started = await startQuestionGeneration(item.material, item.id);
       await waitForGeneration(started.run_id);
       onResourcesChange(await fetchLearningResources(courseId, topicId));
-      onMessage(`Questions for “${item.title}” were generated, classified as LOTS/HOTS, and saved.`);
+      onMessage(`Questions for “${item.title}” were regenerated, classified as LOTS/HOTS, and saved.`);
     } catch (err) {
       onError(err.message);
     } finally {
@@ -1332,26 +1393,83 @@ function QuestionGenerationTool({
     }
   }
 
+  // One button for the whole topic. The first click writes every concept's
+  // questions; after that it is "Generate more", which adds a batch only to
+  // the concepts still short of the minimum. It never replaces questions.
+  const hasGenerated = learningObjects.some((item) => (item.questions || []).some(
+    (question) => (question.source_type || "pdf") === "generated",
+  ));
+  const isShort = (item) => isShortOfQuestions(item.questions);
+  const targets = learningObjects.filter(
+    (item) => item.canGenerate && (!hasGenerated || isShort(item)),
+  );
+
+  // One click keeps going: after each round, the concepts still short of the
+  // minimum run again, up to GENERATION_ROUNDS rounds. Same cost as clicking
+  // that many times, but the teacher clicks once.
   async function handleGenerateAll() {
-    const eligibleObjects = learningObjects.filter((item) => item.canGenerate);
-    if (!eligibleObjects.length) return;
+    if (!targets.length) return;
     setGeneratingKey("all");
     onError("");
-    onMessage("Generating one question bank from the Normal version of each concept.");
+    const failed = [];
+    let carried = [];
+    let roundTargets = targets;
     try {
-      let carried = [];
-      for (let index = 0; index < eligibleObjects.length; index += 1) {
-        const item = eligibleObjects[index];
-        setOuterProgress({
-          index: index + 1,
-          total: eligibleObjects.length,
-          label: item.conceptLabel,
-        });
-        const started = await startQuestionGeneration(item.material, item.id);
-        carried = [...carried, ...await waitForGeneration(started.run_id, carried)];
+      for (let round = 1; round <= GENERATION_ROUNDS && roundTargets.length; round += 1) {
+        onMessage(round === 1 && !hasGenerated
+          ? "Generating questions from the Normal version of each concept."
+          : `Round ${round} of ${GENERATION_ROUNDS}: adding questions to the ${roundTargets.length} concept${roundTargets.length === 1 ? "" : "s"} still short of ${MIN_TEXT}.`);
+        let latest = null;
+        for (let index = 0; index < roundTargets.length; index += 1) {
+          const item = roundTargets[index];
+          setOuterProgress({
+            index: index + 1,
+            total: roundTargets.length,
+            label: GENERATION_ROUNDS > 1 ? `${item.conceptLabel} (round ${round} of ${GENERATION_ROUNDS})` : item.conceptLabel,
+          });
+          // One concept failing does not stop the others -- except when the
+          // server already has a run going (started before a page reload, or
+          // in another tab): every concept would be refused the same way.
+          try {
+            const started = await startQuestionGeneration(item.material, item.id, { append: true });
+            carried = [...carried, ...await waitForGeneration(started.run_id, carried)];
+          } catch (err) {
+            if (/already in progress/i.test(err.message)) {
+              throw new Error(
+                "A question generation is already running for this topic, started before a page "
+                + "reload or in another tab. Wait a few minutes for it to finish, then reload the page.",
+              );
+            }
+            failed.push(`${item.conceptLabel}: ${err.message}`);
+          }
+          // Reloaded after every concept, so the counters move as each one
+          // finishes and stay right even if a later one fails.
+          latest = await fetchLearningResources(courseId, topicId);
+          onResourcesChange(latest);
+        }
+        // The next round is decided from what the server now holds, not from
+        // this screen's copy, which predates the round.
+        const stillShort = new Set(
+          (latest?.learning_object_groups || [])
+            .filter((group) => isShortOfQuestions(group.questions))
+            .map((group) => group.id),
+        );
+        roundTargets = roundTargets.filter(
+          (item) => stillShort.has(item.groupId) && !failed.some((line) => line.startsWith(`${item.conceptLabel}:`)),
+        );
       }
-      onResourcesChange(await fetchLearningResources(courseId, topicId));
       onMessage("");
+      const problems = [];
+      if (failed.length) {
+        problems.push(`Questions could not be generated for ${failed.length} concept${failed.length === 1 ? "" : "s"}: ${failed.join("; ")}`);
+      }
+      if (roundTargets.length) {
+        problems.push(
+          `After ${GENERATION_ROUNDS} rounds, ${roundTargets.length} concept${roundTargets.length === 1 ? " is" : "s are"} still short of ${MIN_TEXT}: `
+          + `${roundTargets.map((item) => item.conceptLabel).join(", ")}. Click Generate more to try again, or add questions in the Manual tab.`,
+        );
+      }
+      if (problems.length) onError(problems.join(" "));
     } catch (err) {
       onError(err.message);
     } finally {
@@ -1367,8 +1485,20 @@ function QuestionGenerationTool({
           <span className="connection-eyebrow">AI question generator</span>
           <h4>Learning objects</h4>
         </div>
-        <button type="button" className="btn btn-primary" disabled={Boolean(generatingKey) || !learningObjects.some((item) => item.canGenerate)} onClick={handleGenerateAll}>
-          {generatingKey === "all" ? "Generating all…" : "Generate all questions"}
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={Boolean(generatingKey) || !targets.length}
+          title={hasGenerated && !targets.length ? `Every concept has ${MIN_TEXT}.` : undefined}
+          onClick={handleGenerateAll}
+        >
+          {generatingKey === "all"
+            ? "Generating…"
+            : !hasGenerated
+              ? "Generate questions"
+              : targets.length
+                ? `Generate more (${targets.length} concept${targets.length === 1 ? "" : "s"})`
+                : "All concepts complete"}
         </button>
       </div>
       {outerProgress && (
@@ -1398,7 +1528,6 @@ function QuestionGenerationTool({
         <div className="question-learning-object-list">
           {learningObjects.map((item) => {
             const material = materialById.get(Number(item.material));
-            const isGenerating = generatingKey === `object-${item.id}`;
             // Questions that came out of this concept. PDF-extracted ones are
             // the sidebar's business; these belong with what produced them.
             const produced = (item.questions || []).filter(
@@ -1409,14 +1538,16 @@ function QuestionGenerationTool({
                 <div className="question-learning-object-main">
                   <div className="question-learning-object-copy">
                     <div className="question-learning-object-title">
-                      <div><small>{item.conceptLabel}</small><strong>{item.title}</strong></div>
+                      <div><strong>{item.conceptLabel}</strong></div>
                     </div>
-                    <FormattedLearningObjectContent content={item.content} className="question-learning-object-preview" />
+                    {(item.normalParts || []).length > 1
+                      ? <BundleParts parts={item.normalParts} className="question-learning-object-preview" />
+                      : <FormattedLearningObjectContent content={item.content} className="question-learning-object-preview" />}
                     <small>Normal source: {material?.filename || material?.title || `PDF ${item.material}`}</small>
                   </div>
-                  <button type="button" className="btn btn-secondary" disabled={Boolean(generatingKey) || !item.canGenerate} onClick={() => handleGenerateObject(item)}>
-                    {isGenerating ? "Generating…" : item.canGenerate ? "Generate questions" : "Normal classification required"}
-                  </button>
+                  {!item.canGenerate && (
+                    <small className="muted-text">Waiting for its Normal version to be classified</small>
+                  )}
                 </div>
                 {item.questionsOutOfDate && (
                   <div className="version-slot-stale" role="alert">
@@ -1447,9 +1578,15 @@ function QuestionGenerationTool({
                   </div>
                 )}
                 <div className="question-learning-object-questions">
-                  <h5>
-                    {produced.length} generated question{produced.length === 1 ? "" : "s"}
-                  </h5>
+                  <div className="question-bank-head">
+                    <h5>
+                      {produced.length} generated question{produced.length === 1 ? "" : "s"}
+                    </h5>
+                    <div className="tier-counters">
+                      <TierCounter label="LOTS" count={tierCounts(item.questions).LOT} needed={MIN_QUESTIONS.LOT} />
+                      <TierCounter label="HOTS" count={tierCounts(item.questions).HOT} needed={MIN_QUESTIONS.HOT} />
+                    </div>
+                  </div>
                   {!produced.length ? (
                     <p className="question-learning-object-empty">
                       Nothing generated from this concept yet.
@@ -1795,6 +1932,11 @@ function ManualQuestionPanel({
 // hung one. Showing which stage is working, how far through it is, and what
 // failed is the difference between "slow" and "stuck" -- so all of them report
 // through this one component instead of each inventing its own.
+// Problems the run handles itself -- one model attempt failing and being
+// retried, a malformed reply, a rate-limit refusal -- are for whoever reads the
+// server terminal, not the teacher. The run's own outcome still shows.
+const TERMINAL_ONLY_EVENTS = new Set(["question_generation_attempt_failed"]);
+
 function RunProgress({
   events,
   running,
@@ -1830,7 +1972,8 @@ function RunProgress({
   // failures appear here without having to be registered first.
   const failures = events.filter(
     (event) =>
-      event.event_type === "error" || (event.event_type || "").endsWith("_failed"),
+      !TERMINAL_ONLY_EVENTS.has(event.event_type)
+      && (event.event_type === "error" || (event.event_type || "").endsWith("_failed")),
   );
   // A caller-supplied position describes the loop the teacher is waiting on;
   // the events describe only the run in flight. Prefer the caller's -- and when
@@ -2392,7 +2535,7 @@ function LearningObjectConnections({
   const gaps = contentGaps(groups, allQuestionPairings);
   useEffect(() => {
     if (resources) onGapsChange(gaps);
-  }, [resources, gaps.ready, gaps.missingVersions, gaps.missingQuestions, gaps.outOfDateQuestions, gaps.unlabelledQuestions]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resources, gaps.ready, gaps.missingVersions, gaps.shortQuestions, gaps.outOfDateQuestions, gaps.unlabelledQuestions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Printed questions are labelled when the Questions step opens, so every
   // question process happens on that screen. A failure stays on screen with
@@ -4636,8 +4779,8 @@ function LearningPathButton({ gaps, onOpen }) {
     if (gaps.missingVersions) {
       parts.push(`${gaps.missingVersions} concept${gaps.missingVersions === 1 ? " needs" : "s need"} a Simplified or Elaborated version`);
     }
-    if (gaps.missingQuestions) {
-      parts.push(`${gaps.missingQuestions} concept${gaps.missingQuestions === 1 ? " has" : "s have"} no questions yet`);
+    if (gaps.shortQuestions) {
+      parts.push(`${gaps.shortQuestions} concept${gaps.shortQuestions === 1 ? " has" : "s have"} fewer than ${MIN_TEXT} questions`);
     }
     if (gaps.unlabelledQuestions) {
       parts.push(`${gaps.unlabelledQuestions} printed question${gaps.unlabelledQuestions === 1 ? " needs" : "s need"} labelling in the Questions step`);

@@ -4,6 +4,8 @@
 // graph's corner without a backdrop, so the highlighted neighbours stay visible.
 import { useEffect } from "react";
 
+import BundleParts from "./BundleParts";
+
 export default function ConceptDetails({ step, dependents = [], editable = false, busy = false, onRemove, onAccept, onReject, onClose }) {
   useEffect(() => {
     if (!step) return undefined;
@@ -27,7 +29,7 @@ export default function ConceptDetails({ step, dependents = [], editable = false
           Close
         </button>
       </header>
-      {step.content && <p className="pg-details-text">{step.content}</p>}
+      <BundleParts parts={step.parts} fallback={step.content} className="pg-details-text" />
       {sources.length > 0 && (
         <p className="pg-details-sources">From: {sources.map((source) => source.title).join(", ")}</p>
       )}

@@ -44,4 +44,18 @@ describe("publishedClips", () => {
   it("is empty when nothing was published", () => {
     expect(publishedClips(null)).toEqual([]);
   });
+
+  it("gives each learning object its own named clip", () => {
+    const step = {
+      position: 1, title: "Comparing the Three States",
+      versions: { normal: { segments: [
+        { text: "a", audio_url: "/media/1.mp3", title: "Shape" },
+        { text: "b", audio_url: "/media/2.mp3", title: "Volume" },
+      ] } },
+    };
+    expect(publishedClips({ steps: [step] })[0].parts).toEqual([
+      { url: "/media/1.mp3", title: "Shape" },
+      { url: "/media/2.mp3", title: "Volume" },
+    ]);
+  });
 });

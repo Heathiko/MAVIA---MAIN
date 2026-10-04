@@ -547,11 +547,17 @@ export function keepVersionText(courseId, nodeId, variantId) {
   });
 }
 
-export function startQuestionGeneration(materialId, learningObjectId = null) {
+// `append` is "Generate more": a new batch is added to the concept's
+// questions instead of replacing the untouched ones.
+export function startQuestionGeneration(materialId, learningObjectId = null, { append = false } = {}) {
   const path = learningObjectId
     ? `/generation/materials/${materialId}/nodes/${learningObjectId}/start/`
     : `/generation/materials/${materialId}/start/`;
-  return request(path, { method: "POST" });
+  return request(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(append ? { append: true } : {}),
+  });
 }
 
 export function updateTopicQuestion(courseId, nodeId, questionId, data) {

@@ -7,12 +7,17 @@ export function publishedClips(published) {
     .sort((a, b) => a.position - b.position)
     .map((step) => {
       const segments = step.versions?.normal?.segments || [];
-      const clips = segments.map((segment) => segment.audio_url).filter(Boolean);
+      // One playable clip per learning object of the Normal version, each
+      // named for the object it speaks for.
+      const parts = segments
+        .filter((segment) => segment.audio_url)
+        .map((segment) => ({ url: segment.audio_url, title: segment.title || "" }));
       return {
         position: step.position,
         title: step.title,
-        clips,
-        missing: segments.length - clips.length,
+        clips: parts.map((part) => part.url),
+        parts,
+        missing: segments.length - parts.length,
       };
     });
 }

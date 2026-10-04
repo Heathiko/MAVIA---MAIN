@@ -6205,9 +6205,9 @@ button {
 }
 .question-learning-object-title > div { display: grid; gap: 0.15rem; }
 .question-learning-object-title small { color: #51708f; }
+/* Shown whole: it is the concept's Normal version, every object of it, and
+   cutting it at a fixed height hid all but the first one. */
 .question-learning-object-preview {
-  max-height: 5.2rem;
-  overflow: hidden;
   color: #40556d;
   font-size: 0.88rem;
   line-height: 1.5;

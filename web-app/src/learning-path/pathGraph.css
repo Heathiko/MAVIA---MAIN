@@ -279,3 +279,7 @@
 /* The side connection points exist only to anchor lane links. */
 .pg-node .pg-lane-handle { opacity: 0; pointer-events: none; }
 .pg-spacer { width: 1px; height: 1px; }
+
+/* Published dialog: one labelled player per learning object of a concept. */
+.pub-parts { display: grid; gap: 0.5rem; }
+.pub-part-label { display: block; margin-bottom: 0.2rem; font-weight: 600; color: var(--muted, #5c6b7c); }

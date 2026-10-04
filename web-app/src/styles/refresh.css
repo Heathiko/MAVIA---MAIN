@@ -745,3 +745,74 @@ body {
   text-decoration: underline dotted;
   cursor: help;
 }
+
+/* LOTS/HOTS counters on each concept in the Questions step. */
+.question-bank-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.question-bank-head h5 {
+  margin: 0;
+}
+
+.tier-counters {
+  display: grid;
+  justify-items: end;
+  gap: 0.35rem;
+}
+
+.tier-counter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--mv-muted);
+}
+
+.tier-counter-boxes {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+
+.tier-box {
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 1.5px solid #c9d1e0;
+  border-radius: 3px;
+  background: #ffffff;
+}
+
+.tier-box.is-one { border-color: #c0392b; background: #e05545; }
+.tier-box.is-two { border-color: #b7791f; background: #f2c14e; }
+.tier-box.is-enough { border-color: #1f7a45; background: #34a565; }
+
+.tier-counter-extra {
+  min-width: 1rem;
+  color: var(--mv-ink, #1f2a37);
+  font-weight: 700;
+}
+
+/* A concept's Normal version, one numbered, titled entry per learning object.
+   Shared by the learning path card, Content versions and the Questions step. */
+.bundle-parts {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0.25rem 0 0.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.bundle-parts strong {
+  display: block;
+  font-size: 0.9rem;
+}
+
+.bundle-parts p {
+  margin: 0.15rem 0 0;
+  line-height: 1.5;
+}
