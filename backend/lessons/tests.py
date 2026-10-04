@@ -1564,7 +1564,6 @@ class LearningResourceRelationshipTests(TestCase):
             "representative_id": None,
             "assigned": [],
             "needs_confirmation": [],
-            "extras": 0,
             "generated": ["SIMPLIFIED", "ELABORATED"],
             "errors": [],
         },
@@ -1617,6 +1616,16 @@ class LearningResourceRelationshipTests(TestCase):
         # Publish settles each group in the topic rather than calling the
         # standalone generator once for the node.
         settle_group_mock.assert_called_once()
+
+        settle_group_mock.return_value["needs_confirmation"] = [{
+            "learning_object_id": material.learning_objects.get().id,
+        }]
+        blocked = run_topic_publish(
+            self.course, self.node, set_confirmed=lambda item: None
+        )
+        self.node.refresh_from_db()
+        self.assertFalse(self.node.published)
+        self.assertTrue(blocked["adaptive_variant_errors"])
 
     def test_course_outline_upload_rejects_non_pdf(self):
         client = authenticated_api_client()

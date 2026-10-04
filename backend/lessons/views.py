@@ -29,6 +29,7 @@ from course.version_assignment import (
     assign_group_versions,
     assign_source_as_representative,
     assign_source_to_slot,
+    bundle_roles,
     bundle_role_provenance,
     prune_bundle_role,
     release_from_group,
@@ -344,7 +345,21 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             for objects in display_bundles.values():
                 objects.sort(key=lambda item: (item.order, item.id))
             slot_rows = {}
-            extra_rows = []
+            archived_unassigned = []
+            seen_archived_ids = set()
+            for item in learning_objects:
+                for saved in (item.material.generated_json or {}).get("legacy_unassigned_versions") or []:
+                    if saved.get("learning_object_id") != item.id:
+                        continue
+                    old_id = saved.get("old_variant_id")
+                    if old_id in seen_archived_ids:
+                        continue
+                    seen_archived_ids.add(old_id)
+                    archived_unassigned.append({
+                        "old_variant_id": old_id,
+                        "learning_object_id": item.id,
+                        "text": saved.get("narration") or "",
+                    })
             # A version a PDF supplies *is* its bundle's objects -- nothing is
             # copied into a LessonVariant row -- so the roles are read first and
             # the variant table only fills what was generated. Reading the table
@@ -413,10 +428,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     # it cannot go stale the way a generated version does.
                     "stale": False,
                 }
-                if role == "EXTRA":
-                    extra_rows.append(entry)
-                else:
-                    slot_rows[role.lower()] = entry
+                slot_rows[role.lower()] = entry
 
             if normal_objects:
                 # A generated version is written one object of the Normal
@@ -429,26 +441,18 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     generated[row.variant].append(row)
                 for variant, rows in generated.items():
                     rows.sort(key=lambda row: position.get(row.learning_object_id, len(position)))
-                    if variant == "EXTRA":
-                        # Extras are kept for the learning-path component to
-                        # rule on; they are not one of the three slots a
-                        # student is offered, so they travel as their own list.
-                        extra_rows.extend({
-                            "id": row.id,
-                            "text": row.narration,
-                            "origin": row.origin,
-                            "source": "generated",
-                            "assigned_by": row.assigned_by,
-                            "source_learning_object_id": row.source_learning_object_id,
-                            "objects": object_rows([by_id[row.learning_object_id]]),
-                            "stale": False,
-                        } for row in rows)
+                    if variant not in ("SIMPLIFIED", "ELABORATED"):
                         continue
                     # A version short of its bundle is reported missing rather
                     # than served: three quarters of a version reads as a whole
                     # one to a learner who cannot see the page.
                     if len(rows) < len(normal_objects):
                         continue
+                    fallback_count = sum(
+                        row.generator_model == NORMAL_FALLBACK_GENERATOR
+                        and row.assigned_by != LessonVariant.AssignedBy.TEACHER
+                        for row in rows
+                    )
                     entry = {
                         # The first segment's row, so the existing edit and
                         # regenerate controls keep working unchanged.
@@ -472,15 +476,12 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                             }
                             for row in rows
                         ],
-                        # No generated version passed the quality check, so this
-                        # level holds the Normal text (BUG-002). Publishing is
-                        # not held back; the teacher is told, and may write an
-                        # explanation of their own, which clears the warning.
-                        "fallback": any(
-                            row.generator_model == NORMAL_FALLBACK_GENERATOR
-                            and row.assigned_by != LessonVariant.AssignedBy.TEACHER
-                            for row in rows
-                        ),
+                        # A failed segment keeps its own Normal text. Other
+                        # segments may have passed, so report how many fell
+                        # back instead of describing the entire slot as Normal.
+                        "fallback": fallback_count > 0,
+                        "fallback_count": fallback_count,
+                        "segment_count": len(rows),
                         # Written from different text than the object has now.
                         # Publishing refuses these until a teacher checks them.
                         "stale": any(
@@ -502,9 +503,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     "versions": {
                         "representative_id": version_state["representative_id"],
                         "original_selected": version_state.get("original_selected", False),
+                        "normal_replacement_needed": version_state.get("normal_replacement_needed", False),
                         "classification_complete": version_state.get("classification_complete", True),
                         "slots": slot_rows,
-                        "extras": extra_rows,
+                        "archived_unassigned": archived_unassigned,
                         "needs_confirmation": version_state["needs_confirmation"],
                         # A primary role counts as done whether a PDF supplies
                         # it or a generator wrote it.
@@ -1906,9 +1908,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Outline node not found."}, status=status.HTTP_404_NOT_FOUND)
 
         slot = str(request.data.get("slot", "")).upper()
-        if slot not in ("NORMAL", "SIMPLIFIED", "ELABORATED", "EXTRA"):
+        if slot not in ("NORMAL", "SIMPLIFIED", "ELABORATED"):
             return Response(
-                {"detail": "slot must be NORMAL, SIMPLIFIED, ELABORATED or EXTRA."},
+                {"detail": "slot must be NORMAL, SIMPLIFIED or ELABORATED."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1931,9 +1933,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
 
         state = assign_group_versions(learning_object.group)
         representative_id = state["representative_id"]
-        if representative_id is None:
+        if representative_id is None and slot != "NORMAL":
             return Response(
-                {"detail": "This concept has no Normal version."},
+                {"detail": "Choose a replacement Normal PDF first."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1943,10 +1945,14 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             except ValueError as exc:
                 return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
             payload = self._learning_resources_payload(node, request)
+            learning_object.group.refresh_from_db(fields=["version_selection"])
+            old_normal_needs_review = (
+                state["normal_material_id"] not in bundle_roles(learning_object.group)
+            )
             payload["version_assignment"] = {
                 "slot": slot,
                 "source_learning_object_id": learning_object.id,
-                "moved_to_extra": None,
+                "needs_review": representative_id if old_normal_needs_review else None,
             }
             return Response(payload)
 
@@ -1966,7 +1972,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         payload["version_assignment"] = {
             "slot": slot,
             "source_learning_object_id": learning_object.id,
-            "moved_to_extra": displaced_id if displaced_id != learning_object.id else None,
+            "needs_review": displaced_id if displaced_id != learning_object.id else None,
         }
         return Response(payload)
 

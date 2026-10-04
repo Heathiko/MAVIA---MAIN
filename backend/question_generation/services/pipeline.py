@@ -162,19 +162,6 @@ def _print_material_summary(material, node_count, all_questions, stats):
     )
 
 
-# The one role a learner is never served. EXTRA is excluded everywhere else
-# that builds a version -- learning_path/services/published.py::_versions and
-# course/services.py::_build_chunk both skip it -- so it is not text to write
-# questions about either.
-#
-# Stated as what to exclude rather than what to include, because a bundle
-# whose role has not been classified yet is still a telling the learner may
-# be served once it is. Reading only the assigned roles (via version_bundles)
-# left such a concept generating from its Normal bundle alone -- the very bug
-# this widening exists to fix.
-UNSERVED_VERSION_ROLE = "EXTRA"
-
-
 def concept_source_text(node):
     """The text a concept's questions are written from: every telling of it.
 
@@ -226,26 +213,11 @@ def concept_source_text(node):
         key=lambda material_id: (rank.get(material_id, len(rank)), material_id),
     )
 
-    objects, unclassified = [], []
+    objects = []
     for material_id in [normal_id, *others]:
-        if roles.get(material_id) == UNSERVED_VERSION_ROLE:
-            continue
         if material_id != normal_id and material_id not in roles:
-            unclassified.append(material_id)
+            continue
         objects.extend(bundles.get(material_id) or [])
-
-    if unclassified:
-        # The EXTRA check above can only fire once a role is stored, and roles
-        # are written by the versions step, which nothing orders before this
-        # one. A bundle classified EXTRA later is text no learner hears, but
-        # its questions are already final by then. Nothing downstream reports
-        # that, so the run trace has to.
-        logger.info(
-            "[Questions] %s  PDF(s) %s have no assigned version role and "
-            "are feeding question generation; if the versions step later "
-            "marks one EXTRA, regenerate this concept's bank",
-            name(group.label), ", ".join(str(item) for item in unclassified),
-        )
     return bundle_text(objects) or (node.content or "")
 
 
@@ -596,7 +568,7 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
     with transaction.atomic():
         # A concept owns one question bank, grounded in its Normal source.
         # When that bank is regenerated, remove older generated banks attached
-        # to Simplified, Elaborated, or Extra source objects in the same group.
+        # to other source objects in the same group.
         # Questions the teacher edited are kept through a regeneration, next
         # to the new ones -- an older bank's included, moved to this one.
         edited = Q(teacher_question__teacher_edited=True)
