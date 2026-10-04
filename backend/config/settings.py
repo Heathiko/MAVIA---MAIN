@@ -236,7 +236,9 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-repl
 #     moondream, qwen2-vl, llama3.2-vision …). Must be pulled: `ollama pull …`
 #   IMAGE_DESCRIPTION_ENABLED=False turns the feature off outright.
 # ---------------------------------------------------------------------------
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+# Every LLM process runs on Groq. The Ollama paths are kept, dormant, for a
+# return to local inference: set LLM_PROVIDER=ollama to use them.
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").strip().lower()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_ADDITIONAL_API_KEYS = tuple(

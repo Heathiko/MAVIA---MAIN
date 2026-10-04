@@ -204,7 +204,7 @@ class GroqClientTests(SimpleTestCase):
         self.assertTrue(response_format["json_schema"]["strict"])
         self.assertFalse(response_format["json_schema"]["schema"]["additionalProperties"])
 
-    @override_settings(GROQ_API_KEY="")
+    @override_settings(GROQ_API_KEY="", GROQ_ADDITIONAL_API_KEYS="")
     def test_missing_key_stops_before_request(self):
         with patch("config.groq_client.requests.post") as post:
             with self.assertRaisesRegex(ValueError, "GROQ_API_KEY"):
