@@ -20,6 +20,7 @@ from lessons.models import (
 )
 from .instructional_content_classifier import detect_instructional_document_role
 from .question_workflow import (
+    LABEL_FIELDS,
     duplicate_in_topic,
     enriched_question_values,
     parse_question_structure,
@@ -579,7 +580,8 @@ def detected_question_payloads(classified_blocks: list[dict]) -> list[dict]:
         ):
             excerpt = block.get("text") or prompt
             structure = parse_question_structure(prompt, excerpt)
-            values = enriched_question_values(**structure)
+            # Labelled in the Questions step, not at upload.
+            values = enriched_question_values(**structure, classify=False)
             fingerprint = values["content_fingerprint"]
             if not fingerprint or fingerprint in seen_fingerprints:
                 continue
@@ -751,7 +753,7 @@ def attach_orphan_objects_to_their_section(material: LearningMaterial) -> list[i
     named_after_section = {}
     for item in siblings:
         section = (item.section_title or "").strip()
-        if sizes[item.group_id] > 1:
+        if sizes[item.group_id] > 1 or item.kept_apart_from_section:
             continue
         # A later piece of one split passage ("What Is Matter? (Part 2 of 2)")
         # is the same passage as its first piece: it follows that piece into
@@ -1548,7 +1550,7 @@ def synchronize_detected_questions(material: LearningMaterial, classified_blocks
     payloads = detected_question_payloads(classified_blocks)
     if payloads:
         logger.info(
-            "[Upload] PDF %s  %s question(s) printed in the PDF found and labelled LOTS/HOTS",
+            "[Upload] PDF %s  %s question(s) printed in the PDF found; labelled later, in the Questions step",
             material.id, len(payloads),
         )
     for order, payload in enumerate(payloads):
@@ -1563,10 +1565,16 @@ def synchronize_detected_questions(material: LearningMaterial, classified_blocks
             # one canonical row instead of copying it into every uploaded PDF.
             continue
         else:
-            for field, value in payload.items():
-                setattr(question, field, value)
+            # The same text, so a label it already has still holds; the
+            # payload's labels are blank only because labelling is deferred.
+            fields = [
+                field for field, value in payload.items()
+                if not (field in LABEL_FIELDS and not value)
+            ]
+            for field in fields:
+                setattr(question, field, payload[field])
             question.order = order
-            question.save(update_fields=[*payload.keys(), "order"])
+            question.save(update_fields=[*fields, "order"])
         retained_ids.append(question.id)
     # Only questions this sync owns -- the ones extracted from the PDF -- can go
     # stale here. Generated and manually written questions never appear in the

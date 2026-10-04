@@ -6,6 +6,7 @@ from math import ceil
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 
 from config.console import name
 from .bloom_classifier import BloomClassifier
@@ -596,10 +597,16 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
         # A concept owns one question bank, grounded in its Normal source.
         # When that bank is regenerated, remove older generated banks attached
         # to Simplified, Elaborated, or Extra source objects in the same group.
+        # Questions the teacher edited are kept through a regeneration, next
+        # to the new ones -- an older bank's included, moved to this one.
+        edited = Q(teacher_question__teacher_edited=True)
         if node.group_id:
+            GeneratedQuestion.objects.filter(
+                edited, node__group_id=node.group_id, status="final",
+            ).exclude(node=node).update(node=node)
             obsolete = GeneratedQuestion.objects.filter(
                 node__group_id=node.group_id,
-            ).exclude(node=node)
+            ).exclude(node=node).exclude(edited)
             obsolete_ids = list(obsolete.values_list("id", flat=True))
             if obsolete_ids:
                 from lessons.models import Question
@@ -611,12 +618,26 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
 
         # the previous run's questions are replaced only now, once this run
         # actually has something to replace them with
-        replaced, _ = GeneratedQuestion.objects.filter(node=node, status="final").delete()
+        replaced, _ = (
+            GeneratedQuestion.objects.filter(node=node, status="final").exclude(edited).delete()
+        )
         if reject_ids:
             GeneratedQuestion.objects.filter(id__in=reject_ids).delete()
+        # Stamped with the text the bank was written from, so a later change
+        # to the concept shows the bank as out of date. Kept edited questions
+        # join the new bank, so they carry its stamps too.
+        from .bank_status import text_fingerprint
+        source_stamp = text_fingerprint(concept_source_text(node))
+        for question in keep:
+            question.source_text_fingerprint = source_stamp
         GeneratedQuestion.objects.bulk_update(
-            keep, ["bloom_level", "thinking_order", "category", "status"]
+            keep, ["bloom_level", "thinking_order", "category", "status", "source_text_fingerprint"]
         )
+        if keep:
+            GeneratedQuestion.objects.filter(edited, node=node, status="final").update(
+                source_text_fingerprint=source_stamp,
+                generation_fingerprint=keep[0].generation_fingerprint,
+            )
 
         material = node.material
         generated_json = material.generated_json or {}

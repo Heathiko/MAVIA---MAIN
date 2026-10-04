@@ -231,6 +231,23 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
             learning_object_ids=incomplete_versions,
         )
 
+    # A bank written before its concept's text changed may ask about text
+    # that is gone. Publishing waits until the teacher keeps or regenerates it.
+    from question_generation.services.bank_status import out_of_date_groups
+
+    stale_banks = [group.id for group in out_of_date_groups(node)]
+    if stale_banks:
+        names = [
+            group.label or "Untitled concept"
+            for group in node.learning_object_groups.filter(id__in=stale_banks)
+        ]
+        emit(
+            "questions_out_of_date_failed",
+            f"{len(stale_banks)} concept(s) have questions written before their text changed: "
+            f"{', '.join(names)}. Keep or regenerate them in the Questions step.",
+            group_ids=stale_banks,
+        )
+
     audio_generated = 0
     audio_errors = []
     for index, material in enumerate(materials, start=1):
@@ -264,7 +281,7 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
                 index=index, total=len(materials), material_id=material.id,
             )
 
-    ready = not (image_errors or variant_errors or incomplete_versions or audio_errors)
+    ready = not (image_errors or variant_errors or incomplete_versions or stale_banks or audio_errors)
 
     # The learning path is saved only when everything else succeeded, so the
     # saved path always matches what students can see. A failure here keeps the
@@ -305,6 +322,7 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
         "adaptive_variants_generated": len(variant_generated),
         "adaptive_variant_errors": variant_errors,
         "incomplete_versions": incomplete_versions,
+        "out_of_date_question_banks": stale_banks,
         "image_descriptions_generated": image_generated,
         "image_description_errors": image_errors,
         "learning_path": path_summary,

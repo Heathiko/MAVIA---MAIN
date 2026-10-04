@@ -11,6 +11,8 @@ import {
   createTopicQuestion,
   deleteLearningMaterial,
   deleteLearningObject,
+  keepQuestionBank,
+  labelTopicQuestions,
   deleteTopicLearningObject,
   deleteTopicQuestion,
   fetchCourse,
@@ -456,7 +458,12 @@ export const VERSION_ROLES = [
 // What still stands between the teacher and the learning path: concepts
 // missing a Simplified or Elaborated version, and concepts with no question.
 // The Question pairs step waits on the first; the Learning path button on both.
-export function contentGaps(groups) {
+// A printed question still waiting for its Bloom level, LOTS/HOTS and category.
+export function isUnlabelled(question) {
+  return (question.source_type || "pdf") === "pdf" && !question.bloom_level;
+}
+
+export function contentGaps(groups, questions = []) {
   const concepts = (groups || []).filter((group) => group.versions?.representative_id);
   const missingVersions = concepts.filter((group) => (
     group.versions?.classification_complete === false
@@ -464,10 +471,15 @@ export function contentGaps(groups) {
     || !group.versions?.slots?.elaborated
   )).length;
   const missingQuestions = concepts.filter((group) => !group.questions?.length).length;
+  const outOfDateQuestions = concepts.filter((group) => group.question_bank_out_of_date).length;
+  const unlabelledQuestions = questions.filter(isUnlabelled).length;
   return {
     missingVersions,
     missingQuestions,
-    ready: concepts.length > 0 && missingVersions === 0 && missingQuestions === 0,
+    outOfDateQuestions,
+    unlabelledQuestions,
+    ready: concepts.length > 0 && missingVersions === 0 && missingQuestions === 0
+      && outOfDateQuestions === 0 && unlabelledQuestions === 0,
   };
 }
 
@@ -511,6 +523,11 @@ export function questionReviewState(question) {
   return { status, isPending, label };
 }
 
+// Why a question rated "create" stays out of the learner quiz.
+const NOT_SERVED_TIP = "MAVIA maps Bloom's levels to the learner quiz's two tiers: remember, "
+  + "understand and apply are LOTS; analyze and evaluate are HOTS. \u201cCreate\u201d has no tier "
+  + "in the quiz, so by default these questions stay in your bank but are not given to learners.";
+
 function ReviewQueuePanel({
   questionPairings,
   groups,
@@ -519,6 +536,9 @@ function ReviewQueuePanel({
   onReviewStepChange,
   generationProps,
   manualPanel,
+  unlabelledCount = 0,
+  labelling = { running: false, error: "" },
+  onRetryLabelling,
 }) {
   // Both views stay mounted so a running generation or a half-written
   // question survives switching tabs.
@@ -534,6 +554,20 @@ function ReviewQueuePanel({
         <span className="connection-source-count">{questionPairings.length} question{questionPairings.length === 1 ? "" : "s"}</span>
       </div>
 
+      {labelling.running && (
+        <p role="status" className="connection-unpublished-note">
+          Labelling {unlabelledCount} printed question{unlabelledCount === 1 ? "" : "s"} with
+          their Bloom level, LOTS/HOTS and category…
+        </p>
+      )}
+      {labelling.error && (
+        <div className="error-banner" role="alert">
+          {labelling.error}{" "}
+          <button type="button" className="btn btn-small btn-secondary" onClick={onRetryLabelling}>
+            Try again
+          </button>
+        </div>
+      )}
       <div className="question-mode-tabs" role="tablist" aria-label="How to add questions">
         {[["generate", "Generate"], ["manual", "Manual"]].map(([key, label]) => (
           <button
@@ -579,10 +613,16 @@ function ReviewQueuePanel({
         >
           Back to object pairs
         </button>
+        {unlabelledCount > 0 && (
+          <small className="review-step-dock-note">
+            {unlabelledCount} printed question{unlabelledCount === 1 ? " still needs" : "s still need"} labelling
+          </small>
+        )}
         <button
           type="button"
           className="btn btn-primary"
-          disabled={Boolean(busyAction)}
+          disabled={Boolean(busyAction) || unlabelledCount > 0 || labelling.running}
+          title={unlabelledCount > 0 ? "Every printed question has to be labelled first." : undefined}
           onClick={() => onReviewStepChange("publish")}
         >
           Next: Final Review
@@ -1184,6 +1224,8 @@ function QuestionGenerationTool({
         // Spreading the representative alone dropped these, which is why the
         // board could only ever say "generating" and never "here is the result".
         questions: group.questions || [],
+        groupId: group.id,
+        questionsOutOfDate: Boolean(group.question_bank_out_of_date),
         canGenerate: Boolean(
           representative.content?.trim()
           && group.versions?.classification_complete !== false,
@@ -1235,6 +1277,19 @@ function QuestionGenerationTool({
       await waitForGeneration(started.run_id);
       onResourcesChange(await fetchLearningResources(courseId, topicId));
       onMessage(`Questions for “${item.title}” were generated, classified as LOTS/HOTS, and saved.`);
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setGeneratingKey("");
+    }
+  }
+
+  async function handleKeepBank(item) {
+    setGeneratingKey(`keep-${item.groupId}`);
+    onError("");
+    try {
+      onResourcesChange(await keepQuestionBank(courseId, topicId, item.groupId));
+      onMessage(`Kept the questions for “${item.conceptLabel}” as they are.`);
     } catch (err) {
       onError(err.message);
     } finally {
@@ -1328,6 +1383,34 @@ function QuestionGenerationTool({
                     {isGenerating ? "Generating…" : item.canGenerate ? "Generate questions" : "Normal classification required"}
                   </button>
                 </div>
+                {item.questionsOutOfDate && (
+                  <div className="version-slot-stale" role="alert">
+                    <strong>Check these questions</strong>
+                    <p>
+                      This concept's text changed after its questions were written, so some may ask
+                      about text that is no longer there. Publishing waits until you decide.
+                      Questions you edited are kept if you regenerate.
+                    </p>
+                    <div className="version-slot-actions">
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-small"
+                        disabled={Boolean(generatingKey)}
+                        onClick={() => handleKeepBank(item)}
+                      >
+                        {generatingKey === `keep-${item.groupId}` ? "Keeping..." : "Keep as is"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-small"
+                        disabled={Boolean(generatingKey) || !item.canGenerate}
+                        onClick={() => handleGenerateObject(item)}
+                      >
+                        Regenerate
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="question-learning-object-questions">
                   <h5>
                     {produced.length} generated question{produced.length === 1 ? "" : "s"}
@@ -1506,6 +1589,11 @@ function ManualQuestionPanel({
                       {question.source_type === "manual" ? "Manual" : question.source_type === "generated" ? "Generated" : "PDF"}
                     </span>
                     {question.thinking_order && <span className="question-thinking-pill">{question.thinking_order}</span>}
+                    {question.bloom_level && !question.thinking_order && (
+                      <span className="has-tip question-not-served" data-tip={NOT_SERVED_TIP} tabIndex={0}>
+                        Not given to learners
+                      </span>
+                    )}
                     {question.category && (
                       <span className={`question-category-pill ${categoryPillClass(question.category)}`}>
                         {question.category}
@@ -2264,12 +2352,31 @@ function LearningObjectConnections({
   const groups = resources?.learning_object_groups || [];
   // The page header's Learning path button needs this, and it is only known
   // here, where the concepts are loaded.
-  const gaps = contentGaps(groups);
-  useEffect(() => {
-    if (resources) onGapsChange(gaps);
-  }, [resources, gaps.ready, gaps.missingVersions, gaps.missingQuestions]); // eslint-disable-line react-hooks/exhaustive-deps
   const matchSuggestions = resources?.match_suggestions || [];
   const allQuestionPairings = resources?.question_pairings || [];
+  const gaps = contentGaps(groups, allQuestionPairings);
+  useEffect(() => {
+    if (resources) onGapsChange(gaps);
+  }, [resources, gaps.ready, gaps.missingVersions, gaps.missingQuestions, gaps.outOfDateQuestions, gaps.unlabelledQuestions]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Printed questions are labelled when the Questions step opens, so every
+  // question process happens on that screen. A failure stays on screen with
+  // Try again, and the step cannot be left until it works.
+  const [labelling, setLabelling] = useState({ running: false, error: "" });
+  async function labelQuestions() {
+    setLabelling({ running: true, error: "" });
+    try {
+      setResources(await labelTopicQuestions(courseId, topicId));
+      setLabelling({ running: false, error: "" });
+    } catch (err) {
+      setLabelling({ running: false, error: err.message });
+    }
+  }
+  useEffect(() => {
+    if (reviewStep === "questions" && gaps.unlabelledQuestions > 0 && !labelling.running && !labelling.error) {
+      labelQuestions();
+    }
+  }, [reviewStep, gaps.unlabelledQuestions]); // eslint-disable-line react-hooks/exhaustive-deps
   const questionReviewQueue = allQuestionPairings.filter((question) => {
     const status = question.learning_object_links?.[0]?.review_status;
     return !status || status === "pending_review" || status === "unmatched";
@@ -3349,6 +3456,9 @@ function LearningObjectConnections({
         <>
           <ReviewQueuePanel
             questionPairings={allQuestionPairings}
+            unlabelledCount={gaps.unlabelledQuestions}
+            labelling={labelling}
+            onRetryLabelling={labelQuestions}
             groups={groups}
             materialById={materialById}
             busyAction={busyAction}
@@ -3757,6 +3867,10 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
   const [activeTab, setActiveTab] = useState("content");
   const [showAudioWarning, setShowAudioWarning] = useState(false);
   const [showDeleteMaterialConfirm, setShowDeleteMaterialConfirm] = useState(false);
+  // What confirming this edited PDF again would change in the approved PDFs,
+  // and which of those changes the teacher keeps out.
+  const [approvedChanges, setApprovedChanges] = useState(null);
+  const [keptIds, setKeptIds] = useState([]);
   const [learningObjectToDelete, setLearningObjectToDelete] = useState(null);
 
   const generatedJson = material.generated_json || {};
@@ -3848,12 +3962,18 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
     }
   }
 
-  async function confirmObjects() {
+  async function confirmObjects(keep = null) {
     setBusyAction("confirm");
     onError("");
     onMessage("");
     try {
-      const updatedCourse = await confirmLearningObjects(courseId, material.id);
+      const updatedCourse = await confirmLearningObjects(courseId, material.id, keep);
+      if (updatedCourse.approved_changes) {
+        setApprovedChanges(updatedCourse.approved_changes);
+        setKeptIds([]);
+        return;
+      }
+      setApprovedChanges(null);
       onCourseChange(updatedCourse);
       const imageResult = updatedCourse.image_description_generation;
       if (imageResult?.generated_count) {
@@ -4210,7 +4330,7 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
                     className="btn btn-primary"
                     type="button"
                     disabled={!material.learning_objects.length || Boolean(busyAction)}
-                    onClick={confirmObjects}
+                    onClick={() => confirmObjects()}
                   >
                     {busyAction === "confirm" ? "Confirming..." : "Confirm learning objects"}
                   </button>
@@ -4299,6 +4419,80 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
               </button>
               <button type="button" className="btn btn-primary" onClick={generateAudio}>
                 Continue without it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {approvedChanges && (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal-card reconfirm-review-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`reconfirm-review-${material.id}`}
+          >
+            <h3 id={`reconfirm-review-${material.id}`}>
+              Confirming this file changes {approvedChanges.length} approved concept
+              {approvedChanges.length === 1 ? "" : "s"}
+            </h3>
+            <p>
+              Your edits change what this file teaches, so these parts of other, already
+              approved files would move. Choose what happens to each.
+            </p>
+            <ul className="reconfirm-change-list">
+              {approvedChanges.map((change) => {
+                const kept = keptIds.includes(change.learning_object_id);
+                return (
+                  <li key={change.learning_object_id}>
+                    <div>
+                      <strong>{change.title}</strong>
+                      <small>{change.material_title}</small>
+                      <p>
+                        Now in {change.from_label}. Would move to {change.to_label}.
+                      </p>
+                    </div>
+                    <div className="reconfirm-change-choice" role="radiogroup" aria-label={`What happens to ${change.title}`}>
+                      <label>
+                        <input
+                          type="radio"
+                          name={`reconfirm-${change.learning_object_id}`}
+                          checked={!kept}
+                          onChange={() => setKeptIds((ids) => ids.filter((id) => id !== change.learning_object_id))}
+                        />
+                        Apply the change
+                      </label>
+                      <label>
+                        <input
+                          type="radio"
+                          name={`reconfirm-${change.learning_object_id}`}
+                          checked={kept}
+                          onChange={() => setKeptIds((ids) => [...ids, change.learning_object_id])}
+                        />
+                        Keep as is
+                      </label>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={busyAction === "confirm"}
+                onClick={() => setApprovedChanges(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busyAction === "confirm"}
+                onClick={() => confirmObjects(keptIds)}
+              >
+                {busyAction === "confirm" ? "Confirming..." : "Confirm file"}
               </button>
             </div>
           </div>
@@ -4411,6 +4605,12 @@ function LearningPathButton({ gaps, onOpen }) {
     }
     if (gaps.missingQuestions) {
       parts.push(`${gaps.missingQuestions} concept${gaps.missingQuestions === 1 ? " has" : "s have"} no questions yet`);
+    }
+    if (gaps.unlabelledQuestions) {
+      parts.push(`${gaps.unlabelledQuestions} printed question${gaps.unlabelledQuestions === 1 ? " needs" : "s need"} labelling in the Questions step`);
+    }
+    if (gaps.outOfDateQuestions) {
+      parts.push(`${gaps.outOfDateQuestions} concept${gaps.outOfDateQuestions === 1 ? " has" : "s have"} questions to check`);
     }
     tip = parts.length
       ? `Prepare the content first: ${parts.join(", and ")}.`

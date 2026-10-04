@@ -85,7 +85,6 @@ from .services.content_generator import (
     is_structural_metadata_label,
 )
 from .services.instructional_content_classifier import CLASSIFICATION_CATEGORIES
-from .services.image_describer import populate_missing_image_descriptions
 from .services.learning_resource_linker import (
     CONFIRMED_QUESTION_PAIRING_STATUSES,
     learning_objects_are_confirmed,
@@ -96,7 +95,20 @@ from .services.learning_resource_linker import (
     refresh_material_learning_relationships,
     refresh_question_learning_object_links,
 )
+from .services.reconfirm_review import (
+    FIRST_CONFIRMED_KEY,
+    approved_placements,
+    keep_in_place,
+    rehearse,
+    was_confirmed_before,
+)
 from .services.unit_matching import place_unit, unpublish_topic
+from question_generation.services.bank_status import (
+    bank_out_of_date,
+    keep_bank,
+    refile_bank_before_delete,
+    settle_bank_owner,
+)
 from .services.regrouping import (
     RegroupingUnavailable,
     apply_regrouping,
@@ -104,6 +116,7 @@ from .services.regrouping import (
     propose_regrouping,
 )
 from .services.question_workflow import (
+    label_printed_questions,
     delete_generated_questions_for,
     duplicate_for_topic,
     duplicate_in_topic,
@@ -525,6 +538,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                         many=True,
                         context={"request": request},
                     ).data,
+                    # Written before the concept's text last changed; the
+                    # teacher keeps or regenerates it before publishing.
+                    "question_bank_out_of_date": bank_out_of_date(group),
                 }
             )
         title_entries = [
@@ -855,6 +871,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             label=bundle_label([learning_object])[:255],
         )
         place_unit([learning_object], target)
+        # Alone in its group now, it would otherwise be filed back under its
+        # section's concept on the next automatic pass.
+        learning_object.kept_apart_from_section = True
+        learning_object.save(update_fields=["kept_apart_from_section"])
         # A teacher breaking a bundle up is a decision, not a gap in the
         # evidence: without recording it the next automatic pass would place
         # the object straight back. Only cross-PDF pairs are decided -- two
@@ -1478,6 +1498,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                         )
             for field, value in values.items():
                 setattr(question, field, value)
+            if question.source_type == Question.SourceType.GENERATED:
+                # Kept through a regeneration of its concept's bank.
+                question.teacher_edited = True
+                values["teacher_edited"] = True
             question.save(update_fields=list(values))
 
             if update_pairing:
@@ -1556,12 +1580,16 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
 
         material = learning_object.material
         group = learning_object.group
-        # Only this concept's generated questions go with it. Every other
-        # concept's generated questions are left exactly as they are.
+        # The concept's question bank belongs to the concept, not to the
+        # object it is filed under; it stays, re-filed, and reads as out of
+        # date. Only questions generated from this object alone go with it.
+        refile_bank_before_delete(learning_object)
         delete_generated_questions_for(learning_object)
         learning_object.delete()
         if group is not None and not group.learning_objects.exists():
             group.delete()
+        elif group is not None:
+            settle_bank_owner(group)
 
         self._refresh_relationship_snapshots({material})
 
@@ -1814,6 +1842,54 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         variant.source_fingerprint = version_fingerprint(variant.learning_object)
         variant.assigned_by = LessonVariant.AssignedBy.TEACHER
         variant.save(update_fields=["source_fingerprint", "assigned_by"])
+        return Response(self._learning_resources_payload(node, request))
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"outline-nodes/(?P<node_id>[^/.]+)/label-questions",
+    )
+    def label_topic_questions(self, request, pk=None, node_id=None):
+        """Label the printed questions not labelled yet: the Questions step's job.
+
+        Upload stores them without a Bloom level, LOTS/HOTS or category, so
+        every question process happens on the Questions screen. A failure is
+        reported, not swallowed: the teacher cannot move on until it works.
+        """
+        course = self.get_object()
+        try:
+            node = course.nodes.get(pk=node_id)
+        except OutlineNode.DoesNotExist:
+            return Response({"detail": "Outline node not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            label_printed_questions(node)
+        except Exception as exc:  # noqa: BLE001 -- shown to the teacher with Try again
+            logger.exception("[Questions] topic %s  labelling printed questions failed", node.id)
+            return Response(
+                {"detail": f"The printed questions could not be labelled: {exc}"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(self._learning_resources_payload(node, request))
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"outline-nodes/(?P<node_id>[^/.]+)/concepts/(?P<group_id>[^/.]+)/keep-questions",
+    )
+    def keep_question_bank(self, request, pk=None, node_id=None, group_id=None):
+        """Confirm an out-of-date question bank still fits the concept's text.
+
+        The questions are left exactly as they are; only the record of which
+        text they were checked against moves forward, which clears the
+        publish block -- the same as keeping an out-of-date version.
+        """
+        course = self.get_object()
+        try:
+            node = course.nodes.get(pk=node_id)
+            group = node.learning_object_groups.get(pk=group_id)
+        except (OutlineNode.DoesNotExist, LearningObjectGroup.DoesNotExist, ValueError):
+            return Response({"detail": "Concept not found in this topic."}, status=status.HTTP_404_NOT_FOUND)
+        keep_bank(group)
         return Response(self._learning_resources_payload(node, request))
 
     @action(
@@ -2264,6 +2340,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         # Publish the confirmation state before relationship refresh so the
         # linker can never use draft learning objects as candidates.
         generated_json = material.generated_json or {}
+        if confirmed or generated_json.get("learning_objects_confirmed"):
+            # Kept when the PDF goes back to draft, so confirming it again
+            # is known to be a reconfirm and is reviewed first.
+            generated_json.setdefault(FIRST_CONFIRMED_KEY, timezone.now().isoformat())
         generated_json["learning_objects_confirmed"] = confirmed
         generated_json["learning_objects_confirmed_at"] = timezone.now().isoformat() if confirmed else None
         material.generated_json = generated_json
@@ -2280,13 +2360,13 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                 .distinct()
             )
             for question_material in related_question_materials:
-                if confirmed:
-                    refresh_material_learning_relationships(question_material)
-                else:
-                    # A draft edit only changes which questions can pair with
-                    # what; it must not regroup the other PDFs, approved ones
-                    # included.
-                    refresh_question_learning_object_links(question_material)
+                if not confirmed:
+                    # A draft edit reaches no other PDF: not their grouping,
+                    # not their question pairs. A question whose object was
+                    # deleted stays unpaired until this PDF is confirmed again,
+                    # which re-pairs everything below.
+                    continue
+                refresh_material_learning_relationships(question_material)
                 question_json = question_material.generated_json or {}
                 question_json["questions"] = question_snapshots(question_material)
                 question_material.generated_json = question_json
@@ -2415,7 +2495,32 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        self._set_learning_objects_confirmed(material, True)
+        # Confirming an edited PDF again can move objects of the approved
+        # PDFs. Without the teacher's answer ("keep": the ids to leave where
+        # they are), the confirmation is rehearsed and what it would change
+        # is returned instead.
+        keep = request.data.get("keep")
+        rehearsed = keep is None and was_confirmed_before(material)
+        if rehearsed:
+            # Kept when nothing approved moves, so it is not run twice.
+            changes = rehearse(material, lambda: self._set_learning_objects_confirmed(material, True))
+            if changes:
+                return Response({"approved_changes": changes, "confirmed": False})
+        try:
+            kept_ids = [int(item) for item in keep or []]
+        except (TypeError, ValueError):
+            return Response({"detail": "keep must be a list of learning object ids."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        before = approved_placements(material) if kept_ids else {}
+
+        if not rehearsed:
+            self._set_learning_objects_confirmed(material, True)
+        if kept_ids:
+            keep_in_place(material, kept_ids, before)
+            self._refresh_relationship_snapshots(
+                LearningMaterial.objects.filter(learning_objects__id__in=kept_ids).distinct(),
+                recompute=False,
+            )
         response = self._serialize_course_detail(course, request)
         response.data["image_description_generation"] = {
             "generated_count": 0,
@@ -2423,34 +2528,6 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             "errors": [],
             "deferred": True,
         }
-        return response
-
-    @action(
-        detail=True,
-        methods=["post"],
-        url_path=r"materials/(?P<material_id>[^/.]+)/regenerate-image-narrations",
-    )
-    def regenerate_image_narrations(self, request, pk=None, material_id=None):
-        """Repair blank narration on saved image objects without re-uploading the PDF."""
-        course = self.get_object()
-        material = self._get_course_material(course, material_id)
-        if material is None:
-            return Response(
-                {"detail": "Learning material not found for this course."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        image_result = populate_missing_image_descriptions(material)
-        if image_result["generated_count"]:
-            # Refresh narration and playlist snapshots while preserving whether
-            # this material was already confirmed.
-            confirmed = bool(
-                (material.generated_json or {}).get("learning_objects_confirmed")
-            )
-            self._set_learning_objects_confirmed(material, confirmed)
-
-        response = self._serialize_course_detail(course, request)
-        response.data["image_description_generation"] = image_result
         return response
 
     @action(
@@ -2547,12 +2624,16 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
 
         if request.method == "DELETE":
             group = learning_object.group
-            # Only this object's generated questions go with it.
+            # The concept's bank stays with the concept (re-filed); only this
+            # object's own generated questions go with it.
+            refile_bank_before_delete(learning_object)
             delete_generated_questions_for(learning_object)
             learning_object.delete()
             # A group whose only member was deleted is not a concept any more.
             if group is not None and not group.learning_objects.exists():
                 group.delete()
+            elif group is not None:
+                settle_bank_owner(group)
             self._set_learning_objects_confirmed(material, False)
             return self._serialize_course_detail(course, request)
 

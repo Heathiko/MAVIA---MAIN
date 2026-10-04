@@ -3,8 +3,8 @@
 Deleting one object from a brand-new upload used to re-run the whole grouping
 refresh -- section joins released and redone across the topic, similarity
 matching, the review queue rebuilt -- for every other PDF holding printed
-questions, approved lesson PDFs included. All that loop needed was to re-pair
-those questions.
+questions, approved lesson PDFs included. A draft edit now reaches no other
+PDF at all, their question pairs included: those are redone on reconfirm.
 """
 
 from unittest.mock import patch
@@ -87,7 +87,7 @@ class DraftEditIsolationTests(TestCase):
         groups_after = set(LearningObjectGroup.objects.values_list("id", flat=True))
         self.assertLessEqual(groups_after, groups_before)
 
-    def test_the_approved_pdfs_questions_are_still_repaired(self):
+    def test_the_approved_pdfs_question_pairs_are_left_alone(self):
         repaired = []
         real = linker.refresh_question_learning_object_links
 
@@ -95,8 +95,7 @@ class DraftEditIsolationTests(TestCase):
             repaired.append(material.id)
             return real(material)
 
-        with patch.object(linker, "refresh_question_learning_object_links", side_effect=spy), \
-                patch("lessons.views.refresh_question_learning_object_links", side_effect=spy, create=True):
+        with patch.object(linker, "refresh_question_learning_object_links", side_effect=spy),                 patch("lessons.views.refresh_question_learning_object_links", side_effect=spy, create=True):
             self.delete_from_draft()
 
-        self.assertIn(self.approved.id, repaired)
+        self.assertNotIn(self.approved.id, repaired)
