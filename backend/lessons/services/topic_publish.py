@@ -211,9 +211,11 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
                 learning_object_id=error.get("learning_object_id"),
                 slots=error.get("slots", []),
             )
+        written = len(outcome["generated"])
         emit(
             "versions_finished",
-            f"Concept {index} of {len(groups)} settled",
+            f"“{group.label or f'Concept {index}'}” versions settled"
+            + (f", {written} written" if written else ""),
             index=index, total=len(groups), group_id=group.id,
             generated=outcome["generated"],
         )

@@ -235,7 +235,7 @@ def course_prerequisites(node, concept_ids):
         with transaction.atomic():
             return _course_prerequisites(node, concept_ids)
     except DatabaseError as exc:
-        logger.warning("[Published path topic %s] course prerequisites unavailable: %s", node.id, exc)
+        logger.warning("[Learning path] topic %s  prerequisites from other topics unavailable: %s", node.id, exc)
         return {}
 
 

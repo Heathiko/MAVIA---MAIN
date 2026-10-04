@@ -143,6 +143,7 @@ def _active_topic_run(outline_node, *, stale_after=timedelta(minutes=30)):
                 "so it can be retried."
             ),
         )
+        logger.warning("run %s stopped reporting progress and was closed so it can be retried", run.id)
         run.status = "failed"
         run.finished_at = timezone.now()
         run.save(update_fields=["status", "finished_at"])
@@ -151,16 +152,10 @@ def _active_topic_run(outline_node, *, stale_after=timedelta(minutes=30)):
 
 def _run_topic_publish_in_background(run_id, course_id, node_id, set_confirmed):
     """Thread entry point. Owns the run's lifecycle and nothing else."""
-    from question_generation.models import GenerationEvent
+    from question_generation.tracing import run_tracer
 
     run = GenerationRun.objects.get(id=run_id)
-    seq = {"n": 0}
-
-    def record(event_type, message, **data):
-        seq["n"] += 1
-        GenerationEvent.objects.create(
-            run=run, seq=seq["n"], event_type=event_type, message=message, data=data or None
-        )
+    record = run_tracer(run, label="Publish")
 
     try:
         course = CourseGroup.objects.get(id=course_id)
@@ -172,7 +167,7 @@ def _run_topic_publish_in_background(run_id, course_id, node_id, set_confirmed):
         )
         run.status = "finished"
     except Exception as exc:  # a failed publish must not leave the run "running" forever
-        logger.exception("Publish run %s failed", run_id)
+        logger.exception("[Publish] run %s failed", run_id)
         # Status first: recording the event writes too, and when the failure
         # was the database itself ("database is locked") that write fails as
         # well -- which used to skip this line and save the run as "running".
@@ -188,28 +183,22 @@ def _record_failure(record, event_type, exc, run_id):
     try:
         record(event_type, str(exc))
     except Exception:
-        logger.exception("Could not record the failure of run %s", run_id)
+        logger.exception("run %s: could not record why it failed", run_id)
 
 
 def _run_all_versions_in_background(run_id, node_id):
     """Classify all existing PDF variants while recording pollable progress."""
-    from question_generation.models import GenerationEvent
+    from question_generation.tracing import run_tracer
 
     run = GenerationRun.objects.get(id=run_id)
-    seq = {"n": 0}
-
-    def record(event_type, message, **data):
-        seq["n"] += 1
-        GenerationEvent.objects.create(
-            run=run, seq=seq["n"], event_type=event_type, message=message, data=data or None
-        )
+    record = run_tracer(run, label="Versions")
 
     try:
         node = OutlineNode.objects.get(id=node_id)
         classify_all_source_versions(node, on_event=record)
         run.status = "finished"
     except Exception as exc:
-        logger.exception("Bulk version run %s failed", run_id)
+        logger.exception("[Versions] run %s failed", run_id)
         # Status first; see _run_topic_publish_in_background.
         run.status = "failed"
         _record_failure(record, "versions_bulk_failed", exc, run_id)

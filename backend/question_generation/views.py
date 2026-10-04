@@ -1,3 +1,4 @@
+import logging
 import threading
 
 from django.utils import timezone
@@ -11,6 +12,8 @@ from course.version_assignment import assign_group_versions
 
 from .models import GeneratedQuestion, GenerationEvent, GenerationRun, LearnerResponse
 from .serializers import QuestionSerializer
+
+logger = logging.getLogger(__name__)
 
 
 class GetQuestionView(APIView):
@@ -186,6 +189,7 @@ def _run_pipeline(run_id, material_id, node_ids=None, skip_complete=False):
         GenerationRun.objects.filter(id=run_id).update(
             status="finished", finished_at=timezone.now())
     except Exception as e:  # noqa: BLE001 — surface anything to the trace
+        logger.exception("[Questions] run %s failed: %s: %s", run_id, type(e).__name__, e)
         on_event("error", f"{type(e).__name__}: {e}", None)
         GenerationRun.objects.filter(id=run_id).update(
             status="failed", finished_at=timezone.now())

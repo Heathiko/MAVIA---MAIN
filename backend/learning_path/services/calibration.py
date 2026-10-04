@@ -42,7 +42,7 @@ def load_calibration(path=CALIBRATION):
     except FileNotFoundError:
         return copy.deepcopy(DEFAULTS)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        logger.warning("Ignoring learning-path calibration %s: %s", path, exc)
+        logger.warning("[Learning path] calibration file %s ignored, using defaults: %s", path, exc)
         return copy.deepcopy(DEFAULTS)
 
 

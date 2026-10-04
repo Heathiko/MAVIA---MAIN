@@ -66,7 +66,7 @@ def _synthesize_text_to_mp3_with_edge(text: str, output_path: Path, timeout: int
             if attempt == attempts:
                 raise AudioGenerationError(f"Edge TTS failed: {exc}") from exc
             logger.warning(
-                "Edge TTS attempt %s of %s failed, retrying: %s", attempt, attempts, exc,
+                "[Publish] text-to-speech failed (attempt %s of %s), retrying: %s", attempt, attempts, exc,
             )
             # A partial file from a dropped stream would otherwise be taken
             # for a finished clip and ship as truncated narration.

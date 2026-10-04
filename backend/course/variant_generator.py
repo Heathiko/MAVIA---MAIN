@@ -9,6 +9,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from config.console import name
 from config.groq_client import generate as groq_generate
 from lessons.models import LearningObject
 
@@ -213,8 +214,8 @@ def _request_variants(learning_object, model):
             if attempt == VARIANT_REQUEST_ATTEMPTS and not produced_any:
                 raise
             logger.warning(
-                'Retrying variants for "%s" (attempt %s of %s): %s',
-                learning_object.title, attempt + 1, VARIANT_REQUEST_ATTEMPTS, exc,
+                "[Versions] %s  writing versions failed, retrying (attempt %s of %s): %s",
+                name(learning_object.title), attempt + 1, VARIANT_REQUEST_ATTEMPTS, exc,
             )
             continue
         produced_any = True
@@ -230,15 +231,16 @@ def _request_variants(learning_object, model):
         if not failures:
             break
         logger.info(
-            'Generated versions for "%s" failed the check (attempt %s of %s): %s',
-            learning_object.title, attempt, VARIANT_REQUEST_ATTEMPTS, failures,
+            "[Versions] %s  written versions failed the check (attempt %s of %s): %s",
+            name(learning_object.title), attempt, VARIANT_REQUEST_ATTEMPTS,
+            "; ".join(f"{slot.lower()}: {', '.join(map(str, problems))}" for slot, problems in failures.items()),
         )
         feedback = _feedback(failures)
     fallback = {slot: problems for slot, problems in failures.items() if slot not in accepted}
     for slot in fallback:
         logger.warning(
-            'No generated %s version of "%s" passed the check; the Normal text is used: %s',
-            slot, learning_object.title, fallback[slot],
+            "[Versions] %s  no written %s version passed the check, so learners hear the Normal text: %s",
+            name(learning_object.title), slot.lower(), ", ".join(map(str, fallback[slot])),
         )
     texts = {**accepted, **{slot: learning_object.content.strip() for slot in fallback}}
     return CheckedVariants(texts, fallback)
@@ -369,10 +371,11 @@ def generate_standalone_variants(outline_node):
         outcome = outcomes[learning_object.id]
         if isinstance(outcome, VariantGenerationError):
             logger.warning(
-                "Adaptive variant generation failed: learning_object=%s model=%s error=%s",
-                learning_object.id,
+                "[Versions] %s  writing versions failed (%s): %s  (object %s)",
+                name(learning_object.title),
                 model,
                 outcome,
+                learning_object.id,
             )
             errors.append({"learning_object_id": learning_object.id, "detail": str(outcome)})
             continue
@@ -492,10 +495,11 @@ def fill_missing_slots(learning_object, target_slots=None, *, replace_stale=Fals
         variants = _request_variants(learning_object, model)
     except VariantGenerationError as exc:
         logger.warning(
-            "Adaptive variant generation failed: learning_object=%s model=%s error=%s",
-            learning_object.id,
+            "[Versions] %s  writing versions failed (%s): %s  (object %s)",
+            name(learning_object.title),
             model,
             exc,
+            learning_object.id,
         )
         return {
             "generated": [],

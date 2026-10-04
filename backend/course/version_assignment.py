@@ -22,6 +22,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from config.console import name
 from lessons.services.concept_bundles import (
     bundle_heading,
     bundle_label,
@@ -412,10 +413,11 @@ def assign_group_versions(group, *, use_llm=False):
         except (VersionClassificationError, StopIteration, KeyError) as exc:
             classification_error = str(exc)
             logger.warning(
-                "Content-version classification failed: group=%s model=%s error=%s",
-                group.id,
+                "[Versions] %s  the model could not sort its PDF versions (%s): %s  (concept %s)",
+                name(group.label),
                 settings.CONTENT_VERSION_LLM_MODEL,
                 exc,
+                group.id,
             )
 
     normal_bundle = bundles[normal_id]
@@ -439,10 +441,11 @@ def assign_group_versions(group, *, use_llm=False):
         except VersionClassificationError as exc:
             classification_error = str(exc)
             logger.warning(
-                "Content-version classification failed: group=%s model=%s error=%s",
-                group.id,
+                "[Versions] %s  the model could not sort its PDF versions (%s): %s  (concept %s)",
+                name(group.label),
                 settings.CONTENT_VERSION_LLM_MODEL,
                 exc,
+                group.id,
             )
 
     proposals = []
@@ -491,12 +494,19 @@ def assign_group_versions(group, *, use_llm=False):
         })
         if llm_slot:
             logger.info(
-                "Content-version check: group=%s material=%s gemma=%s confidence=%s "
-                "readability=%s%s accepted=%s issues=%s concerns=%s",
-                group.id, material_id, llm_slot, llm_confidence, verdict["slot"],
-                "" if verdict["confident"] else "(unsure)", accepted,
-                review["issues"], review["concerns"],
+                "[Versions] %s  PDF %s: model says %s%s, reading level says %s%s -> %s  (concept %s)",
+                name(group.label), material_id, llm_slot.lower(),
+                f" ({round(llm_confidence * 100)}% sure)" if llm_confidence is not None else "",
+                (verdict["slot"] or "no clear role").lower(),
+                "" if verdict["confident"] else " (unsure)",
+                f"used as {llm_slot.lower()}" if accepted else "not used, failed the check",
+                group.id,
             )
+            if review["issues"] or review["concerns"]:
+                logger.debug(
+                    "[Versions] %s  PDF %s check details: issues=%s concerns=%s",
+                    name(group.label), material_id, review["issues"], review["concerns"],
+                )
 
     by_material = {proposal["material_id"]: proposal for proposal in proposals}
     decided_at = selection.get("bundle_roles_decided_at") or {}

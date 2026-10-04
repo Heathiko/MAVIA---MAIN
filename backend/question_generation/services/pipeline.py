@@ -7,6 +7,7 @@ from math import ceil
 from django.conf import settings
 from django.db import transaction
 
+from config.console import name
 from .bloom_classifier import BloomClassifier
 from .question_generator import (
     generate_questions,
@@ -142,9 +143,9 @@ def _print_node_summary(node, kept, rejected):
         if counts.get(order, 0) < config["count"]
     ]
     logger.info(
-        'node "%s": kept %s (%s), discarded %s%s',
-        node.title, len(kept), breakdown, len(rejected),
-        f" — short on {', '.join(short)}" if short else "",
+        "[Questions] %s  kept %s (%s), discarded %s%s  (object %s)",
+        name(node.title), len(kept), breakdown, len(rejected),
+        f" -- short on {', '.join(short)}" if short else "", node.id,
     )
 
 
@@ -152,11 +153,11 @@ def _print_material_summary(material, node_count, all_questions, stats):
     counts = Counter(q.thinking_order for q in all_questions)
     distribution = ", ".join(f"{counts.get(order, 0)} {order}" for order in QUESTION_DISTRIBUTION)
     logger.info(
-        'finished "%s": %s questions across %s nodes (%s) from %s drafts '
-        "[excluded %s, duplicates %s, trimmed %s]",
-        material.title, len(all_questions), node_count, distribution,
-        stats["total_drafted"], stats["excluded_create"],
-        stats["duplicates"], stats["trimmed"],
+        "[Questions] PDF %s  done: %s questions for %s concepts (%s) from %s drafts; "
+        "dropped %s not grounded in the lesson, %s duplicates, %s wrong level, %s extra",
+        material.id, len(all_questions), node_count, distribution,
+        stats["total_drafted"], stats["ungrounded"], stats["duplicates"],
+        stats["excluded_create"], stats["trimmed"],
     )
 
 
@@ -239,10 +240,10 @@ def concept_source_text(node):
         # its questions are already final by then. Nothing downstream reports
         # that, so the run trace has to.
         logger.info(
-            'concept "%s": material(s) %s have no assigned version role and '
+            "[Questions] %s  PDF(s) %s have no assigned version role and "
             "are feeding question generation; if the versions step later "
             "marks one EXTRA, regenerate this concept's bank",
-            group.label, ", ".join(str(item) for item in unclassified),
+            name(group.label), ", ".join(str(item) for item in unclassified),
         )
     return bundle_text(objects) or (node.content or "")
 
@@ -359,7 +360,7 @@ def _draft_questions_for_node(
             )
             continue
         summary = " + ".join(f"{n} {fmt}" for fmt, n in padded.items())
-        print(f"Generating {summary} {thinking_order} question(s) for: {node.title}")
+        logger.debug("[Questions] %s  drafting %s %s question(s)", name(node.title), summary, thinking_order)
         def record_metrics(metrics, order=thinking_order):
             _emit(
                 on_event,
@@ -382,6 +383,7 @@ def _draft_questions_for_node(
             )
 
         def record_rate_limit_wait(seconds, retry, order=thinking_order):
+            logger.info("[Questions] %s  rate limit reached; waiting %.0fs before retrying", name(node.title), seconds)
             _emit(
                 on_event,
                 "groq_rate_limit_wait",
@@ -760,7 +762,7 @@ def generate_questions_for_material(
         # happen in silence. Its questions exist -- they are written from the
         # whole Normal bundle and saved against that bundle's lead.
         logger.info(
-            "Skipping %s learning object(s) taught through another object's "
+            "[Questions] skipping %s learning object(s) taught through another object's "
             "concept bundle; their questions belong to that bundle's lead: %s",
             len(candidates) - len(nodes),
             ", ".join(
@@ -783,6 +785,10 @@ def generate_questions_for_material(
         # last run)
         GeneratedQuestion.objects.filter(node__material=material).exclude(
             node__in=nodes).delete()
+    logger.info(
+        "[Questions] PDF %s  started: %s concepts to write questions for, %s unchanged and reused",
+        material.id, len(nodes_to_generate), len(nodes) - len(nodes_to_generate),
+    )
     _emit(
         on_event, "material_started",
         f"Generating questions for {len(nodes)} content nodes",
@@ -859,7 +865,7 @@ def generate_questions_for_material(
                 total=total_nodes,
             )
             continue
-        logger.info('(%s/%s) generating questions for "%s"', position, total_nodes, node.title)
+        logger.info("[Questions] (%s/%s) %s  writing questions", position, total_nodes, name(node.title))
         # index/total are what let the teacher's dialog draw a real progress
         # bar. Without them it can only spin, and a spinner cannot tell slow
         # apart from stuck -- which is the whole complaint about this step.

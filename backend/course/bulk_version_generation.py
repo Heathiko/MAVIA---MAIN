@@ -54,7 +54,8 @@ def classify_all_source_versions(outline_node, on_event=None):
             classified_groups += 1
             emit(
                 "version_classification_finished",
-                f"Classified {group.label or f'concept {group.id}'}",
+                f"Classified {group.label or f'concept {group.id}'}: "
+                f"{len(state['assigned'])} version role(s) set, {state['extras']} kept as extra",
                 index=classification_index,
                 total=len(connected_group_ids),
                 group_id=group.id,
@@ -86,5 +87,10 @@ def classify_all_source_versions(outline_node, on_event=None):
         "skipped_count": 0,
         "errors": errors,
     }
-    emit("versions_bulk_finished", "PDF source classification finished", summary=summary)
+    emit(
+        "versions_bulk_finished",
+        f"Sorting PDF versions finished: {classified_groups} of {len(connected_group_ids)} concept(s) sorted"
+        + (f", {len(errors)} failed" if errors else ""),
+        summary=summary,
+    )
     return summary

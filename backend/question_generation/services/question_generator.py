@@ -488,7 +488,7 @@ def _parse_llm_response(response_text):
         recovered = _extract_question_objects(match.group())
         if not recovered:
             raise
-        print(f"  Recovered {len(recovered)} question(s) from malformed JSON response")
+        logger.debug("[Questions] recovered %s question(s) from a malformed model reply", len(recovered))
         return recovered
 
     if "questions" in parsed:
@@ -711,8 +711,8 @@ def generate_questions(
         except (json.JSONDecodeError, ValueError) as e:
             if on_error:
                 on_error(attempt + 1, str(e))
-            print(f"  Attempt {attempt + 1}/{max_retries} failed: {e}")
+            logger.warning("[Questions] model reply unusable (attempt %s of %s): %s", attempt + 1, max_retries, e)
             continue
 
-    print(f"  WARNING: Failed to generate after {max_retries} attempts")
+    logger.warning("[Questions] gave up: no usable questions after %s attempts", max_retries)
     return []

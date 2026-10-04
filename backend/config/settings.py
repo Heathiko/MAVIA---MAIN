@@ -369,12 +369,12 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
-        # The pipelines already name themselves in the message, so a prefix
-        # here would only repeat it.
-        "trace": {"format": "%(message)s"},
+        # A time on every line, and WARNING/ERROR up front. The pipelines
+        # name their own stage in the message; see config/console.py.
+        "trace": {"()": "config.console.ConsoleFormatter"},
     },
     "handlers": {
-        "console": {"class": "logging.StreamHandler"},
+        "console": {"class": "logging.StreamHandler", "formatter": "trace"},
         "trace": {"class": "logging.StreamHandler", "formatter": "trace"},
     },
     "loggers": {
