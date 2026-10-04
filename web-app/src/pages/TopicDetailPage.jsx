@@ -1782,7 +1782,7 @@ function RunProgress({
         </div>
 
         {/* The step being worked on right now -- the one thing worth reading
-            while waiting. Everything else is available in the trace below. */}
+            while waiting. The step-by-step record is in the server terminal. */}
         <p className="run-progress-current">{currentLine}</p>
         {percent === null ? null : <span className="run-progress-percent">{percent}%</span>}
 
@@ -1794,14 +1794,6 @@ function RunProgress({
           </ul>
         )}
 
-        <details className="publish-trace-log">
-          <summary>Full trace ({events.length})</summary>
-          <ol>
-            {events.map((event) => (
-              <li key={event.uid || event.seq}>{event.message}</li>
-            ))}
-          </ol>
-        </details>
       </div>
     </div>
   );
