@@ -111,6 +111,17 @@ def _get_classifier():
     return _classifier_cache
 
 
+def concept_name(node):
+    """What a run is about: the concept, not the object its bank is filed under.
+
+    A concept's questions are written from every object of its Normal version
+    and filed under the first one, so naming that object ("Shape") read as if
+    only it had been used.
+    """
+    group = getattr(node, "group", None)
+    return (group.label if group is not None and group.label else node.title) or "Untitled concept"
+
+
 def _emit(on_event, event_type, message, **data):
     """Send a trace event to the optional callback. No-op when tracing is off."""
     if on_event:
@@ -145,7 +156,7 @@ def _print_node_summary(node, kept, rejected):
     ]
     logger.info(
         "[Questions] %s  kept %s (%s), discarded %s%s  (object %s)",
-        name(node.title), len(kept), breakdown, len(rejected),
+        name(concept_name(node)), len(kept), breakdown, len(rejected),
         f" -- short on {', '.join(short)}" if short else "", node.id,
     )
 
@@ -333,7 +344,7 @@ def _draft_questions_for_node(
             )
             continue
         summary = " + ".join(f"{n} {fmt}" for fmt, n in padded.items())
-        logger.debug("[Questions] %s  drafting %s %s question(s)", name(node.title), summary, thinking_order)
+        logger.debug("[Questions] %s  drafting %s %s question(s)", name(concept_name(node)), summary, thinking_order)
         def record_metrics(metrics, order=thinking_order):
             _emit(
                 on_event,
@@ -356,7 +367,7 @@ def _draft_questions_for_node(
             )
 
         def record_rate_limit_wait(seconds, retry, order=thinking_order):
-            logger.info("[Questions] %s  rate limit reached; waiting %.0fs before retrying", name(node.title), seconds)
+            logger.info("[Questions] %s  rate limit reached; waiting %.0fs before retrying", name(concept_name(node)), seconds)
             _emit(
                 on_event,
                 "groq_rate_limit_wait",
@@ -486,7 +497,7 @@ def _bank_is_short(node):
 
 # ── Phase 2: post-processing (deterministic, no LLM) ──
 
-def finalize_node_questions(node, classifier, on_event=None, stats=None):
+def finalize_node_questions(node, classifier, on_event=None, stats=None, append=False):
     """Classify, deduplicate and trim one node's drafts, then promote them.
 
     Runs entirely over rows already in the database and needs no LLM. The
@@ -511,6 +522,14 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
     counts = Counter()
     seen = set()
     duplicates = excluded_create = trimmed = 0
+    if append:
+        # "Generate more" adds to the bank: a draft repeating a question the
+        # concept already has is a duplicate like any other.
+        seen.update(
+            _dedup_key(text) for text in GeneratedQuestion.objects.filter(
+                node=node, status="final",
+            ).values_list("question_text", flat=True)
+        )
 
     for draft in drafts:
         key = _dedup_key(draft.question_text)
@@ -591,7 +610,8 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
         # the previous run's questions are replaced only now, once this run
         # actually has something to replace them with
         replaced, _ = (
-            GeneratedQuestion.objects.filter(node=node, status="final").exclude(edited).delete()
+            (0, None) if append
+            else GeneratedQuestion.objects.filter(node=node, status="final").exclude(edited).delete()
         )
         if reject_ids:
             GeneratedQuestion.objects.filter(id__in=reject_ids).delete()
@@ -644,6 +664,7 @@ def generate_questions_for_node(
     stats=None,
     generation_fingerprint="",
     grounding_index=None,
+    append=False,
 ):
     """Generate, ground-check and finalize one LearningObject's question bank.
 
@@ -708,7 +729,7 @@ def generate_questions_for_node(
         f"Classifying and filtering {drafted} draft(s)",
         node_id=node.id, drafted=drafted,
     )
-    return finalize_node_questions(node, classifier, on_event=on_event, stats=stats)
+    return finalize_node_questions(node, classifier, on_event=on_event, stats=stats, append=append)
 
 
 def _complete_current_bank(node, fingerprint):
@@ -731,6 +752,7 @@ def generate_questions_for_material(
     node_ids=None,
     *,
     skip_complete=False,
+    append=False,
 ):
     """Full pipeline: LearningMaterial → classified questions for its text
     learning objects, straight from the database (no JSON handoff).
@@ -850,21 +872,21 @@ def generate_questions_for_material(
             _emit(
                 on_event,
                 "node_skipped",
-                f"Reused unchanged question bank: {node.title}",
+                f"Reused unchanged question bank: {concept_name(node)}",
                 node_id=node.id,
-                title=node.title,
+                title=concept_name(node),
                 count=len(cached),
                 index=position,
                 total=total_nodes,
             )
             continue
-        logger.info("[Questions] (%s/%s) %s  writing questions", position, total_nodes, name(node.title))
+        logger.info("[Questions] (%s/%s) %s  writing questions", position, total_nodes, name(concept_name(node)))
         # index/total are what let the teacher's dialog draw a real progress
         # bar. Without them it can only spin, and a spinner cannot tell slow
         # apart from stuck -- which is the whole complaint about this step.
         _emit(
-            on_event, "node_started", f"Generating questions for: {node.title}",
-            node_id=node.id, title=node.title,
+            on_event, "node_started", f"Generating questions for: {concept_name(node)}",
+            node_id=node.id, title=concept_name(node),
             index=position, total=total_nodes,
         )
         questions = generate_questions_for_node(
@@ -874,6 +896,7 @@ def generate_questions_for_material(
             stats=stats,
             generation_fingerprint=fingerprints[node.id],
             grounding_index=grounding_index,
+            append=append,
         )
         all_questions.extend(questions)
         _emit(

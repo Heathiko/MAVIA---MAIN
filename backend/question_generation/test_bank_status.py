@@ -139,3 +139,29 @@ class BankStatusTests(TestCase):
         self.assertNotIn(self.bank[1].question_text, texts)
         self.assertTrue(Question.objects.filter(pk=edited.pk).exists())
         self.assertFalse(bank_out_of_date(self.group))
+
+
+class GenerateMoreTests(TestCase):
+    """"Generate more" adds a batch to the concept's questions; it never replaces."""
+
+    setUp = BankStatusTests.setUp
+    add = BankStatusTests.add
+    write_bank = BankStatusTests.write_bank
+
+    def test_a_new_batch_is_added_and_the_old_questions_stay(self):
+        before = set(self.part1.generated_questions.filter(status="final").values_list("id", flat=True))
+
+        _draft(self.part1, "Can a solid be poured?", correct_answer="False")
+        finalize_node_questions(self.part1, _StubClassifier({}), append=True)
+
+        after = set(self.part1.generated_questions.filter(status="final").values_list("id", flat=True))
+        self.assertTrue(before < after)
+        self.assertEqual(len(after - before), 1)
+
+    def test_a_repeat_of_an_existing_question_is_dropped(self):
+        _draft(self.part1, "Do solids keep their shape?")
+        finalize_node_questions(self.part1, _StubClassifier({}), append=True)
+
+        texts = list(self.part1.generated_questions.filter(status="final")
+                     .values_list("question_text", flat=True))
+        self.assertEqual(texts.count("Do solids keep their shape?"), 1)

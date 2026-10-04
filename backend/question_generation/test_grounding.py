@@ -262,6 +262,18 @@ class CorrectionNoteTests(TestCase):
         self.assertIn("Is plasma a state?", note)
         self.assertIn("uses wording absent", note)
 
+    def test_a_wording_rejection_names_the_words_to_avoid(self):
+        reason = grounding.LEXICAL_REASON + "according, during"
+        note = grounding.correction_note([("According to the lesson, what happens during it?", reason)])
+        self.assertIn("words that do not appear in the lesson (according, during)", note)
+        self.assertIn("Rephrase it using only the lesson's own words", note)
+        # Not the facts message: nothing was wrong with the facts.
+        self.assertNotIn("Ask only about facts", note)
+
+    def test_a_fact_rejection_keeps_the_facts_message(self):
+        note = grounding.correction_note([("Which one is it?", "the source does not support the answer 'B'")])
+        self.assertIn("Ask only about facts stated in the content", note)
+
     def test_note_is_capped_so_the_prompt_cannot_run_away(self):
         note = grounding.correction_note([(f"Q{n}", "bad") for n in range(20)])
         self.assertEqual(note.count("was rejected"), 6)
@@ -330,3 +342,18 @@ class InflectionAgainstCorpusTests(GroundingTestCase):
             "Which state is shown?", {"A": "gas", "B": "plasma"}, "B",
         )
         self.assertIn("plasma", grounding.ungrounded_terms(question, self.lexical_index()))
+
+
+class NegationTests(TestCase):
+    """A negation is the same words however it is written."""
+
+    def test_cannot_and_contractions_split_into_their_words(self):
+        self.assertEqual(
+            grounding._words("Solids cannot flow, they don’t spread and gases can't stay"),
+            ["solids", "can", "not", "flow", "they", "not", "spread", "and", "gases", "can", "not", "stay"],
+        )
+
+    def test_both_sides_split_the_same_way(self):
+        # The lesson writes it out; the question contracts it, or the reverse.
+        self.assertTrue({"can", "not"} <= grounding._terms("Solids can not flow."))
+        self.assertTrue({"can", "not"} <= grounding._terms("Solids cannot flow."))

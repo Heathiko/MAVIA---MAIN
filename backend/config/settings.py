@@ -284,8 +284,11 @@ OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
 # Questions generated per learning object, per thinking order. Lower these
 # while iterating: each thinking order is one LLM call, and the count drives
 # how much that call has to write.
-QUESTION_COUNT_LOT = int(os.getenv("QUESTION_COUNT_LOT", "3"))
-QUESTION_COUNT_HOT = int(os.getenv("QUESTION_COUNT_HOT", "3"))
+# Questions asked for per tier on each run. Above the teacher's minimum of 3
+# per tier, so a run that loses a few (malformed, not grounded in the lesson,
+# or relabelled into the other tier) still usually reaches it.
+QUESTION_COUNT_LOT = int(os.getenv("QUESTION_COUNT_LOT", "5"))
+QUESTION_COUNT_HOT = int(os.getenv("QUESTION_COUNT_HOT", "5"))
 
 ADAPTIVE_VARIANT_GENERATION_ENABLED = os.getenv(
     "ADAPTIVE_VARIANT_GENERATION_ENABLED", "True"

@@ -158,7 +158,7 @@ def _normal_question_source(node):
     return normal, ""
 
 
-def _run_pipeline(run_id, material_id, node_ids=None, skip_complete=False):
+def _run_pipeline(run_id, material_id, node_ids=None, skip_complete=False, append=False):
     """Thread target: run the pipeline, streaming trace events to the DB."""
     from .services.pipeline import generate_questions_for_material
 
@@ -183,6 +183,7 @@ def _run_pipeline(run_id, material_id, node_ids=None, skip_complete=False):
             on_event=on_event,
             node_ids=node_ids,
             skip_complete=skip_complete or run.node_id is None,
+            append=append,
         )
         on_event("saved", f"Saved {len(questions)} questions to database",
                  {"count": len(questions)})
@@ -228,6 +229,9 @@ class StartGenerationView(APIView):
         node = None
         requested_node_id = node_id if node_id is not None else request.data.get("node_id")
         skip_complete = request.data.get("skip_complete", requested_node_id is None) is True
+        # "Generate more": a new batch is added to the concept's questions
+        # instead of replacing the untouched ones.
+        append = request.data.get("append") is True
         if requested_node_id is not None:
             node = content_nodes.filter(id=requested_node_id).first()
             if node is None:
@@ -295,6 +299,7 @@ class StartGenerationView(APIView):
                 [node.id] if node else normal_ids,
                 skip_complete,
             ),
+            kwargs={"append": append},
             daemon=True,
         ).start()
         return Response(
