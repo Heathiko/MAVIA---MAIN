@@ -3,6 +3,7 @@
 // and a drop is reported upward -- nothing here changes links itself.
 import { useEffect, useMemo } from "react";
 import {
+  BaseEdge,
   Background,
   Controls,
   Handle,
@@ -33,6 +34,10 @@ function ConceptNode({ data }) {
       <span className="pg-node-title">{title}</span>
       {step.kind === "image" && <span className="pg-node-badge">Figure</span>}
       <Handle type="source" position={Position.Bottom} isConnectable={false} />
+      {/* Where a link that skips a tier leaves and arrives: the right side,
+          next to the lanes. */}
+      <Handle id="lane-out" type="source" position={Position.Right} isConnectable={false} className="pg-lane-handle" />
+      <Handle id="lane-in" type="target" position={Position.Right} isConnectable={false} className="pg-lane-handle" />
     </div>
   );
 }
@@ -53,7 +58,16 @@ function TierNode({ data }) {
   );
 }
 
-const NODE_TYPES = { concept: ConceptNode, label: LabelNode, tier: TierNode };
+const NODE_TYPES = { concept: ConceptNode, label: LabelNode, tier: TierNode, spacer: () => <div className="pg-spacer" /> };
+
+// A link that skips a tier: out to its lane, down the lane, and back in, so
+// it never crosses the tiers in between.
+function LaneEdge({ id, sourceX, sourceY, targetX, targetY, data, markerEnd, style }) {
+  const path = `M ${sourceX} ${sourceY} H ${data.laneX} V ${targetY} H ${targetX}`;
+  return <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} />;
+}
+
+const EDGE_TYPES = { lane: LaneEdge };
 
 function Canvas({ steps, selectedId, onSelect, editable, showPending = false, onDrop }) {
   const layout = useMemo(() => {
@@ -86,6 +100,7 @@ function Canvas({ steps, selectedId, onSelect, editable, showPending = false, on
       nodes={nodes}
       edges={layout.edges}
       nodeTypes={NODE_TYPES}
+      edgeTypes={EDGE_TYPES}
       onNodesChange={onNodesChange}
       onNodeClick={(_event, node) => node.type === "concept" && onSelect(Number(node.id))}
       onPaneClick={() => onSelect(null)}

@@ -275,3 +275,7 @@
   font-weight: 600;
   color: var(--muted, #5c6b7c);
 }
+
+/* The side connection points exist only to anchor lane links. */
+.pg-node .pg-lane-handle { opacity: 0; pointer-events: none; }
+.pg-spacer { width: 1px; height: 1px; }

@@ -13,6 +13,9 @@ const MARGIN = 20;
 // reaches above and below its row.
 const TIER_GUTTER = 96;
 const TIER_PAD = 18;
+// Links that skip a tier run down lanes to the right of the bands, so they
+// never pass through a tier they do not belong to.
+const LANE_GAP = 26;
 const EDGE_COLOR = "#6b7a8c";
 
 const byPosition = (steps) => [...steps].sort((a, b) => a.position - b.position);
@@ -64,6 +67,8 @@ export function buildGraph(steps, selectedId = null) {
   // dagre returns centres; React Flow positions are top-left corners.
   const positions = new Map();
   const tiers = [];
+  const tierOf = new Map();
+  let laneStart = 0;
   let bottom = 0;
   if (linked.length) {
     const graph = new dagre.graphlib.Graph();
@@ -82,6 +87,9 @@ export function buildGraph(steps, selectedId = null) {
     // dagre puts every concept of one rank on the same row, so a tier is
     // simply a row: everything in it can be taught once the rows above are.
     const width = TIER_GUTTER + graph.graph().width;
+    laneStart = width;
+    const rowNumber = new Map([...rows].sort((a, b) => a - b).map((y, index) => [y, index + 1]));
+    for (const step of linked) tierOf.set(step.concept_id, rowNumber.get(graph.node(String(step.concept_id)).y));
     [...rows].sort((a, b) => a - b).forEach((y, index) => {
       tiers.push({
         id: `tier-${index + 1}`,
@@ -112,6 +120,20 @@ export function buildGraph(steps, selectedId = null) {
     position: positions.get(step.concept_id),
     data: { step, role: roleOf(step.concept_id), pending: (step.suggestions || []).length },
   }))];
+  const skipping = edges.filter((edge) => tierOf.get(edge.to) - tierOf.get(edge.from) > 1).length;
+  if (skipping) {
+    // The view fits itself to nodes, not lines; an invisible point at the
+    // last lane keeps the lanes inside it.
+    nodes.push({
+      id: "lane-spacer",
+      type: "spacer",
+      position: { x: laneStart + (skipping + 1) * LANE_GAP, y: 0 },
+      data: {},
+      draggable: false,
+      selectable: false,
+      style: { pointerEvents: "none" },
+    });
+  }
   if (unlinked.length) {
     nodes.push({
       id: "not-linked-label",
@@ -123,19 +145,33 @@ export function buildGraph(steps, selectedId = null) {
     });
   }
 
+  let lanes = 0;
   return {
     nodes,
-    edges: edges.map((edge) => ({
-      id: `link-${edge.linkId}`,
-      source: String(edge.from),
-      target: String(edge.to),
+    edges: edges.map((edge) => {
+      const common = {
+        id: `link-${edge.linkId}`,
+        source: String(edge.from),
+        target: String(edge.to),
+        markerEnd: { type: "arrowclosed", width: 18, height: 18, color: EDGE_COLOR },
+        style: { stroke: EDGE_COLOR, strokeWidth: 1.5 },
+      };
+      if (tierOf.get(edge.to) - tierOf.get(edge.from) > 1) {
+        // Out of the right side of the prerequisite, down its own lane, and
+        // into the right side of the concept that needs it.
+        lanes += 1;
+        return {
+          ...common,
+          type: "lane",
+          sourceHandle: "lane-out",
+          targetHandle: "lane-in",
+          data: { laneX: laneStart + lanes * LANE_GAP },
+        };
+      }
       // Right-angle lines run down the gaps between tiers instead of cutting
       // diagonally across the concepts in between.
-      type: "smoothstep",
-      pathOptions: { borderRadius: 10 },
-      markerEnd: { type: "arrowclosed", width: 18, height: 18, color: EDGE_COLOR },
-      style: { stroke: EDGE_COLOR, strokeWidth: 1.5 },
-    })),
+      return { ...common, type: "smoothstep", pathOptions: { borderRadius: 10 } };
+    }),
   };
 }
 
