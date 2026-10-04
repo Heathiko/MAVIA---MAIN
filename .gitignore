@@ -75,3 +75,6 @@ backend/learning_path/fixtures/gold_map_308.json
 
 # Course-level slide deck and its generator
 docs/course-level-deck/
+
+# Pipeline flowchart (slide asset) and its generator
+docs/pipeline-flowchart/

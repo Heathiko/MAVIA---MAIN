@@ -1,11 +1,12 @@
-"""Measure how a candidate version relates to the Normal text, without Gemma.
+"""Measure how a candidate version relates to the Standard text, without Gemma.
 
 A version label is right only when three things are true of the candidate:
 
-* **the facts are kept** -- every Normal sentence is still matched somewhere
-  (meaning coverage);
+* **the facts are kept** -- every Standard sentence has a plausible match
+  somewhere in the candidate (meaning coverage); a strong average cannot
+  hide one weakly matched sentence;
 * **something is added**, or not -- candidate sentences that match nothing in
-  Normal (novelty);
+  Standard (novelty);
 * **it is easier to read**, or not -- the Dale-Chall score, which counts words
   most students do not know. FKGL counts only word and sentence length, so
   "intermolecular forces lock particles into a lattice" looked easy to it.
@@ -15,21 +16,22 @@ loads; Dale-Chall is a formula over a fixed word list. No LLM is called.
 
 The cut-offs were measured on 21 labelled pairs (the Solid, Liquid and Gas
 PDFs, the observed failures in BUGS.md and written cases): every real
-elaboration had at least one new sentence and every paraphrase none, and a
-mean coverage of 0.55 separated the unrelated and incomplete candidates from
-the valid ones. Novelty's 0.6 was chosen before looking; coverage's 0.55 after,
-so it needs confirming on pairs that were not used to set it.
+elaboration had at least one new sentence and every paraphrase none. Coverage's
+0.55 was originally calibrated for the *mean*, not each sentence; applying it
+per sentence is deliberately conservative and may send good paraphrases to
+teacher review. It needs calibration on additional labelled pairs.
 """
 
 import re
 from functools import lru_cache
 from pathlib import Path
 
-# A candidate sentence closer than this to some Normal sentence says the same
+# A candidate sentence closer than this to some Standard sentence says the same
 # thing; one further from all of them is new content.
 NOVEL_SENTENCE_SIMILARITY = 0.6
-# Mean, over Normal's sentences, of how well each is matched in the candidate.
-MIN_MEAN_COVERAGE = 0.55
+# Minimum plausible match for each Standard sentence. A failed sentence asks for
+# review rather than automatically assigning a PDF-supplied role.
+MIN_SENTENCE_COVERAGE = 0.55
 # A sentence needs a few words to carry a fact; shorter fragments ("Examples:")
 # are ignored when splitting.
 _MIN_SENTENCE_WORDS = 3
@@ -98,7 +100,7 @@ def sentences(text):
     return kept or [" ".join((text or "").split())]
 
 
-def _similarities(normal_sentences, candidate_sentences):
+def _similarities(standard_sentences, candidate_sentences):
     from lessons.services.semantic_grouping import SemanticUnavailable, runtime
 
     try:
@@ -109,9 +111,9 @@ def _similarities(normal_sentences, candidate_sentences):
         # A runtime without a sentence encoder (a scoring-only stand-in)
         # cannot measure; treated as unavailable rather than failing.
         raise MeasurementUnavailable("no sentence encoder in the semantic runtime")
-    normal = encoder.encode(normal_sentences, normalize_embeddings=True, convert_to_numpy=True)
+    standard = encoder.encode(standard_sentences, normalize_embeddings=True, convert_to_numpy=True)
     candidate = encoder.encode(candidate_sentences, normalize_embeddings=True, convert_to_numpy=True)
-    return normal @ candidate.T  # rows: Normal sentences, columns: candidate sentences
+    return standard @ candidate.T  # rows: Standard sentences, columns: candidate sentences
 
 
 def outside_terms(source_text, version_text):
@@ -130,21 +132,24 @@ def outside_terms(source_text, version_text):
     return sorted(terms)
 
 
-def measure_versions(normal_text, candidate_text):
-    """``{facts_kept, adds_content, easier, ...}`` for one candidate against Normal."""
-    normal_sentences = sentences(normal_text)
+def measure_versions(standard_text, candidate_text):
+    """``{facts_kept, adds_content, easier, ...}`` for one candidate against Standard."""
+    standard_sentences = sentences(standard_text)
     candidate_sentences = sentences(candidate_text)
-    similarity = _similarities(normal_sentences, candidate_sentences)
+    similarity = _similarities(standard_sentences, candidate_sentences)
     coverage = [float(value) for value in similarity.max(axis=1)]
     closeness = [float(value) for value in similarity.max(axis=0)]
     novel = sum(value < NOVEL_SENTENCE_SIMILARITY for value in closeness)
     mean_coverage = sum(coverage) / len(coverage)
-    dale_chall_change = dale_chall(candidate_text) - dale_chall(normal_text)
+    weak_coverage = sum(value < MIN_SENTENCE_COVERAGE for value in coverage)
+    dale_chall_change = dale_chall(candidate_text) - dale_chall(standard_text)
     return {
-        "facts_kept": mean_coverage >= MIN_MEAN_COVERAGE,
+        "facts_kept": weak_coverage == 0,
         "adds_content": novel >= 1,
         "easier": dale_chall_change < 0,
         "mean_coverage": round(mean_coverage, 2),
+        "min_coverage": round(min(coverage), 2),
+        "weakly_covered_sentences": weak_coverage,
         "novel_sentences": novel,
         "dale_chall_change": round(dale_chall_change, 2),
     }

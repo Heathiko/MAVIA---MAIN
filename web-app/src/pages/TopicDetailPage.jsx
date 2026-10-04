@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { uploadedMaterialFromResponse } from "../uploadNavigation";
 import {
@@ -10,6 +11,8 @@ import {
   createTopicQuestion,
   deleteLearningMaterial,
   deleteLearningObject,
+  keepQuestionBank,
+  labelTopicQuestions,
   deleteTopicLearningObject,
   deleteTopicQuestion,
   fetchCourse,
@@ -38,6 +41,7 @@ import {
 // The same path display the standalone page uses, so review step 5 and that
 // page cannot drift apart.
 import { MaterialPath } from "./LearningPathPage";
+import BundleParts from "../learning-path/BundleParts";
 import PublishedDialog from "../learning-path/PublishedDialog";
 
 function flattenNodes(nodes = []) {
@@ -272,6 +276,43 @@ function logLearningObjectMatchDebug(payload) {
   console.groupEnd();
 }
 
+// The five review steps in order. One tracker is drawn above every step and
+// sticks to the top of the panel, so the teacher always sees where they are.
+const REVIEW_STEPS = [
+  { key: "objects", label: "Object pairs" },
+  { key: "versions", label: "Content versions" },
+  { key: "questions", label: "Question pairs" },
+  { key: "publish", label: "Content & questions" },
+  { key: "path", label: "Learning path" },
+];
+
+function ReviewSteps({ step }) {
+  const current = REVIEW_STEPS.findIndex((item) => item.key === step);
+  return (
+    <div className="review-step-indicator has-five-steps is-sticky" aria-label="Review progress">
+      {REVIEW_STEPS.map((item, index) => (
+        <Fragment key={item.key}>
+          {index > 0 && <div aria-hidden="true" />}
+          <span
+            className={index === current ? "is-active" : index < current ? "is-complete" : undefined}
+            aria-current={index === current ? "step" : undefined}
+          >
+            {index + 1}
+          </span>
+        </Fragment>
+      ))}
+      <strong>{REVIEW_STEPS[current]?.label}</strong>
+    </div>
+  );
+}
+
+// Back and Next for a review step, pinned to the bottom-right of the window so
+// moving on never means scrolling to the end of a long list. Rendered into
+// <body> so no scrolling panel around it can carry it away.
+function StepDock({ children }) {
+  return createPortal(<div className="review-step-dock">{children}</div>, document.body);
+}
+
 function ReviewQueueNavigator({ index, count, onChange, disabled, itemLabel }) {
   if (!count) return null;
   return (
@@ -317,18 +358,6 @@ function ObjectPairsPanel({
           <h4 id="object-pairs-panel-title">Review object pairs</h4>
         </div>
         <span>{suggestions.length} to review</span>
-      </div>
-      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
-        <span className="is-active">1</span>
-        <div aria-hidden="true" />
-        <span>2</span>
-        <div aria-hidden="true" />
-        <span>3</span>
-        <div aria-hidden="true" />
-        <span>4</span>
-        <div aria-hidden="true" />
-        <span>5</span>
-        <strong>Object pairs</strong>
       </div>
 
       {!suggestions.length ? (
@@ -410,11 +439,11 @@ function ObjectPairsPanel({
           </div>
         </>
       )}
-      <div className="review-step-actions review-step-actions-next">
+      <StepDock>
         <button type="button" className="btn btn-primary" disabled={Boolean(busyAction)} onClick={() => onReviewStepChange("versions")}>
           Next step: Content versions
         </button>
-      </div>
+      </StepDock>
     </aside>
   );
 }
@@ -422,10 +451,60 @@ function ObjectPairsPanel({
 
 // The three versions a learner is offered, in the order they are shown.
 export const VERSION_ROLES = [
-  { key: "normal", label: "Normal" },
+  { key: "standard", label: "Standard" },
   { key: "simplified", label: "Simplified" },
   { key: "elaborated", label: "Elaborated" },
 ];
+
+// What still stands between the teacher and the learning path: concepts
+// missing a Simplified or Elaborated version, and concepts with no question.
+// The Question pairs step waits on the first; the Learning path button on both.
+// A printed question still waiting for its Bloom level, LOTS/HOTS and category.
+export function isUnlabelled(question) {
+  return (question.source_type || "pdf") === "pdf" && !question.bloom_level;
+}
+
+// Every concept needs at least these many LOTS and HOTS questions, from any
+// source -- generated, written by the teacher, or printed in a PDF and paired
+// to it -- before the teacher moves past the Questions step. Set by what the
+// adaptive engine draws per concept. Generation asks for more (5 each), so a
+// few lost to malformed replies or the grounding check still leave enough.
+export const MIN_QUESTIONS = { LOT: 4, HOT: 2 };
+// Rounds one Generate click runs before stopping and reporting what is left.
+const GENERATION_ROUNDS = 3;
+const MIN_TEXT = `${MIN_QUESTIONS.LOT} LOTS and ${MIN_QUESTIONS.HOT} HOTS`;
+
+export function isShortOfQuestions(questions = []) {
+  const counts = tierCounts(questions);
+  return counts.LOT < MIN_QUESTIONS.LOT || counts.HOT < MIN_QUESTIONS.HOT;
+}
+
+export function tierCounts(questions = []) {
+  return {
+    LOT: questions.filter((question) => question.thinking_order === "LOT").length,
+    HOT: questions.filter((question) => question.thinking_order === "HOT").length,
+  };
+}
+
+export function contentGaps(groups, questions = []) {
+  const concepts = (groups || []).filter((group) => group.versions?.representative_id);
+  const missingVersions = concepts.filter((group) => (
+    group.versions?.classification_complete === false
+    || !group.versions?.slots?.simplified
+    || !group.versions?.slots?.elaborated
+  )).length;
+  const shortQuestions = concepts.filter((group) => isShortOfQuestions(group.questions)).length;
+  const outOfDateQuestions = concepts.filter((group) => group.question_bank_out_of_date).length;
+  const unlabelledQuestions = questions.filter(isUnlabelled).length;
+  return {
+    missingVersions,
+    shortQuestions,
+    outOfDateQuestions,
+    unlabelledQuestions,
+    ready: concepts.length > 0 && missingVersions === 0 && shortQuestions === 0
+      && outOfDateQuestions === 0 && unlabelledQuestions === 0,
+  };
+}
 
 // "3 versions from 2 files" rather than "6 variations": the old count was the
 // concept's object count, which is not the number of versions a learner is
@@ -467,6 +546,11 @@ export function questionReviewState(question) {
   return { status, isPending, label };
 }
 
+// Why a question rated "create" stays out of the learner quiz.
+const NOT_SERVED_TIP = "MAVIA maps Bloom's levels to the learner quiz's two tiers: remember, "
+  + "understand and apply are LOTS; analyze and evaluate are HOTS. \u201cCreate\u201d has no tier "
+  + "in the quiz, so by default these questions stay in your bank but are not given to learners.";
+
 function ReviewQueuePanel({
   questionPairings,
   groups,
@@ -474,7 +558,22 @@ function ReviewQueuePanel({
   busyAction,
   onReviewStepChange,
   generationProps,
+  manualPanel,
+  unlabelledCount = 0,
+  labelling = { running: false, error: "" },
+  onRetryLabelling,
 }) {
+  // Final review waits until every concept has its minimum LOTS and HOTS,
+  // no bank is out of date, and every printed question is labelled.
+  const gaps = contentGaps(groups, questionPairings);
+  const blockers = [
+    unlabelledCount > 0 && `${unlabelledCount} printed question${unlabelledCount === 1 ? " still needs" : "s still need"} labelling`,
+    gaps.shortQuestions > 0 && `${gaps.shortQuestions} concept${gaps.shortQuestions === 1 ? " needs" : "s need"} ${MIN_TEXT}`,
+    gaps.outOfDateQuestions > 0 && `${gaps.outOfDateQuestions} concept${gaps.outOfDateQuestions === 1 ? " has" : "s have"} questions to check`,
+  ].filter(Boolean);
+  // Both views stay mounted so a running generation or a half-written
+  // question survives switching tabs.
+  const [mode, setMode] = useState("generate");
   return (
     <section className="connection-review-panel" aria-labelledby="match-suggestion-title">
       <div className="connection-review-heading">
@@ -485,43 +584,79 @@ function ReviewQueuePanel({
         </div>
         <span className="connection-source-count">{questionPairings.length} question{questionPairings.length === 1 ? "" : "s"}</span>
       </div>
-      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
-        <span className="is-complete">1</span>
-        <div aria-hidden="true" />
-        <span className="is-complete">2</span>
-        <div aria-hidden="true" />
-        <span className="is-active">3</span>
-        <div aria-hidden="true" />
-        <span>4</span>
-        <div aria-hidden="true" />
-        <span>5</span>
-        <strong>Question pairs</strong>
+
+      {labelling.running && (
+        <p role="status" className="connection-unpublished-note">
+          Labelling {unlabelledCount} printed question{unlabelledCount === 1 ? "" : "s"} with
+          their Bloom level, LOTS/HOTS and category…
+        </p>
+      )}
+      {labelling.error && (
+        <div className="error-banner" role="alert">
+          {labelling.error}{" "}
+          <button type="button" className="btn btn-small btn-secondary" onClick={onRetryLabelling}>
+            Try again
+          </button>
+        </div>
+      )}
+      <div className="question-mode-tabs" role="tablist" aria-label="How to add questions">
+        {[["generate", "Generate"], ["manual", "Manual"]].map(([key, label]) => (
+          <button
+            type="button"
+            role="tab"
+            key={key}
+            id={`question-mode-${key}`}
+            aria-selected={mode === key}
+            aria-controls={`question-mode-${key}-panel`}
+            onClick={() => setMode(key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div
+        role="tabpanel"
+        id="question-mode-generate-panel"
+        aria-labelledby="question-mode-generate"
+        hidden={mode !== "generate"}
+      >
+        <QuestionGenerationTool
+          {...generationProps}
+          groups={groups}
+          materialById={materialById}
+        />
+      </div>
+      <div
+        role="tabpanel"
+        id="question-mode-manual-panel"
+        aria-labelledby="question-mode-manual"
+        hidden={mode !== "manual"}
+      >
+        {manualPanel}
       </div>
 
-      <QuestionGenerationTool
-        {...generationProps}
-        groups={groups}
-        materialById={materialById}
-      />
-
-      <div className="review-step-actions-row">
+      <StepDock>
         <button
           type="button"
           className="btn btn-secondary"
           disabled={Boolean(busyAction)}
-          onClick={() => onReviewStepChange("objects")}
+          onClick={() => onReviewStepChange("versions")}
         >
-          Back to object pairs
+          Back to content versions
         </button>
+        {blockers.length > 0 && (
+          <small className="review-step-dock-note">{blockers.join("; ")}</small>
+        )}
         <button
           type="button"
           className="btn btn-primary"
-          disabled={Boolean(busyAction)}
+          disabled={Boolean(busyAction) || blockers.length > 0 || labelling.running}
+          title={blockers.length ? `Before final review: ${blockers.join("; ")}.` : undefined}
           onClick={() => onReviewStepChange("publish")}
         >
           Next: Final Review
         </button>
-      </div>
+      </StepDock>
     </section>
   );
 }
@@ -599,6 +734,8 @@ function VersionSlotCard({
   heading,
   entry,
   text,
+  // The objects a bundle version is taught as; shown one by one when more than one.
+  parts = null,
   originLabel,
   readOnly,
   busy,
@@ -607,13 +744,15 @@ function VersionSlotCard({
   onCancelEdit,
   onSave,
   onGenerate,
-  // Written from Normal text that has since changed. Publishing waits until the
+  // Written from Standard text that has since changed. Publishing waits until the
   // teacher keeps, edits or regenerates it.
   stale = false,
   // No generated version passed the quality check, so learners hear the
-  // Normal text at this level. Publishing is not held back; the teacher may
+  // Standard text at this level. Publishing is not held back; the teacher may
   // write an explanation of their own.
   fallback = false,
+  fallbackCount = 0,
+  segmentCount = 0,
   busyLabel = "",
   onKeep,
   onRegenerate,
@@ -634,7 +773,7 @@ function VersionSlotCard({
         <div className="version-slot-stale" role="alert">
           <strong>Check this version</strong>
           <p>
-            The Normal text was changed after this was written, so it may no longer match.
+            The Standard text was changed after this was written, so it may no longer match.
             Publishing waits until you decide.
           </p>
           <div className="version-slot-actions">
@@ -651,12 +790,17 @@ function VersionSlotCard({
 
       {fallback && !stale && !isEditing && (
         <div className="version-slot-stale version-slot-fallback" role="status">
-          <strong>Using the Normal text for now</strong>
+          <strong>{fallbackCount > 0 && fallbackCount < segmentCount
+            ? `${fallbackCount} of ${segmentCount} parts use the Standard text`
+            : "Using the Standard text for now"}</strong>
           <p>
             {slotKey === "simplified"
-              ? "No generated Simplified version passed the quality check (easier to read, keeps every fact), "
-              : "No generated Elaborated version passed the quality check (fuller, keeps every fact), "}
-            so learners at this level hear the Normal text. You can write your own explanation instead.
+              ? "Some Simplified wording did not pass the quality check (easier to read, keeps every fact). "
+              : "Some Elaborated wording did not pass the quality check (fuller, keeps every fact). "}
+            {fallbackCount > 0 && fallbackCount < segmentCount
+              ? "Those parts use their Standard wording; the other parts use generated wording."
+              : "Learners at this level hear the Standard text."}
+            {" You can write your own explanation instead."}
           </p>
           {!readOnly && (
             <div className="version-slot-actions">
@@ -693,7 +837,9 @@ function VersionSlotCard({
           </div>
         ) : (
           <>
-            <p className="version-slot-text">{text}</p>
+            {(parts || []).length > 1
+              ? <BundleParts parts={parts} className="version-slot-text" />
+              : <p className="version-slot-text">{text}</p>}
             {!readOnly && (
               <div className="version-slot-actions">
                 <button type="button" className="btn btn-secondary btn-small" disabled={busy} onClick={onBeginEdit}>
@@ -716,7 +862,7 @@ function VersionSlotCard({
 }
 
 function VersionRoleSelect({ sourceId, currentSlot, busy, onAssign }) {
-  const roles = ["NORMAL", "SIMPLIFIED", "ELABORATED", "EXTRA"]
+  const roles = ["STANDARD", "SIMPLIFIED", "ELABORATED"]
     .filter((slot) => slot !== currentSlot);
   return (
     <label className="version-role-select">
@@ -731,8 +877,7 @@ function VersionRoleSelect({ sourceId, currentSlot, busy, onAssign }) {
         <option value="">Select a role…</option>
         {roles.map((slot) => (
           <option value={slot} key={slot}>
-            {slot === "NORMAL" ? "Make Normal"
-              : slot === "EXTRA" ? "Keep as Extra"
+            {slot === "STANDARD" ? "Make Standard"
               : `Move to ${slot === "SIMPLIFIED" ? "Simplified" : "Elaborated"}`}
           </option>
         ))}
@@ -764,7 +909,7 @@ function VersionReviewPanel({
     () => groups.filter((group) => group.versions?.representative_id),
     [groups],
   );
-  // Concepts holding a version written from Normal text that has since changed.
+  // Concepts holding a version written from Standard text that has since changed.
   // Publishing refuses these, so they are counted and reachable in one click
   // rather than left for the teacher to find by paging through every concept.
   const staleChunkIndexes = chunks
@@ -803,10 +948,14 @@ function VersionReviewPanel({
     const slots = item.versions?.slots || {};
     return count + (slots.simplified ? 0 : 1) + (slots.elaborated ? 0 : 1);
   }, 0);
+  // Question pairs wait until every concept has all three versions, whether a
+  // PDF supplied it or it was generated.
+  const incompleteCount = contentGaps(chunks).missingVersions;
   const representative = chunk?.learning_objects?.find(
     (item) => Number(item.id) === Number(versions?.representative_id),
   );
-  const originalMaterial = materialById.get(Number(representative?.material));
+  const standardEntry = versions?.slots?.standard;
+  const originalMaterial = materialById.get(Number(standardEntry?.material ?? representative?.material));
 
   function materialTitleFor(entry) {
     if (!entry?.source_learning_object_id) return null;
@@ -831,7 +980,7 @@ function VersionReviewPanel({
               className="btn btn-secondary btn-small version-stale-jump"
               disabled={Boolean(busyAction)}
               onClick={goToNextStale}
-              title="Versions written before their Normal text was changed. Publishing waits until each is checked."
+              title="Versions written before their Standard text was changed. Publishing waits until each is checked."
             >
               {staleVersionCount} version{staleVersionCount === 1 ? "" : "s"} to check · Go to next
             </button>
@@ -884,18 +1033,6 @@ function VersionReviewPanel({
           }
         />
       )}
-      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
-        <span className="is-complete">1</span>
-        <div aria-hidden="true" />
-        <span className="is-active">2</span>
-        <div aria-hidden="true" />
-        <span>3</span>
-        <div aria-hidden="true" />
-        <span>4</span>
-        <div aria-hidden="true" />
-        <span>5</span>
-        <strong>Content versions</strong>
-      </div>
 
       {!chunks.length ? (
         <div className="review-queue-empty">No concepts to review yet.</div>
@@ -909,15 +1046,36 @@ function VersionReviewPanel({
             itemLabel="Concept"
           />
 
-          <h4 className="version-chunk-title">{representative?.title || "Untitled concept"}</h4>
+          <h4 className="version-chunk-title">{chunk.display_title || chunk.label || representative?.title || "Untitled concept"}</h4>
           <p className="muted-text">
             {chunk.learning_objects.length} grouped PDF variant{chunk.learning_objects.length === 1 ? "" : "s"}
             {versions?.classification_complete === false
-              ? " awaiting Gemma classification"
-              : " classified into Normal, Simplified, Elaborated, or Extra"}.
+              ? " — the first relevant PDF is Standard unless the teacher replaces it; supplementary PDFs await classification"
+              : " — the primary PDF is Standard; supplementary PDFs may supply Simplified or Elaborated"}.
           </p>
 
-          {versions?.classification_complete === false ? (
+          {versions?.standard_replacement_needed && (
+            <div className="version-pending-decision">
+              <p><strong>The previous Standard PDF no longer supplies this concept.</strong> Choose a surviving PDF as the new baseline. MAVIA will not promote one automatically.</p>
+              <div className="version-slot-actions">
+                {(chunk.bundles || []).filter((bundle) => bundle.learning_objects?.length).map((bundle) => {
+                  const material = materialById.get(Number(bundle.material));
+                  return (
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-small"
+                      key={bundle.material}
+                      disabled={Boolean(busyAction)}
+                      onClick={() => onAssignSlot(bundle.learning_objects[0].id, "STANDARD")}
+                    >
+                      Use {material?.filename || material?.title || `PDF ${bundle.material}`} as Standard
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {versions?.classification_complete === false && !versions?.standard_replacement_needed ? (
             <div className="review-queue-empty">
               <strong>Existing PDF variants — not generated:</strong>
               <div className="version-slot-grid">
@@ -926,7 +1084,7 @@ function VersionReviewPanel({
                   return (
                     <VersionSlotCard
                       key={item.id}
-                      slotKey="extra"
+                      slotKey="unassigned"
                       heading={`PDF variant ${index + 1} · Unclassified`}
                       text={item.content}
                       originLabel={`From ${material?.filename || material?.title || `PDF ${item.material}`}`}
@@ -937,7 +1095,7 @@ function VersionReviewPanel({
                 })}
               </div>
               <p>
-                Gemma is assigning these existing texts to roles automatically. Afterward, each missing
+                Gemma is proposing roles for supplementary PDFs. Afterward, each missing
                 Simplified or Elaborated role will have its own Generate button.
               </p>
             </div>
@@ -946,6 +1104,13 @@ function VersionReviewPanel({
               (item) => Number(item.id) === Number(pending.learning_object_id),
             );
             if (!candidate) return null;
+            const candidateBundle = chunk.bundles?.find(
+              (bundle) => Number(bundle.material) === Number(pending.material_id),
+            );
+            const candidateText = candidateBundle?.learning_objects
+              ?.map((item) => item.content?.trim())
+              .filter(Boolean)
+              .join("\n") || candidate.content;
             return (
               <div className="version-pending-decision" key={pending.learning_object_id}>
                 <p>
@@ -959,22 +1124,32 @@ function VersionReviewPanel({
                     {pending.readability_confident ? "." : " but did not clear the automatic threshold."}
                   </small>
                 )}
-                <blockquote>{candidate.content}</blockquote>
+                {(pending.review_issues || []).length > 0 && (
+                  <p className="muted-text">
+                    {pending.review_measures?.weakly_covered_sentences > 0
+                      ? `${pending.review_measures.weakly_covered_sentences} Standard sentence(s) may be missing or phrased very differently. `
+                      : "The automatic checks disagree with the AI label. "}
+                    Compare this PDF text with Standard before choosing a role.
+                  </p>
+                )}
+                <blockquote>{candidateText}</blockquote>
                 <div className="version-slot-actions">
-                  {["SIMPLIFIED", "ELABORATED", "EXTRA"].map((slot) => (
+                  {["STANDARD", "SIMPLIFIED", "ELABORATED"].map((slot) => (
                     <button
                       type="button"
                       key={slot}
-                      className={slot === "EXTRA" ? "btn btn-secondary btn-small" : "btn btn-primary btn-small"}
+                      className="btn btn-primary btn-small"
                       disabled={Boolean(busyAction)}
                       onClick={() => onAssignSlot(pending.learning_object_id, slot)}
                     >
-                      {slot === "SIMPLIFIED" ? "Use as Simplified"
-                        : slot === "ELABORATED" ? "Use as Elaborated"
-                        : "Keep as extra"}
+                      {slot === "STANDARD" ? "Make Standard"
+                        : slot === "SIMPLIFIED" ? "Use as Simplified" : "Use as Elaborated"}
                     </button>
                   ))}
                 </div>
+                <p className="muted-text">
+                  If neither role fits, leave this source unassigned or return to object pairs to separate it from this concept.
+                </p>
               </div>
             );
           })}
@@ -982,11 +1157,12 @@ function VersionReviewPanel({
           {versions?.classification_complete !== false && <div className="version-slot-grid">
             <VersionSlotCard
               slotKey="original"
-              heading={versions?.original_selected ? "Normal" : "Normal candidate"}
-              text={representative?.content}
+              heading={versions?.original_selected ? "Standard" : "Standard candidate"}
+              text={standardEntry?.text || representative?.content}
+              parts={standardEntry?.objects}
               originLabel={versions?.original_selected
-                ? `Selected from ${originalMaterial?.filename || originalMaterial?.title || "this PDF"}`
-                : "The Normal version will be selected during source classification"}
+                ? `Primary PDF: ${originalMaterial?.filename || originalMaterial?.title || "this PDF"}`
+                : "Choose a replacement Standard PDF before continuing"}
               readOnly
               busy={false}
             />
@@ -1011,6 +1187,8 @@ function VersionReviewPanel({
                   readOnly={Boolean(entry) && !entry.id}
                   stale={Boolean(entry?.stale)}
                   fallback={Boolean(entry?.fallback)}
+                  fallbackCount={entry?.fallback_count || 0}
+                  segmentCount={entry?.segment_count || 0}
                   busyLabel={busyAction === generateKey ? "Regenerating, this takes a few minutes…" : ""}
                   onKeep={() => onKeepVersion(entry.id)}
                   onRegenerate={() => onRegenerateVersion(versions.representative_id, slotKey.toUpperCase())}
@@ -1035,39 +1213,27 @@ function VersionReviewPanel({
             })}
           </div>}
 
-          {versions?.classification_complete !== false && (versions?.extras || []).length > 0 && (
-            <details className="version-extra-block">
-              <summary>Other source versions ({versions.extras.length})</summary>
-              <p>
-                Preserved as alternatives. Select a source below to replace a main version.
-              </p>
-              {versions.extras.map((entry) => (
-                <div key={entry.id ?? `bundle-${entry.material}`}><VersionSlotCard
-                  key={entry.id ?? `bundle-${entry.material}`}
-                  slotKey="extra"
-                  heading="Extra"
-                  entry={entry}
+          {(versions?.archived_unassigned || []).length > 0 && (
+            <details className="version-archived-block">
+              <summary>Archived unassigned wording ({versions.archived_unassigned.length})</summary>
+              <p>This older wording was preserved when the fourth version slot was removed. It is not served to learners.</p>
+              {versions.archived_unassigned.map((entry) => (
+                <VersionSlotCard
+                  key={entry.old_variant_id}
+                  slotKey="unassigned"
+                  heading="Unassigned wording"
                   text={entry.text}
-                  originLabel={versionOriginLabel(entry, materialTitleFor(entry))}
                   readOnly
                   busy={false}
                 />
-                  {entry.source_learning_object_id && (
-                    <VersionRoleSelect
-                      sourceId={entry.source_learning_object_id}
-                      currentSlot="EXTRA"
-                      busy={Boolean(busyAction)}
-                      onAssign={onAssignSlot}
-                    />
-                  )}
-                </div>
               ))}
             </details>
           )}
+
         </>
       )}
 
-      <div className="review-step-actions-row">
+      <StepDock>
         <button
           type="button"
           className="btn btn-secondary"
@@ -1076,16 +1242,44 @@ function VersionReviewPanel({
         >
           Back to object pairs
         </button>
+        {incompleteCount > 0 && (
+          <small className="review-step-dock-note">
+            {incompleteCount} concept{incompleteCount === 1 ? " still needs" : "s still need"} a
+            Simplified or Elaborated version
+          </small>
+        )}
         <button
           type="button"
           className="btn btn-primary"
-          disabled={Boolean(busyAction)}
+          disabled={Boolean(busyAction) || incompleteCount > 0}
+          title={incompleteCount > 0 ? "Give every concept a Standard, Simplified and Elaborated version first." : undefined}
           onClick={() => onReviewStepChange("questions")}
         >
           Next step: Question pairs
         </button>
-      </div>
+      </StepDock>
     </section>
+  );
+}
+
+// One square per question the tier needs, filled up to the count: red at 1,
+// yellow in between, green once the minimum is met. Counts every paired,
+// labelled question.
+function TierCounter({ label, count, needed }) {
+  const filled = Math.min(count, needed);
+  const level = count >= needed ? "is-enough" : count <= 1 ? "is-one" : "is-two";
+  return (
+    <div className="tier-counter" aria-label={`${label}: ${count} of ${needed} needed`}>
+      <span className="tier-counter-label">{label} QUESTION COUNTER</span>
+      <span className="tier-counter-boxes" aria-hidden="true">
+        {Array.from({ length: needed }, (_, index) => (
+          <span key={index} className={index < filled ? `tier-box ${level}` : "tier-box"} />
+        ))}
+      </span>
+      {/* Always shown, so every counter reads the same way: at the minimum,
+          above it, or short of it. */}
+      <small className="tier-counter-extra">{count}</small>
+    </div>
   );
 }
 
@@ -1116,10 +1310,16 @@ function QuestionGenerationTool({
       return [{
         ...representative,
         conceptLabel: group.display_title || group.label || representative.title || "Untitled concept",
+        // The concept's whole Standard text, every object of the Standard PDF, not
+        // just its first: that first object is only where the bank is filed.
+        content: group.versions?.slots?.standard?.text || representative.content,
+        standardParts: group.versions?.slots?.standard?.objects || [],
         // Carried through so each concept can show what was generated from it.
         // Spreading the representative alone dropped these, which is why the
         // board could only ever say "generating" and never "here is the result".
         questions: group.questions || [],
+        groupId: group.id,
+        questionsOutOfDate: Boolean(group.question_bank_out_of_date),
         canGenerate: Boolean(
           representative.content?.trim()
           && group.versions?.classification_complete !== false,
@@ -1157,6 +1357,8 @@ function QuestionGenerationTool({
     return tag(result.events);
   }
 
+  // Regenerate one out-of-date concept: replaces its questions the teacher
+  // has not edited. The only per-concept generation left on this screen.
   async function handleGenerateObject(item) {
     if (!item.canGenerate) return;
     setGeneratingKey(`object-${item.id}`);
@@ -1170,7 +1372,7 @@ function QuestionGenerationTool({
       const started = await startQuestionGeneration(item.material, item.id);
       await waitForGeneration(started.run_id);
       onResourcesChange(await fetchLearningResources(courseId, topicId));
-      onMessage(`Questions for “${item.title}” were generated, classified as LOTS/HOTS, and saved.`);
+      onMessage(`Questions for “${item.title}” were regenerated, classified as LOTS/HOTS, and saved.`);
     } catch (err) {
       onError(err.message);
     } finally {
@@ -1178,26 +1380,96 @@ function QuestionGenerationTool({
     }
   }
 
+  async function handleKeepBank(item) {
+    setGeneratingKey(`keep-${item.groupId}`);
+    onError("");
+    try {
+      onResourcesChange(await keepQuestionBank(courseId, topicId, item.groupId));
+      onMessage(`Kept the questions for “${item.conceptLabel}” as they are.`);
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setGeneratingKey("");
+    }
+  }
+
+  // One button for the whole topic. The first click writes every concept's
+  // questions; after that it is "Generate more", which adds a batch only to
+  // the concepts still short of the minimum. It never replaces questions.
+  const hasGenerated = learningObjects.some((item) => (item.questions || []).some(
+    (question) => (question.source_type || "pdf") === "generated",
+  ));
+  const isShort = (item) => isShortOfQuestions(item.questions);
+  const targets = learningObjects.filter(
+    (item) => item.canGenerate && (!hasGenerated || isShort(item)),
+  );
+
+  // One click keeps going: after each round, the concepts still short of the
+  // minimum run again, up to GENERATION_ROUNDS rounds. Same cost as clicking
+  // that many times, but the teacher clicks once.
   async function handleGenerateAll() {
-    const eligibleObjects = learningObjects.filter((item) => item.canGenerate);
-    if (!eligibleObjects.length) return;
+    if (!targets.length) return;
     setGeneratingKey("all");
     onError("");
-    onMessage("Generating one question bank from the Normal version of each concept.");
+    const failed = [];
+    let carried = [];
+    let roundTargets = targets;
     try {
-      let carried = [];
-      for (let index = 0; index < eligibleObjects.length; index += 1) {
-        const item = eligibleObjects[index];
-        setOuterProgress({
-          index: index + 1,
-          total: eligibleObjects.length,
-          label: item.conceptLabel,
-        });
-        const started = await startQuestionGeneration(item.material, item.id);
-        carried = [...carried, ...await waitForGeneration(started.run_id, carried)];
+      for (let round = 1; round <= GENERATION_ROUNDS && roundTargets.length; round += 1) {
+        onMessage(round === 1 && !hasGenerated
+          ? "Generating questions from the Standard version of each concept."
+          : `Round ${round} of ${GENERATION_ROUNDS}: adding questions to the ${roundTargets.length} concept${roundTargets.length === 1 ? "" : "s"} still short of ${MIN_TEXT}.`);
+        let latest = null;
+        for (let index = 0; index < roundTargets.length; index += 1) {
+          const item = roundTargets[index];
+          setOuterProgress({
+            index: index + 1,
+            total: roundTargets.length,
+            label: GENERATION_ROUNDS > 1 ? `${item.conceptLabel} (round ${round} of ${GENERATION_ROUNDS})` : item.conceptLabel,
+          });
+          // One concept failing does not stop the others -- except when the
+          // server already has a run going (started before a page reload, or
+          // in another tab): every concept would be refused the same way.
+          try {
+            const started = await startQuestionGeneration(item.material, item.id, { append: true });
+            carried = [...carried, ...await waitForGeneration(started.run_id, carried)];
+          } catch (err) {
+            if (/already in progress/i.test(err.message)) {
+              throw new Error(
+                "A question generation is already running for this topic, started before a page "
+                + "reload or in another tab. Wait a few minutes for it to finish, then reload the page.",
+              );
+            }
+            failed.push(`${item.conceptLabel}: ${err.message}`);
+          }
+          // Reloaded after every concept, so the counters move as each one
+          // finishes and stay right even if a later one fails.
+          latest = await fetchLearningResources(courseId, topicId);
+          onResourcesChange(latest);
+        }
+        // The next round is decided from what the server now holds, not from
+        // this screen's copy, which predates the round.
+        const stillShort = new Set(
+          (latest?.learning_object_groups || [])
+            .filter((group) => isShortOfQuestions(group.questions))
+            .map((group) => group.id),
+        );
+        roundTargets = roundTargets.filter(
+          (item) => stillShort.has(item.groupId) && !failed.some((line) => line.startsWith(`${item.conceptLabel}:`)),
+        );
       }
-      onResourcesChange(await fetchLearningResources(courseId, topicId));
       onMessage("");
+      const problems = [];
+      if (failed.length) {
+        problems.push(`Questions could not be generated for ${failed.length} concept${failed.length === 1 ? "" : "s"}: ${failed.join("; ")}`);
+      }
+      if (roundTargets.length) {
+        problems.push(
+          `After ${GENERATION_ROUNDS} rounds, ${roundTargets.length} concept${roundTargets.length === 1 ? " is" : "s are"} still short of ${MIN_TEXT}: `
+          + `${roundTargets.map((item) => item.conceptLabel).join(", ")}. Click Generate more to try again, or add questions in the Manual tab.`,
+        );
+      }
+      if (problems.length) onError(problems.join(" "));
     } catch (err) {
       onError(err.message);
     } finally {
@@ -1213,8 +1485,20 @@ function QuestionGenerationTool({
           <span className="connection-eyebrow">AI question generator</span>
           <h4>Learning objects</h4>
         </div>
-        <button type="button" className="btn btn-primary" disabled={Boolean(generatingKey) || !learningObjects.some((item) => item.canGenerate)} onClick={handleGenerateAll}>
-          {generatingKey === "all" ? "Generating all…" : "Generate all questions"}
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={Boolean(generatingKey) || !targets.length}
+          title={hasGenerated && !targets.length ? `Every concept has ${MIN_TEXT}.` : undefined}
+          onClick={handleGenerateAll}
+        >
+          {generatingKey === "all"
+            ? "Generating…"
+            : !hasGenerated
+              ? "Generate questions"
+              : targets.length
+                ? `Generate more (${targets.length} concept${targets.length === 1 ? "" : "s"})`
+                : "All concepts complete"}
         </button>
       </div>
       {outerProgress && (
@@ -1244,7 +1528,6 @@ function QuestionGenerationTool({
         <div className="question-learning-object-list">
           {learningObjects.map((item) => {
             const material = materialById.get(Number(item.material));
-            const isGenerating = generatingKey === `object-${item.id}`;
             // Questions that came out of this concept. PDF-extracted ones are
             // the sidebar's business; these belong with what produced them.
             const produced = (item.questions || []).filter(
@@ -1255,19 +1538,55 @@ function QuestionGenerationTool({
                 <div className="question-learning-object-main">
                   <div className="question-learning-object-copy">
                     <div className="question-learning-object-title">
-                      <div><small>{item.conceptLabel}</small><strong>{item.title}</strong></div>
+                      <div><strong>{item.conceptLabel}</strong></div>
                     </div>
-                    <FormattedLearningObjectContent content={item.content} className="question-learning-object-preview" />
-                    <small>Normal source: {material?.filename || material?.title || `PDF ${item.material}`}</small>
+                    {(item.standardParts || []).length > 1
+                      ? <BundleParts parts={item.standardParts} className="question-learning-object-preview" />
+                      : <FormattedLearningObjectContent content={item.content} className="question-learning-object-preview" />}
+                    <small>Standard source: {material?.filename || material?.title || `PDF ${item.material}`}</small>
                   </div>
-                  <button type="button" className="btn btn-secondary" disabled={Boolean(generatingKey) || !item.canGenerate} onClick={() => handleGenerateObject(item)}>
-                    {isGenerating ? "Generating…" : item.canGenerate ? "Generate questions" : "Normal classification required"}
-                  </button>
+                  {!item.canGenerate && (
+                    <small className="muted-text">Waiting for its Standard version to be classified</small>
+                  )}
                 </div>
+                {item.questionsOutOfDate && (
+                  <div className="version-slot-stale" role="alert">
+                    <strong>Check these questions</strong>
+                    <p>
+                      This concept's text changed after its questions were written, so some may ask
+                      about text that is no longer there. Publishing waits until you decide.
+                      Questions you edited are kept if you regenerate.
+                    </p>
+                    <div className="version-slot-actions">
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-small"
+                        disabled={Boolean(generatingKey)}
+                        onClick={() => handleKeepBank(item)}
+                      >
+                        {generatingKey === `keep-${item.groupId}` ? "Keeping..." : "Keep as is"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-small"
+                        disabled={Boolean(generatingKey) || !item.canGenerate}
+                        onClick={() => handleGenerateObject(item)}
+                      >
+                        Regenerate
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="question-learning-object-questions">
-                  <h5>
-                    {produced.length} generated question{produced.length === 1 ? "" : "s"}
-                  </h5>
+                  <div className="question-bank-head">
+                    <h5>
+                      {produced.length} generated question{produced.length === 1 ? "" : "s"}
+                    </h5>
+                    <div className="tier-counters">
+                      <TierCounter label="LOTS" count={tierCounts(item.questions).LOT} needed={MIN_QUESTIONS.LOT} />
+                      <TierCounter label="HOTS" count={tierCounts(item.questions).HOT} needed={MIN_QUESTIONS.HOT} />
+                    </div>
+                  </div>
                   {!produced.length ? (
                     <p className="question-learning-object-empty">
                       Nothing generated from this concept yet.
@@ -1442,6 +1761,11 @@ function ManualQuestionPanel({
                       {question.source_type === "manual" ? "Manual" : question.source_type === "generated" ? "Generated" : "PDF"}
                     </span>
                     {question.thinking_order && <span className="question-thinking-pill">{question.thinking_order}</span>}
+                    {question.bloom_level && !question.thinking_order && (
+                      <span className="has-tip question-not-served" data-tip={NOT_SERVED_TIP} tabIndex={0}>
+                        Not given to learners
+                      </span>
+                    )}
                     {question.category && (
                       <span className={`question-category-pill ${categoryPillClass(question.category)}`}>
                         {question.category}
@@ -1608,6 +1932,11 @@ function ManualQuestionPanel({
 // hung one. Showing which stage is working, how far through it is, and what
 // failed is the difference between "slow" and "stuck" -- so all of them report
 // through this one component instead of each inventing its own.
+// Problems the run handles itself -- one model attempt failing and being
+// retried, a malformed reply, a rate-limit refusal -- are for whoever reads the
+// server terminal, not the teacher. The run's own outcome still shows.
+const TERMINAL_ONLY_EVENTS = new Set(["question_generation_attempt_failed"]);
+
 function RunProgress({
   events,
   running,
@@ -1643,7 +1972,8 @@ function RunProgress({
   // failures appear here without having to be registered first.
   const failures = events.filter(
     (event) =>
-      event.event_type === "error" || (event.event_type || "").endsWith("_failed"),
+      !TERMINAL_ONLY_EVENTS.has(event.event_type)
+      && (event.event_type === "error" || (event.event_type || "").endsWith("_failed")),
   );
   // A caller-supplied position describes the loop the teacher is waiting on;
   // the events describe only the run in flight. Prefer the caller's -- and when
@@ -1718,7 +2048,7 @@ function RunProgress({
         </div>
 
         {/* The step being worked on right now -- the one thing worth reading
-            while waiting. Everything else is available in the trace below. */}
+            while waiting. The step-by-step record is in the server terminal. */}
         <p className="run-progress-current">{currentLine}</p>
         {percent === null ? null : <span className="run-progress-percent">{percent}%</span>}
 
@@ -1730,14 +2060,6 @@ function RunProgress({
           </ul>
         )}
 
-        <details className="publish-trace-log">
-          <summary>Full trace ({events.length})</summary>
-          <ol>
-            {events.map((event) => (
-              <li key={event.uid || event.seq}>{event.message}</li>
-            ))}
-          </ol>
-        </details>
       </div>
     </div>
   );
@@ -1806,18 +2128,6 @@ ${question.prompt}`,
           {groups.length} concept{groups.length === 1 ? "" : "s"}
         </span>
       </div>
-      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
-        <span className="is-complete">1</span>
-        <div aria-hidden="true" />
-        <span className="is-complete">2</span>
-        <div aria-hidden="true" />
-        <span className="is-complete">3</span>
-        <div aria-hidden="true" />
-        <span className="is-active">4</span>
-        <div aria-hidden="true" />
-        <span>5</span>
-        <strong>Content &amp; questions</strong>
-      </div>
 
       {!groups.length ? (
         <div className="review-queue-empty">No confirmed learning objects are available yet.</div>
@@ -1840,7 +2150,7 @@ ${question.prompt}`,
                 {/* One block per version, each naming where it came from and
                     which objects it is made of. Every object appears exactly
                     once, under the role it actually plays -- the screen used
-                    to show the concept's lead with its own text as "Normal"
+                    to show the concept's lead with its own text as "Standard"
                     and every other object as "Other variation", which said
                     nothing about what those objects were for and printed a
                     supplied version's wording twice. */}
@@ -1860,7 +2170,7 @@ ${question.prompt}`,
                     const objects = slot.objects || [];
                     const material = materialById.get(Number(slot.material));
                     const from = slot.source === "generated"
-                      ? `Generated from the Normal version · ${objects.length} segment${objects.length === 1 ? "" : "s"}`
+                      ? `Generated from the Standard version · ${objects.length} segment${objects.length === 1 ? "" : "s"}`
                       : `${material?.filename || material?.title || `PDF ${slot.material}`} · ${objects.length} object${objects.length === 1 ? "" : "s"}`;
                     return (
                       <section className={`publish-version-block is-${key}`} key={key}>
@@ -1869,7 +2179,7 @@ ${question.prompt}`,
                           <small>{from}</small>
                           {slot.stale && (
                             <span className="publish-version-stale" role="status">
-                              Written before the Normal text changed
+                              Written before the Standard text changed
                             </span>
                           )}
                         </header>
@@ -1954,7 +2264,7 @@ ${question.prompt}`,
         </div>
       )}
 
-      <div className="review-step-actions-row">
+      <StepDock>
         <button
           type="button"
           className="btn btn-secondary"
@@ -1971,7 +2281,7 @@ ${question.prompt}`,
         >
           Next: review learning path
         </button>
-      </div>
+      </StepDock>
     </section>
   );
 }
@@ -1984,7 +2294,7 @@ const REGROUPING_ACTION_LABELS = {
 };
 
 // Teacher-facing names for the stored version slots.
-const VERSION_SLOT_LABELS = { simplified: "Simplified", elaborated: "Elaborated", extra: "Extra" };
+const VERSION_SLOT_LABELS = { simplified: "Simplified", elaborated: "Elaborated" };
 
 // A blocking wait for work with no steps to report: scoring a handful of edited
 // objects, or applying the chosen changes. Same look as the pipeline progress.
@@ -2085,7 +2395,7 @@ function RegroupingReview({ preview, selectedIds, busy, onToggle, onCancel, onAp
                         )}
                         {impact.was_original && (
                           <li>
-                            This is the Normal version of “{proposal.current_group?.label}”. That concept
+                            This is the Standard version of “{proposal.current_group?.label}”. That concept
                             will need a new original, and its versions reviewed again.
                           </li>
                         )}
@@ -2132,6 +2442,7 @@ function LearningObjectConnections({
   reviewStep,
   onReviewStepChange,
   onCourseChange,
+  onGapsChange,
   onError,
   onMessage,
 }) {
@@ -2217,8 +2528,33 @@ function LearningObjectConnections({
     && (sawPublishedRef.current || Boolean(topic?.published));
 
   const groups = resources?.learning_object_groups || [];
+  // The page header's Learning path button needs this, and it is only known
+  // here, where the concepts are loaded.
   const matchSuggestions = resources?.match_suggestions || [];
   const allQuestionPairings = resources?.question_pairings || [];
+  const gaps = contentGaps(groups, allQuestionPairings);
+  useEffect(() => {
+    if (resources) onGapsChange(gaps);
+  }, [resources, gaps.ready, gaps.missingVersions, gaps.shortQuestions, gaps.outOfDateQuestions, gaps.unlabelledQuestions]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Printed questions are labelled when the Questions step opens, so every
+  // question process happens on that screen. A failure stays on screen with
+  // Try again, and the step cannot be left until it works.
+  const [labelling, setLabelling] = useState({ running: false, error: "" });
+  async function labelQuestions() {
+    setLabelling({ running: true, error: "" });
+    try {
+      setResources(await labelTopicQuestions(courseId, topicId));
+      setLabelling({ running: false, error: "" });
+    } catch (err) {
+      setLabelling({ running: false, error: err.message });
+    }
+  }
+  useEffect(() => {
+    if (reviewStep === "questions" && gaps.unlabelledQuestions > 0 && !labelling.running && !labelling.error) {
+      labelQuestions();
+    }
+  }, [reviewStep, gaps.unlabelledQuestions]); // eslint-disable-line react-hooks/exhaustive-deps
   const questionReviewQueue = allQuestionPairings.filter((question) => {
     const status = question.learning_object_links?.[0]?.review_status;
     return !status || status === "pending_review" || status === "unmatched";
@@ -2551,10 +2887,8 @@ function LearningObjectConnections({
       const data = await assignVersionSlot(courseId, topicId, learningObjectId, slot);
       setResources(data);
       onMessage(
-        slot === "EXTRA"
-          ? "Kept as an extra version for the learning path."
-          : `Set as the ${slot.toLowerCase()} version.`
-            + (data.version_assignment?.moved_to_extra ? " The previous source is now under Other source versions." : ""),
+        `Set as the ${slot.toLowerCase()} version.`
+        + (data.version_assignment?.needs_review ? " The previous source now needs review." : ""),
       );
       return true;
     } catch (err) {
@@ -2700,7 +3034,7 @@ function LearningObjectConnections({
           const summary = finished?.data?.summary || {};
           setResources(await fetchLearningResources(courseId, topicId));
           onMessage(
-            `${summary.source_variant_count || 0} PDF variant${summary.source_variant_count === 1 ? " was" : "s were"} classified, including ${summary.extra_count || 0} extra${summary.extra_count === 1 ? "" : "s"}. `
+            `${summary.source_variant_count || 0} PDF variant${summary.source_variant_count === 1 ? " was" : "s were"} classified; ${summary.needs_review_count || 0} need teacher review. `
             + "Use Generate only on any Simplified or Elaborated slot that is still missing."
             + (summary.errors?.length ? ` ${summary.errors.length} concept${summary.errors.length === 1 ? "" : "s"} could not be completed.` : ""),
           );
@@ -2721,7 +3055,7 @@ function LearningObjectConnections({
     onMessage("");
     try {
       setResources(await keepVersionText(courseId, topicId, variantId));
-      onMessage("Version kept. It is marked as checked against the current Normal text.");
+      onMessage("Version kept. It is marked as checked against the current Standard text.");
       return true;
     } catch (err) {
       onError(err.message);
@@ -2747,7 +3081,7 @@ function LearningObjectConnections({
         onError(result.errors[0].detail || "Version generation failed.");
         return false;
       }
-      onMessage(`Wrote a new ${label} version from the current Normal text.`);
+      onMessage(`Wrote a new ${label} version from the current Standard text.`);
       return true;
     } catch (err) {
       onError(err.message);
@@ -2859,7 +3193,9 @@ function LearningObjectConnections({
   }
 
   return (
-    <div className={`connection-review-layout ${["publish", "path"].includes(reviewStep) ? "" : "has-recommendations"}`.trim()}>
+    <div className="review-steps-frame">
+    <ReviewSteps step={reviewStep} />
+    <div className={`connection-review-layout ${["questions", "publish", "path"].includes(reviewStep) ? "" : "has-recommendations"}`.trim()}>
       {reviewStep === "objects" && (
       <>
       {/* The heading sits on the page, not inside the scrolling panel below
@@ -3296,6 +3632,9 @@ function LearningObjectConnections({
         <>
           <ReviewQueuePanel
             questionPairings={allQuestionPairings}
+            unlabelledCount={gaps.unlabelledQuestions}
+            labelling={labelling}
+            onRetryLabelling={labelQuestions}
             groups={groups}
             materialById={materialById}
             busyAction={busyAction}
@@ -3310,23 +3649,25 @@ function LearningObjectConnections({
                 (material) => material.generated_json?.learning_objects_confirmed && material.learning_objects?.length,
               ),
             }}
-          />
-          <ManualQuestionPanel
-            courseId={courseId}
-            topicId={topicId}
-            groups={groups}
-            onResourcesChange={setResources}
-            onCourseChange={onCourseChange}
-            onError={onError}
-            onMessage={onMessage}
-            lessonMaterials={materials.filter(
-              (material) => material.generated_json?.learning_objects_confirmed && material.learning_objects?.length,
+            manualPanel={(
+              <ManualQuestionPanel
+                courseId={courseId}
+                topicId={topicId}
+                groups={groups}
+                onResourcesChange={setResources}
+                onCourseChange={onCourseChange}
+                onError={onError}
+                onMessage={onMessage}
+                lessonMaterials={materials.filter(
+                  (material) => material.generated_json?.learning_objects_confirmed && material.learning_objects?.length,
+                )}
+                questionPairings={allQuestionPairings}
+                materialById={materialById}
+                busyAction={busyAction}
+                onEditQuestion={editQuestion}
+                onDeleteQuestion={deleteQuestion}
+              />
             )}
-            questionPairings={allQuestionPairings}
-            materialById={materialById}
-            busyAction={busyAction}
-            onEditQuestion={editQuestion}
-            onDeleteQuestion={deleteQuestion}
           />
         </>
       )}
@@ -3360,6 +3701,7 @@ function LearningObjectConnections({
           onMessage={onMessage}
         />
       )}
+    </div>
     </div>
   );
 }
@@ -3464,7 +3806,7 @@ function LearningPathReviewPanel({
           const staleConcepts = seen.filter((event) => event.event_type === "versions_failed").length;
           onError(
             staleConcepts
-              ? `Not published. ${staleConcepts} concept${staleConcepts === 1 ? " has" : "s have"} a Simplified or Elaborated version to check — the Normal text changed after it was written. Open Content versions (step 2) to keep, edit or regenerate ${staleConcepts === 1 ? "it" : "them"}, then publish again.`
+              ? `Not published. ${staleConcepts} concept${staleConcepts === 1 ? " has" : "s have"} a Simplified or Elaborated version to check — the Standard text changed after it was written. Open Content versions (step 2) to keep, edit or regenerate ${staleConcepts === 1 ? "it" : "them"}, then publish again.`
               : "Not published. The problems are listed in the publish window — resolve them, then publish again.",
           );
         } else if (summary) {
@@ -3524,18 +3866,6 @@ function LearningPathReviewPanel({
           {(paths[0]?.diagnostics?.material_count ?? 0) === 1 ? "" : "s"}
         </span>
       </div>
-      <div className="review-step-indicator has-five-steps" aria-label="Review progress">
-        <span className="is-complete">1</span>
-        <div aria-hidden="true" />
-        <span className="is-complete">2</span>
-        <div aria-hidden="true" />
-        <span className="is-complete">3</span>
-        <div aria-hidden="true" />
-        <span className="is-complete">4</span>
-        <div aria-hidden="true" />
-        <span className="is-active">5</span>
-        <strong>Learning path</strong>
-      </div>
 
       {loadingPath && !pathData && <p className="muted-text">Deriving the path…</p>}
 
@@ -3586,7 +3916,7 @@ function LearningPathReviewPanel({
         />
       )}
 
-      <div className="review-step-actions-row">
+      <StepDock>
         <button
           type="button"
           className="btn btn-secondary"
@@ -3605,10 +3935,10 @@ function LearningPathReviewPanel({
             disabled={publishing || Boolean(busyAction) || confirmedSourceCount === 0}
             onClick={handlePublish}
           >
-            {publishing ? "Publishing..." : topic?.published ? "Republish course" : "Publish course"}
+            {publishing ? "Publishing..." : topic?.published ? "Republish subtopic" : "Publish subtopic"}
           </button>
         </div>
-      </div>
+      </StepDock>
 
       {(publishing || publishEvents.length > 0) && (
         <RunProgress
@@ -3713,6 +4043,10 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
   const [activeTab, setActiveTab] = useState("content");
   const [showAudioWarning, setShowAudioWarning] = useState(false);
   const [showDeleteMaterialConfirm, setShowDeleteMaterialConfirm] = useState(false);
+  // What confirming this edited PDF again would change in the approved PDFs,
+  // and which of those changes the teacher keeps out.
+  const [approvedChanges, setApprovedChanges] = useState(null);
+  const [keptIds, setKeptIds] = useState([]);
   const [learningObjectToDelete, setLearningObjectToDelete] = useState(null);
 
   const generatedJson = material.generated_json || {};
@@ -3804,12 +4138,18 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
     }
   }
 
-  async function confirmObjects() {
+  async function confirmObjects(keep = null) {
     setBusyAction("confirm");
     onError("");
     onMessage("");
     try {
-      const updatedCourse = await confirmLearningObjects(courseId, material.id);
+      const updatedCourse = await confirmLearningObjects(courseId, material.id, keep);
+      if (updatedCourse.approved_changes) {
+        setApprovedChanges(updatedCourse.approved_changes);
+        setKeptIds([]);
+        return;
+      }
+      setApprovedChanges(null);
       onCourseChange(updatedCourse);
       const imageResult = updatedCourse.image_description_generation;
       if (imageResult?.generated_count) {
@@ -4166,7 +4506,7 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
                     className="btn btn-primary"
                     type="button"
                     disabled={!material.learning_objects.length || Boolean(busyAction)}
-                    onClick={confirmObjects}
+                    onClick={() => confirmObjects()}
                   >
                     {busyAction === "confirm" ? "Confirming..." : "Confirm learning objects"}
                   </button>
@@ -4255,6 +4595,80 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
               </button>
               <button type="button" className="btn btn-primary" onClick={generateAudio}>
                 Continue without it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {approvedChanges && (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal-card reconfirm-review-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`reconfirm-review-${material.id}`}
+          >
+            <h3 id={`reconfirm-review-${material.id}`}>
+              Confirming this file changes {approvedChanges.length} approved concept
+              {approvedChanges.length === 1 ? "" : "s"}
+            </h3>
+            <p>
+              Your edits change what this file teaches, so these parts of other, already
+              approved files would move. Choose what happens to each.
+            </p>
+            <ul className="reconfirm-change-list">
+              {approvedChanges.map((change) => {
+                const kept = keptIds.includes(change.learning_object_id);
+                return (
+                  <li key={change.learning_object_id}>
+                    <div>
+                      <strong>{change.title}</strong>
+                      <small>{change.material_title}</small>
+                      <p>
+                        Now in {change.from_label}. Would move to {change.to_label}.
+                      </p>
+                    </div>
+                    <div className="reconfirm-change-choice" role="radiogroup" aria-label={`What happens to ${change.title}`}>
+                      <label>
+                        <input
+                          type="radio"
+                          name={`reconfirm-${change.learning_object_id}`}
+                          checked={!kept}
+                          onChange={() => setKeptIds((ids) => ids.filter((id) => id !== change.learning_object_id))}
+                        />
+                        Apply the change
+                      </label>
+                      <label>
+                        <input
+                          type="radio"
+                          name={`reconfirm-${change.learning_object_id}`}
+                          checked={kept}
+                          onChange={() => setKeptIds((ids) => [...ids, change.learning_object_id])}
+                        />
+                        Keep as is
+                      </label>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={busyAction === "confirm"}
+                onClick={() => setApprovedChanges(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busyAction === "confirm"}
+                onClick={() => confirmObjects(keptIds)}
+              >
+                {busyAction === "confirm" ? "Confirming..." : "Confirm file"}
               </button>
             </div>
           </div>
@@ -4355,6 +4769,45 @@ function MaterialCard({ material, courseId, onCourseChange, onError, onMessage, 
 // A PDF with many figures narrates only the first few during upload; the
 // rest are narrated when the topic is published. Say so, with the count,
 // while any are still waiting.
+// Opens the learning path step. It stays unavailable until every concept has
+// its three versions and at least one question, and says what is missing.
+function LearningPathButton({ gaps, onOpen }) {
+  const ready = Boolean(gaps?.ready);
+  let tip = "Prepare the content first: open Review Connections to check the versions and questions.";
+  if (gaps && !ready) {
+    const parts = [];
+    if (gaps.missingVersions) {
+      parts.push(`${gaps.missingVersions} concept${gaps.missingVersions === 1 ? " needs" : "s need"} a Simplified or Elaborated version`);
+    }
+    if (gaps.shortQuestions) {
+      parts.push(`${gaps.shortQuestions} concept${gaps.shortQuestions === 1 ? " has" : "s have"} fewer than ${MIN_TEXT} questions`);
+    }
+    if (gaps.unlabelledQuestions) {
+      parts.push(`${gaps.unlabelledQuestions} printed question${gaps.unlabelledQuestions === 1 ? " needs" : "s need"} labelling in the Questions step`);
+    }
+    if (gaps.outOfDateQuestions) {
+      parts.push(`${gaps.outOfDateQuestions} concept${gaps.outOfDateQuestions === 1 ? " has" : "s have"} questions to check`);
+    }
+    tip = parts.length
+      ? `Prepare the content first: ${parts.join(", and ")}.`
+      : "Prepare the content first: there are no concepts yet.";
+  }
+  return (
+    <span className={ready ? undefined : "has-tip"} data-tip={ready ? undefined : tip}>
+      <button
+        type="button"
+        className="btn btn-primary btn-small"
+        aria-disabled={!ready}
+        aria-describedby={ready ? undefined : "learning-path-tip"}
+        onClick={() => ready && onOpen()}
+      >
+        Learning path
+      </button>
+      {!ready && <span id="learning-path-tip" className="sr-only">{tip}</span>}
+    </span>
+  );
+}
+
 function figureNarrationNotice(status) {
   if (!status || !status.pending) return "";
   const pending = `${status.pending} figure${status.pending === 1 ? "" : "s"}`;
@@ -4377,6 +4830,8 @@ export default function TopicDetailPage() {
   const [activeSource, setActiveSource] = useState(uploadedMaterialId || "connections");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [connectionReviewStep, setConnectionReviewStep] = useState("objects");
+  // Null until the review view has loaded the concepts once.
+  const [contentGapsState, setContentGapsState] = useState(null);
 
   // Only a genuine change of URL should move the teacher. This used to run on
   // every re-render caused by refreshed resources, so generating versions --
@@ -4666,9 +5121,18 @@ export default function TopicDetailPage() {
 
       <main className="topic-detail-page">
         <section className="card topic-detail-overview-card">
-          <Link to={`/courses/${courseId}`} style={{ color: "var(--muted)" }}>
-            Back to hierarchy
-          </Link>
+          <div className="topic-detail-nav">
+            <Link to={`/courses/${courseId}`} className="btn btn-secondary btn-small">
+              Back to hierarchy
+            </Link>
+            <LearningPathButton
+              gaps={contentGapsState}
+              onOpen={() => {
+                setActiveSource("connections");
+                setConnectionReviewStep("path");
+              }}
+            />
+          </div>
           <div className="topic-detail-header">
             <div>
               <h2>{topic.title}</h2>
@@ -4676,7 +5140,7 @@ export default function TopicDetailPage() {
                 Selected module/topic: {selectedModule?.title || topic.title} / {topic.title}
               </p>
             </div>
-            {!(activeSource === "connections" && ["versions", "questions"].includes(connectionReviewStep)) && (
+            {!(activeSource === "connections" && connectionReviewStep !== "objects") && (
               <label className="btn btn-primary">
                 {uploading ? "Processing..." : "Upload PDF"}
                 <input
@@ -4708,6 +5172,7 @@ export default function TopicDetailPage() {
             reviewStep={connectionReviewStep}
             onReviewStepChange={setConnectionReviewStep}
             onCourseChange={setCourse}
+            onGapsChange={setContentGapsState}
             onError={setError}
             onMessage={setMessage}
           />

@@ -2,11 +2,14 @@
 
 from functools import lru_cache
 import hashlib
+import logging
 import re
 
 from django.db import models, transaction
 
 from lessons.models import Question, QuestionLearningObjectLink
+
+logger = logging.getLogger(__name__)
 
 
 def normalized_question_text(text: str) -> str:
@@ -104,9 +107,21 @@ def validation_issues(question_type: str, choices, correct_answer: str) -> list[
     return issues
 
 
-def enriched_question_values(prompt, question_type, choices, correct_answer) -> dict:
+LABEL_FIELDS = ("bloom_level", "thinking_order", "category")
+
+
+def enriched_question_values(prompt, question_type, choices, correct_answer, *, classify=True) -> dict:
+    """Database-ready values for one question.
+
+    ``classify=False`` leaves the Bloom level, LOTS/HOTS and category blank:
+    questions printed in a PDF are stored at upload and labelled in the
+    Questions step, where every question-related process happens.
+    """
     prompt = (prompt or "").strip()
-    classification = classify_question(prompt)
+    classification = (
+        classify_question(prompt) if classify
+        else {"bloom_level": "", "thinking_order": "", "category": ""}
+    )
     issues = validation_issues(question_type, choices, correct_answer)
     return {
         "prompt": prompt,
@@ -162,9 +177,51 @@ def question_is_approved(question: Question) -> bool:
 
 
 @transaction.atomic
+def is_given_to_learners(question: Question) -> bool:
+    """Labelled, and at a level the learner quiz has a tier for.
+
+    A question not labelled yet waits for the Questions step. One labelled
+    "create" has no LOTS/HOTS tier, so it stays in the teacher's bank only --
+    the same as generated "create" questions, which are never kept at all.
+    """
+    return bool(question.bloom_level and question.thinking_order)
+
+
+def label_printed_questions(outline_node) -> int:
+    """Label every printed question in the topic that is not labelled yet.
+
+    Returns how many were labelled. Each one reaches the learners' bank once
+    labelled, if its pairing and level allow it.
+    """
+    pending = list(
+        Question.objects.filter(
+            material__outline_node=outline_node,
+            source_type=Question.SourceType.PDF,
+            bloom_level="",
+        ).order_by("material_id", "order", "id")
+    )
+    for question in pending:
+        classification = classify_question(question.prompt)
+        question.bloom_level = classification["bloom_level"]
+        question.thinking_order = classification["thinking_order"] or ""
+        question.category = classification["category"]
+        question.save(update_fields=list(LABEL_FIELDS))
+        sync_question_to_adaptive(question)
+    if pending:
+        logger.info(
+            "[Questions] topic %s  labelled %s printed question(s) with Bloom level, LOTS/HOTS and category",
+            outline_node.id, len(pending),
+        )
+    return len(pending)
+
+
 def sync_question_to_adaptive(question: Question):
     """Create/update the learner-facing row only for valid, approved questions."""
-    if question.validation_status != Question.ValidationStatus.READY or not question_is_approved(question):
+    if (
+        question.validation_status != Question.ValidationStatus.READY
+        or not question_is_approved(question)
+        or not is_given_to_learners(question)
+    ):
         if question.adaptive_question_id:
             adaptive_id = question.adaptive_question_id
             question.adaptive_question = None

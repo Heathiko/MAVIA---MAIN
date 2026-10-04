@@ -15,7 +15,7 @@ learning path:
 
 - **Steps in teaching order.** Each step is one **concept**, assembled from
   every uploaded PDF that teaches it.
-- **Everything a step teaches:** the Normal, Simplified and Elaborated versions,
+- **Everything a step teaches:** the Standard, Simplified and Elaborated versions,
   and the generated questions.
 - **Prerequisites:** for each step, which earlier steps a student needs first.
   These are what you use to send a struggling student back.
@@ -93,7 +93,7 @@ API for anything running in a browser.
         {"material_id": 2, "title": "states-of-matter-accessible"}
       ],
       "versions": {
-        "normal":     {"text": "A solid has a definite shape and a definite volume…", "audio_url": ""},
+        "standard":     {"text": "A solid has a definite shape and a definite volume…", "audio_url": ""},
         "simplified": {"text": "A solid keeps its shape…", "audio_url": "/media/…"},
         "elaborated": {"text": "A solid is a state of matter in which…", "audio_url": "/media/…"}
       },
@@ -115,7 +115,7 @@ API for anything running in a browser.
           "material_id": 2,
           "material_title": "states-of-matter-accessible",
           "title": "Solid",
-          "versions": { "normal": { "...": "..." }, "simplified": null, "elaborated": null },
+          "versions": { "standard": { "...": "..." }, "simplified": null, "elaborated": null },
           "questions": [ { "...": "..." } ]
         }
       ],
@@ -134,9 +134,9 @@ API for anything running in a browser.
 | `depth` | the longest chain of prerequisites leading here. `0` = needs nothing. Steps with the same depth don't depend on each other. |
 | `concept_id` | stable id of the concept for this publish. `prerequisites` / `leads_to` refer to these. |
 | `title`, `section_title` | display name, and the lesson heading it sits under (may be empty). A split passage is named without its "(Part 1 of 2)" suffix. |
-| `learning_object_id` | the object holding the Normal text -- for a split passage, its first part. Versions and questions cover **every part** of the passage, not just this object. |
+| `learning_object_id` | the object holding the Standard text -- for a split passage, its first part. Versions and questions cover **every part** of the passage, not just this object. |
 | `sources` | which uploaded PDFs contributed |
-| `versions.normal` | always present |
+| `versions.standard` | always present |
 | `versions.*.parts` | *(mavia addition)* one `{text, audio_url}` per chunk of the passage, in reading order. **Play these.** The chunker cuts an oversized passage into "(Part 1 of 2)" pieces; publishing merges them into one concept, but the step only records the first piece's group, so reading that group alone dropped every later part -- and, when question generation put the concept's questions on a later part, left the step with none, which made the engine skip it. `text` is the whole passage; `audio_url` is only filled when one recording covers all of it. A simplified/elaborated rung is `null` unless every part has one. |
 | `versions.simplified` / `.elaborated` | `null` if missing. A successful publish requires both, so on a published path they are normally present — still handle `null`. |
 | `questions` | at most 2: the earliest-generated LOT and earliest-generated HOT question on this node (LOT first), drafts never appear. A step is one assessment, not a quiz bank -- capped here even if question generation left more than one final row per `thinking_order` on a node (seen on real data: 3-4 final rows on one concept). |
@@ -163,7 +163,7 @@ API for anything running in a browser.
 A sketch, not a requirement — the rules are yours:
 
 1. **Walk `steps` by `position`.**
-2. **Pick the version** for the student's level: `normal`, `simplified` or
+2. **Pick the version** for the student's level: `standard`, `simplified` or
    `elaborated`.
 3. **Ask that step's `questions`**, e.g. LOT before HOT.
 4. **On repeated failure, remediate through `prerequisites`:** send the student

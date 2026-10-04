@@ -1,6 +1,6 @@
 """Corrective-RAG validation gate for generated questions.
 
-Generation writes a draft bank from one concept's Normal text. That text is
+Generation writes a draft bank from one concept's Standard text. That text is
 already in the prompt, so this gate is not here to *supply* context -- it is
 here to check the model used the context it was given. Measured on the first
 published topic before this existed: 61 of 76 final questions used words that
@@ -64,6 +64,10 @@ best content false following given statement true
 
 _WORD = re.compile(r"[a-z][a-z-]{2,}")
 
+# How a lexical rejection's reason begins; the corrective retry reads the
+# words after it.
+LEXICAL_REASON = "uses wording absent from the lesson materials: "
+
 
 def _variants(word):
     """Every written form that should count as the same word as ``word``.
@@ -107,8 +111,24 @@ def _variants(word):
     return forms
 
 
+# A negation is the same words however it is written: "cannot" and "can't"
+# are "can not", "don't" is "do not". Read as one token they were judged as
+# words of their own -- "cannot" was rejected from a lesson that says "can"
+# and "not", and "don't" became "don". Both sides are read the same way, so
+# this changes spelling only: every word must still be in the lesson.
+_NEGATIONS = (
+    (re.compile(r"\bcannot\b"), "can not"),
+    (re.compile(r"\bcan['’]t\b"), "can not"),
+    (re.compile(r"\bwon['’]t\b"), "will not"),
+    (re.compile(r"\b([a-z]+)n['’]t\b"), r"\1 not"),
+)
+
+
 def _words(text):
-    return _WORD.findall((text or "").lower())
+    text = (text or "").lower()
+    for pattern, replacement in _NEGATIONS:
+        text = pattern.sub(replacement, text)
+    return _WORD.findall(text)
 
 
 def _terms(text):
@@ -429,8 +449,7 @@ def verify(question, index):
         return {
             "passed": False,
             "stage": "lexical",
-            "reason": "uses wording absent from the lesson materials: "
-                      + ", ".join(novel[:6]),
+            "reason": LEXICAL_REASON + ", ".join(novel[:6]),
             "verdict": "unsupported",
             "retrieved": [],
             "novel_terms": novel,
@@ -501,14 +520,32 @@ def verify(question, index):
 
 
 def correction_note(failures):
-    """The feedback appended to the generation prompt on a corrective retry."""
+    """The feedback appended to the generation prompt on a corrective retry.
+
+    Matched to why each draft failed. A wording rejection names the words the
+    lesson does not use, so the retry can rephrase; the facts message alone
+    said nothing about wording, and the model repeated the same phrasing.
+    """
     if not failures:
         return ""
-    lines = [f'- "{text}" was rejected: {reason}' for text, reason in failures[:6]]
+    lines, wording_only = [], True
+    for text, reason in failures[:6]:
+        if reason.startswith(LEXICAL_REASON):
+            words = reason[len(LEXICAL_REASON):]
+            lines.append(
+                f'- "{text}" was rejected: it uses words that do not appear in the '
+                f"lesson ({words}). Rephrase it using only the lesson's own words."
+            )
+        else:
+            wording_only = False
+            lines.append(f'- "{text}" was rejected: {reason}')
+    closing = "" if wording_only else (
+        "\nAsk only about facts stated in the content above, and make sure "
+        "the option you mark correct is the one the content states."
+    )
     return (
-        "A previous attempt produced questions the source text does not "
-        "support. Do not repeat these mistakes:\n"
+        "A previous attempt produced questions that were rejected. "
+        "Do not repeat these mistakes:\n"
         + "\n".join(lines)
-        + "\nAsk only about facts stated in the content above, and make sure "
-          "the option you mark correct is the one the content states."
+        + closing
     )

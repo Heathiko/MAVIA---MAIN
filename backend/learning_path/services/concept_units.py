@@ -31,7 +31,7 @@ class Concept:
     kind: str
     order: int
     # Every member's text, one PDF after another. The criteria read this so a
-    # concept speaks with all its PDFs' wording, not only the Normal version's.
+    # concept speaks with all its PDFs' wording, not only the Standard version's.
     member_text: str = ""
     group: Any = field(repr=False, default=None)
     representative: Any = field(repr=False, default=None)
@@ -371,7 +371,7 @@ def concepts_for_topic(node):
                     or group.label
                     or ""
                 ).strip(),
-                # "Normal" is the representative's own text -- unlike Simplified
+                # "Standard" is the representative's own text -- unlike Simplified
                 # and Elaborated it is not a stored slot.
                 content=representative.content or "",
                 section_title=representative.section_title or "",
@@ -390,7 +390,7 @@ def _representative_for(group, members):
     """The member whose text speaks for the concept.
 
     Resolved through ``assign_group_versions`` -- the same call the learning
-    resources payload makes -- so the path shows the very Normal version the
+    resources payload makes -- so the path shows the very Standard version the
     teacher reviewed, rather than a second opinion about which member is
     canonical.
     """

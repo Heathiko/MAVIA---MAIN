@@ -6,7 +6,9 @@ from math import ceil
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 
+from config.console import name
 from .bloom_classifier import BloomClassifier
 from .question_generator import (
     generate_questions,
@@ -109,6 +111,17 @@ def _get_classifier():
     return _classifier_cache
 
 
+def concept_name(node):
+    """What a run is about: the concept, not the object its bank is filed under.
+
+    A concept's questions are written from every object of its Standard version
+    and filed under the first one, so naming that object ("Shape") read as if
+    only it had been used.
+    """
+    group = getattr(node, "group", None)
+    return (group.label if group is not None and group.label else node.title) or "Untitled concept"
+
+
 def _emit(on_event, event_type, message, **data):
     """Send a trace event to the optional callback. No-op when tracing is off."""
     if on_event:
@@ -142,9 +155,9 @@ def _print_node_summary(node, kept, rejected):
         if counts.get(order, 0) < config["count"]
     ]
     logger.info(
-        'node "%s": kept %s (%s), discarded %s%s',
-        node.title, len(kept), breakdown, len(rejected),
-        f" — short on {', '.join(short)}" if short else "",
+        "[Questions] %s  kept %s (%s), discarded %s%s  (object %s)",
+        name(concept_name(node)), len(kept), breakdown, len(rejected),
+        f" -- short on {', '.join(short)}" if short else "", node.id,
     )
 
 
@@ -152,43 +165,30 @@ def _print_material_summary(material, node_count, all_questions, stats):
     counts = Counter(q.thinking_order for q in all_questions)
     distribution = ", ".join(f"{counts.get(order, 0)} {order}" for order in QUESTION_DISTRIBUTION)
     logger.info(
-        'finished "%s": %s questions across %s nodes (%s) from %s drafts '
-        "[excluded %s, duplicates %s, trimmed %s]",
-        material.title, len(all_questions), node_count, distribution,
-        stats["total_drafted"], stats["excluded_create"],
-        stats["duplicates"], stats["trimmed"],
+        "[Questions] PDF %s  done: %s questions for %s concepts (%s) from %s drafts; "
+        "dropped %s not grounded in the lesson, %s duplicates, %s wrong level, %s extra",
+        material.id, len(all_questions), node_count, distribution,
+        stats["total_drafted"], stats["ungrounded"], stats["duplicates"],
+        stats["excluded_create"], stats["trimmed"],
     )
-
-
-# The one role a learner is never served. EXTRA is excluded everywhere else
-# that builds a version -- learning_path/services/published.py::_versions and
-# course/services.py::_build_chunk both skip it -- so it is not text to write
-# questions about either.
-#
-# Stated as what to exclude rather than what to include, because a bundle
-# whose role has not been classified yet is still a telling the learner may
-# be served once it is. Reading only the assigned roles (via version_bundles)
-# left such a concept generating from its Normal bundle alone -- the very bug
-# this widening exists to fix.
-UNSERVED_VERSION_ROLE = "EXTRA"
 
 
 def concept_source_text(node):
     """The text a concept's questions are written from: every telling of it.
 
     A concept holds one bundle per PDF, and the adaptive engine serves those
-    bundles as the Normal, Simplified and Elaborated versions of one concept.
+    bundles as the Standard, Simplified and Elaborated versions of one concept.
     A learner escalated to Elaborated hears another PDF's wording, so a bank
-    written from the Normal bundle alone asks about text that learner was
+    written from the Standard bundle alone asks about text that learner was
     never read.
 
     It also starves the higher-order half of the bank. A HOT question has to
-    combine two or more stated facts; measured on topic 276, the Normal
+    combine two or more stated facts; measured on topic 276, the Standard
     bundle for "Solid" is 32 words and often does not hold two, so the model
     supplied the second from its own knowledge. Every telling together is
     220 words of the same concept -- more facts, no change of subject.
     """
-    from course.version_assignment import bundle_roles, normal_material_id
+    from course.version_assignment import bundle_roles, standard_material_id
     from lessons.services.concept_bundles import (
         bundle_text,
         bundles_for_group,
@@ -208,49 +208,34 @@ def concept_source_text(node):
         for material_id, objects in bundles_for_group(group).items()
         if (kept := [item for item in objects if (item.content or "").strip()])
     }
-    normal_id = normal_material_id(group)
-    if not any(item.id == node.id for item in bundles.get(normal_id) or []):
+    standard_id = standard_material_id(group)
+    if not any(item.id == node.id for item in bundles.get(standard_id) or []):
         return node.content or ""
 
     roles = bundle_roles(group)
-    # The Normal telling leads, then the rest in upload order, so the model
+    # The Standard telling leads, then the rest in upload order, so the model
     # reads the concept the way the topic teaches it.
     rank = {
         material_id: index
         for index, material_id in enumerate(material_order(group.outline_node))
     }
     others = sorted(
-        (material_id for material_id in bundles if material_id != normal_id),
+        (material_id for material_id in bundles if material_id != standard_id),
         key=lambda material_id: (rank.get(material_id, len(rank)), material_id),
     )
 
-    objects, unclassified = [], []
-    for material_id in [normal_id, *others]:
-        if roles.get(material_id) == UNSERVED_VERSION_ROLE:
+    objects = []
+    for material_id in [standard_id, *others]:
+        if material_id != standard_id and material_id not in roles:
             continue
-        if material_id != normal_id and material_id not in roles:
-            unclassified.append(material_id)
         objects.extend(bundles.get(material_id) or [])
-
-    if unclassified:
-        # The EXTRA check above can only fire once a role is stored, and roles
-        # are written by the versions step, which nothing orders before this
-        # one. A bundle classified EXTRA later is text no learner hears, but
-        # its questions are already final by then. Nothing downstream reports
-        # that, so the run trace has to.
-        logger.info(
-            'concept "%s": material(s) %s have no assigned version role and '
-            "are feeding question generation; if the versions step later "
-            "marks one EXTRA, regenerate this concept's bank",
-            group.label, ", ".join(str(item) for item in unclassified),
-        )
     return bundle_text(objects) or (node.content or "")
 
 
 def _is_concept_source(node):
     """Whether ``node`` is the one object of its concept that generates.
 
-    A concept owns exactly one bank and it belongs to the Normal bundle's
+    A concept owns exactly one bank and it belongs to the Standard bundle's
     lead -- ``finalize_node_questions`` deletes every other bank in the group
     as soon as that lead finalizes. So an object from another PDF's telling
     is not merely redundant: its bank is already condemned when it is made.
@@ -259,19 +244,19 @@ def _is_concept_source(node):
 
     Two cases still generate from their own text, because no one else will
     speak for them: an object in no group at all, and one whose group has no
-    Normal bundle to own it.
+    Standard bundle to own it.
     """
     if node.group_id is None:
         return True
     from course.version_assignment import version_bundles
     from lessons.services.concept_bundles import bundle_lead
 
-    normal = version_bundles(node.group).get("NORMAL") or []
-    if not normal:
+    standard = version_bundles(node.group).get("STANDARD") or []
+    if not standard:
         return True
-    if not any(item.id == node.id for item in normal):
+    if not any(item.id == node.id for item in standard):
         return False
-    lead = bundle_lead(normal)
+    lead = bundle_lead(standard)
     return lead is not None and lead.id == node.id
 
 
@@ -359,7 +344,7 @@ def _draft_questions_for_node(
             )
             continue
         summary = " + ".join(f"{n} {fmt}" for fmt, n in padded.items())
-        print(f"Generating {summary} {thinking_order} question(s) for: {node.title}")
+        logger.debug("[Questions] %s  drafting %s %s question(s)", name(concept_name(node)), summary, thinking_order)
         def record_metrics(metrics, order=thinking_order):
             _emit(
                 on_event,
@@ -382,6 +367,7 @@ def _draft_questions_for_node(
             )
 
         def record_rate_limit_wait(seconds, retry, order=thinking_order):
+            logger.info("[Questions] %s  rate limit reached; waiting %.0fs before retrying", name(concept_name(node)), seconds)
             _emit(
                 on_event,
                 "groq_rate_limit_wait",
@@ -511,7 +497,7 @@ def _bank_is_short(node):
 
 # ── Phase 2: post-processing (deterministic, no LLM) ──
 
-def finalize_node_questions(node, classifier, on_event=None, stats=None):
+def finalize_node_questions(node, classifier, on_event=None, stats=None, append=False):
     """Classify, deduplicate and trim one node's drafts, then promote them.
 
     Runs entirely over rows already in the database and needs no LLM. The
@@ -536,6 +522,14 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
     counts = Counter()
     seen = set()
     duplicates = excluded_create = trimmed = 0
+    if append:
+        # "Generate more" adds to the bank: a draft repeating a question the
+        # concept already has is a duplicate like any other.
+        seen.update(
+            _dedup_key(text) for text in GeneratedQuestion.objects.filter(
+                node=node, status="final",
+            ).values_list("question_text", flat=True)
+        )
 
     for draft in drafts:
         key = _dedup_key(draft.question_text)
@@ -591,13 +585,19 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
             )
 
     with transaction.atomic():
-        # A concept owns one question bank, grounded in its Normal source.
+        # A concept owns one question bank, grounded in its Standard source.
         # When that bank is regenerated, remove older generated banks attached
-        # to Simplified, Elaborated, or Extra source objects in the same group.
+        # to other source objects in the same group.
+        # Questions the teacher edited are kept through a regeneration, next
+        # to the new ones -- an older bank's included, moved to this one.
+        edited = Q(teacher_question__teacher_edited=True)
         if node.group_id:
+            GeneratedQuestion.objects.filter(
+                edited, node__group_id=node.group_id, status="final",
+            ).exclude(node=node).update(node=node)
             obsolete = GeneratedQuestion.objects.filter(
                 node__group_id=node.group_id,
-            ).exclude(node=node)
+            ).exclude(node=node).exclude(edited)
             obsolete_ids = list(obsolete.values_list("id", flat=True))
             if obsolete_ids:
                 from lessons.models import Question
@@ -609,12 +609,27 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None):
 
         # the previous run's questions are replaced only now, once this run
         # actually has something to replace them with
-        replaced, _ = GeneratedQuestion.objects.filter(node=node, status="final").delete()
+        replaced, _ = (
+            (0, None) if append
+            else GeneratedQuestion.objects.filter(node=node, status="final").exclude(edited).delete()
+        )
         if reject_ids:
             GeneratedQuestion.objects.filter(id__in=reject_ids).delete()
+        # Stamped with the text the bank was written from, so a later change
+        # to the concept shows the bank as out of date. Kept edited questions
+        # join the new bank, so they carry its stamps too.
+        from .bank_status import text_fingerprint
+        source_stamp = text_fingerprint(concept_source_text(node))
+        for question in keep:
+            question.source_text_fingerprint = source_stamp
         GeneratedQuestion.objects.bulk_update(
-            keep, ["bloom_level", "thinking_order", "category", "status"]
+            keep, ["bloom_level", "thinking_order", "category", "status", "source_text_fingerprint"]
         )
+        if keep:
+            GeneratedQuestion.objects.filter(edited, node=node, status="final").update(
+                source_text_fingerprint=source_stamp,
+                generation_fingerprint=keep[0].generation_fingerprint,
+            )
 
         material = node.material
         generated_json = material.generated_json or {}
@@ -649,6 +664,7 @@ def generate_questions_for_node(
     stats=None,
     generation_fingerprint="",
     grounding_index=None,
+    append=False,
 ):
     """Generate, ground-check and finalize one LearningObject's question bank.
 
@@ -713,7 +729,7 @@ def generate_questions_for_node(
         f"Classifying and filtering {drafted} draft(s)",
         node_id=node.id, drafted=drafted,
     )
-    return finalize_node_questions(node, classifier, on_event=on_event, stats=stats)
+    return finalize_node_questions(node, classifier, on_event=on_event, stats=stats, append=append)
 
 
 def _complete_current_bank(node, fingerprint):
@@ -736,6 +752,7 @@ def generate_questions_for_material(
     node_ids=None,
     *,
     skip_complete=False,
+    append=False,
 ):
     """Full pipeline: LearningMaterial → classified questions for its text
     learning objects, straight from the database (no JSON handoff).
@@ -758,9 +775,9 @@ def generate_questions_for_material(
     if len(nodes) != len(candidates):
         # Asking for one of these by id generates nothing at all, which used to
         # happen in silence. Its questions exist -- they are written from the
-        # whole Normal bundle and saved against that bundle's lead.
+        # whole Standard bundle and saved against that bundle's lead.
         logger.info(
-            "Skipping %s learning object(s) taught through another object's "
+            "[Questions] skipping %s learning object(s) taught through another object's "
             "concept bundle; their questions belong to that bundle's lead: %s",
             len(candidates) - len(nodes),
             ", ".join(
@@ -783,6 +800,10 @@ def generate_questions_for_material(
         # last run)
         GeneratedQuestion.objects.filter(node__material=material).exclude(
             node__in=nodes).delete()
+    logger.info(
+        "[Questions] PDF %s  started: %s concepts to write questions for, %s unchanged and reused",
+        material.id, len(nodes_to_generate), len(nodes) - len(nodes_to_generate),
+    )
     _emit(
         on_event, "material_started",
         f"Generating questions for {len(nodes)} content nodes",
@@ -851,21 +872,21 @@ def generate_questions_for_material(
             _emit(
                 on_event,
                 "node_skipped",
-                f"Reused unchanged question bank: {node.title}",
+                f"Reused unchanged question bank: {concept_name(node)}",
                 node_id=node.id,
-                title=node.title,
+                title=concept_name(node),
                 count=len(cached),
                 index=position,
                 total=total_nodes,
             )
             continue
-        logger.info('(%s/%s) generating questions for "%s"', position, total_nodes, node.title)
+        logger.info("[Questions] (%s/%s) %s  writing questions", position, total_nodes, name(concept_name(node)))
         # index/total are what let the teacher's dialog draw a real progress
         # bar. Without them it can only spin, and a spinner cannot tell slow
         # apart from stuck -- which is the whole complaint about this step.
         _emit(
-            on_event, "node_started", f"Generating questions for: {node.title}",
-            node_id=node.id, title=node.title,
+            on_event, "node_started", f"Generating questions for: {concept_name(node)}",
+            node_id=node.id, title=concept_name(node),
             index=position, total=total_nodes,
         )
         questions = generate_questions_for_node(
@@ -875,6 +896,7 @@ def generate_questions_for_material(
             stats=stats,
             generation_fingerprint=fingerprints[node.id],
             grounding_index=grounding_index,
+            append=append,
         )
         all_questions.extend(questions)
         _emit(

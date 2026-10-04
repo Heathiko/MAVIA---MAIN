@@ -2,12 +2,14 @@ from collections import Counter
 import logging
 import os
 import re
+from time import perf_counter
 
 from django.db import transaction
 from django.db.models import Q
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+from config.console import name, percent, took
 from lessons.models import (
     LearningMaterial,
     LearningObject,
@@ -18,6 +20,7 @@ from lessons.models import (
 )
 from .instructional_content_classifier import detect_instructional_document_role
 from .question_workflow import (
+    LABEL_FIELDS,
     duplicate_in_topic,
     enriched_question_values,
     parse_question_structure,
@@ -330,7 +333,7 @@ def _match_decision(
         except Exception:
             # Never fall back to permissive lexical auto-linking after a model
             # failure. Leave the object separate and record the failure.
-            logger.exception("Semantic grouping unavailable; no automatic grouping performed")
+            logger.exception("[Grouping] the similarity model is unavailable; nothing was grouped automatically")
             return None
     return _legacy_match_decision(material, title, content, kind, order, section_title, source_object_id)
 
@@ -577,7 +580,8 @@ def detected_question_payloads(classified_blocks: list[dict]) -> list[dict]:
         ):
             excerpt = block.get("text") or prompt
             structure = parse_question_structure(prompt, excerpt)
-            values = enriched_question_values(**structure)
+            # Labelled in the Questions step, not at upload.
+            values = enriched_question_values(**structure, classify=False)
             fingerprint = values["content_fingerprint"]
             if not fingerprint or fingerprint in seen_fingerprints:
                 continue
@@ -749,7 +753,7 @@ def attach_orphan_objects_to_their_section(material: LearningMaterial) -> list[i
     named_after_section = {}
     for item in siblings:
         section = (item.section_title or "").strip()
-        if sizes[item.group_id] > 1:
+        if sizes[item.group_id] > 1 or item.kept_apart_from_section:
             continue
         # A later piece of one split passage ("What Is Matter? (Part 2 of 2)")
         # is the same passage as its first piece: it follows that piece into
@@ -757,8 +761,8 @@ def attach_orphan_objects_to_their_section(material: LearningMaterial) -> list[i
         first_piece = first_piece_of.get(item.pk)
         if first_piece is not None and first_piece.group_id != item.group_id:
             logger.info(
-                "[Sections material %s] %s (%s) follows its first piece into group %s",
-                material.id, item.id, item.title[:60], first_piece.group_id,
+                "[Grouping] %s follows its first part into the same concept  (object %s -> concept %s)",
+                name(item.title), item.id, first_piece.group_id,
             )
             item.group_id = first_piece.group_id
             item.save(update_fields=["group"])
@@ -783,13 +787,13 @@ def attach_orphan_objects_to_their_section(material: LearningMaterial) -> list[i
             # PREVIOUS section's title, and folding it would file the changes of
             # state under "Comparing the Three States".
             logger.info(
-                "[Sections material %s] %s (%s) looks like a section head; not folding into %r",
-                material.id, item.id, item.title[:60], section,
+                "[Grouping] %s looks like a section heading itself, so it is not folded into section %s  (object %s)",
+                name(item.title), name(section), item.id,
             )
             continue
         logger.info(
-            "[Sections material %s] %s (%s) joins group %s via section %r",
-            material.id, item.id, item.title[:60], head.group_id, section,
+            "[Grouping] %s joins its section %s  (object %s -> concept %s)",
+            name(item.title), name(section), item.id, head.group_id,
         )
         item.group_id = head.group_id
         item.save(update_fields=["group"])
@@ -992,8 +996,8 @@ def _nominated_candidate(
             # failure and let the pair through rather than silently emptying
             # the teacher's queue on a transient model error.
             logger.exception(
-                "Reciprocal match lookup failed for learning object %s",
-                learning_object.id,
+                "[Grouping] could not check which concept %s matches back; the pair is kept for review  (object %s)",
+                name(learning_object.title), learning_object.id,
             )
             cache[cache_key] = "unavailable"
     return cache[cache_key]
@@ -1043,6 +1047,42 @@ def _is_mutual_best_match(
     return False
 
 
+_GROUPING_OUTCOMES = {
+    "grouped": "grouped automatically",
+    "review": "sent to teacher review",
+    "separate": "too weak, stays its own concept",
+    "not matched back": "not sent: the other object matches a different concept better",
+    "declined": "the teacher declined this pair before, left as is",
+    "teacher decided": "the teacher already decided this pair, left as is",
+}
+
+
+def _log_grouping_outcome(source_object, result, decision=None):
+    """One line per learning object: what it was compared with and what happened.
+
+    The ids and timing sit at the end so the line reads as a sentence first
+    and can still be traced to the database.
+    """
+    if result == "already grouped":
+        logger.debug("[Grouping] %s is already in a concept with others; left as is  (object %s)",
+                     name(source_object.title), source_object.id)
+        return
+    if not decision:
+        logger.info(
+            "[Grouping] %s  no similar concept in the other PDFs -> stays its own concept  (object %s)",
+            name(source_object.title), source_object.id,
+        )
+        return
+    evidence = decision.get("evidence") or {}
+    candidate = decision["candidate"]
+    seconds = (evidence.get("elapsed_ms") or 0) / 1000
+    logger.info(
+        "[Grouping] %s -> %s  %s similar -> %s  (object %s -> %s, %.1fs)",
+        name(source_object.title), name(candidate.title), percent(evidence.get("score", 0)),
+        _GROUPING_OUTCOMES[result], source_object.id, candidate.id, seconds,
+    )
+
+
 def refresh_learning_object_match_suggestions(material: LearningMaterial) -> None:
     """Persist explainable cross-PDF candidates for this material.
 
@@ -1065,13 +1105,17 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
             status=LearningObjectMatchSuggestion.Status.PENDING,
         ).delete()
         return
+    # Numbered parts are an explicit authored continuation, not a semantic
+    # guess. Reconcile them even when the semantic models are unavailable.
+    from .unit_matching import reconcile_numbered_parts
+    reconcile_numbered_parts(material.outline_node)
     from . import semantic_grouping
     if semantic_grouping.mode() != "legacy":
         try:
             semantic_grouping.policy()
             semantic_grouping.runtime()
         except Exception as exc:
-            logger.exception("Semantic grouping unavailable; preserving the existing review queue")
+            logger.exception("[Grouping] PDF %s  the similarity model is unavailable; the review queue is left as it was", material.id)
             data = dict(material.generated_json or {})
             data["grouping_warning"] = f"Connections could not be evaluated for {material.title}: {exc}"
             material.generated_json = data
@@ -1084,6 +1128,17 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
     )
     semantic_active = semantic_grouping.mode() != "legacy"
     matcher = semantic_grouping.semantic_decision if semantic_active else _match_decision
+    started = perf_counter()
+    tally = Counter()
+
+    def outcome(source_object, result, decision=None):
+        tally[result] += 1
+        _log_grouping_outcome(source_object, result, decision)
+
+    logger.info(
+        "[Grouping] PDF %s  comparing %s learning objects with the other PDFs in this topic",
+        material.id, len(learning_objects),
+    )
     for source_object in learning_objects:
         if semantic_active and source_object.group_id and LearningObject.objects.filter(
                 group_id=source_object.group_id).exclude(pk=source_object.id).exists():
@@ -1092,6 +1147,7 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
             retained_ids.extend(LearningObjectMatchSuggestion.objects.filter(
                 Q(source_learning_object=source_object) | Q(candidate_learning_object=source_object)
             ).values_list("id", flat=True))
+            outcome(source_object, "already grouped")
             continue
         try:
             decision = matcher(
@@ -1108,13 +1164,14 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
                 raise
             # An inference/cache failure is not a low-confidence decision.
             # In particular, do not delete existing pending suggestions below.
-            logger.exception("Semantic inference failed; preserving the remaining review queue")
+            logger.exception("[Grouping] PDF %s  the similarity check failed partway; the rest of the review queue is left as it was", material.id)
             data = dict(material.generated_json or {})
             data["grouping_warning"] = f"Connections could not be fully evaluated for {material.title}: {exc}"
             material.generated_json = data
             material.save(update_fields=["generated_json"])
             return
         if not decision or decision["confidence"] is None:
+            outcome(source_object, "separate", decision)
             continue
         candidate_object = decision["candidate"]
         source, candidate = _canonical_match_pair(source_object, candidate_object)
@@ -1124,6 +1181,7 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
         ).first()
         if existing and (existing.evidence or {}).get("teacher_reviewed"):
             retained_ids.append(existing.id)
+            outcome(source_object, "teacher decided", decision)
             continue
         is_high_confidence = (
             decision["confidence"]
@@ -1141,6 +1199,7 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
             # when the grouped candidate genuinely nominates the source back.
             allow_grouped_candidate=semantic_active,
         ):
+            outcome(source_object, "not matched back", decision)
             continue
         if (
             is_high_confidence
@@ -1180,7 +1239,21 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
             },
         )
         retained_ids.append(suggestion.id)
+        outcome(
+            source_object,
+            "declined" if status_value == LearningObjectMatchSuggestion.Status.REJECTED
+            else "grouped" if same_group else "review",
+            decision,
+        )
 
+    logger.info(
+        "[Grouping] PDF %s  done: %s grouped automatically, %s sent to teacher review, %s stay separate  (%s)",
+        material.id,
+        tally["grouped"],
+        tally["review"],
+        tally["separate"] + tally["not matched back"],
+        took(started),
+    )
     stale_pending = LearningObjectMatchSuggestion.objects.filter(
         Q(source_learning_object__material=material)
         | Q(candidate_learning_object__material=material),
@@ -1200,7 +1273,7 @@ def refresh_learning_object_match_suggestions(material: LearningMaterial) -> Non
         try:
             refresh_heading_unit_suggestions(material.outline_node)
         except Exception:  # noqa: BLE001 -- unit proposals must never break grouping
-            logger.exception("Heading-matched unit suggestions could not be refreshed")
+            logger.exception("[Grouping] matching section headings across PDFs could not be refreshed")
 
 
 def remove_empty_learning_object_groups(material: LearningMaterial) -> None:
@@ -1384,8 +1457,8 @@ def _questions_open_to_pairing(material: LearningMaterial) -> list[Question]:
         if adaptive_ids:
             GeneratedQuestion.objects.filter(pk__in=adaptive_ids).delete()
         logger.info(
-            "Removed %s generated question(s) whose source learning object was deleted: material=%s",
-            len(orphaned), material.id,
+            "[Questions] PDF %s  removed %s generated question(s) whose learning object was deleted",
+            material.id, len(orphaned),
         )
     return open_questions
 
@@ -1478,7 +1551,13 @@ def synchronize_detected_questions(material: LearningMaterial, classified_blocks
         for question in material.questions.all()
     }
     retained_ids = []
-    for order, payload in enumerate(detected_question_payloads(classified_blocks)):
+    payloads = detected_question_payloads(classified_blocks)
+    if payloads:
+        logger.info(
+            "[Upload] PDF %s  %s question(s) printed in the PDF found; labelled later, in the Questions step",
+            material.id, len(payloads),
+        )
+    for order, payload in enumerate(payloads):
         key = payload["content_fingerprint"]
         question = existing.get(key)
         if question is None:
@@ -1490,10 +1569,16 @@ def synchronize_detected_questions(material: LearningMaterial, classified_blocks
             # one canonical row instead of copying it into every uploaded PDF.
             continue
         else:
-            for field, value in payload.items():
-                setattr(question, field, value)
+            # The same text, so a label it already has still holds; the
+            # payload's labels are blank only because labelling is deferred.
+            fields = [
+                field for field, value in payload.items()
+                if not (field in LABEL_FIELDS and not value)
+            ]
+            for field in fields:
+                setattr(question, field, payload[field])
             question.order = order
-            question.save(update_fields=[*payload.keys(), "order"])
+            question.save(update_fields=[*fields, "order"])
         retained_ids.append(question.id)
     # Only questions this sync owns -- the ones extracted from the PDF -- can go
     # stale here. Generated and manually written questions never appear in the
@@ -1507,6 +1592,15 @@ def synchronize_detected_questions(material: LearningMaterial, classified_blocks
 
 def refresh_material_learning_relationships(material: LearningMaterial) -> None:
     """Refresh neutral groups and pairs after teacher edits to learning objects."""
+    if not learning_objects_are_confirmed(material):
+        # A draft is never matched against other PDFs, and its edits must not
+        # reach the approved ones: releasing and redoing section joins works
+        # on every PDF in the topic. The draft only keeps its own neutral
+        # groups and question pairs until the teacher confirms it.
+        ensure_learning_object_groups(material)
+        remove_empty_learning_object_groups(material)
+        refresh_question_learning_object_links(material)
+        return
     # Parts joined to their sections are separated again first, so this PDF
     # is matched against the real "Solid", not a "Matter" that swallowed it.
     release_section_joins(material)

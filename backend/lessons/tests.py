@@ -637,7 +637,7 @@ class LearningResourceRelationshipTests(TestCase):
         self.assertEqual(duplicate.status_code, status.HTTP_409_CONFLICT)
         self.assertEqual(Question.objects.count(), 1)
 
-    def test_uploaded_open_question_is_flagged_and_classified(self):
+    def test_uploaded_open_question_is_flagged_and_left_for_labelling(self):
         payload = detected_question_payloads([{
             "block_id": 1,
             "page": 1,
@@ -648,7 +648,9 @@ class LearningResourceRelationshipTests(TestCase):
         self.assertEqual(payload["source_type"], Question.SourceType.PDF)
         self.assertEqual(payload["validation_status"], Question.ValidationStatus.NEEDS_REVIEW)
         self.assertTrue(payload["validation_issues"])
-        self.assertIn(payload["thinking_order"], {"LOT", "HOT"})
+        # Labelled in the Questions step (test_question_labelling), not here.
+        self.assertEqual(payload["thinking_order"], "")
+        self.assertEqual(payload["bloom_level"], "")
 
     def test_editing_approved_question_updates_adaptive_bank(self):
         lesson = self._material("confirmed-lesson")
@@ -1562,7 +1564,6 @@ class LearningResourceRelationshipTests(TestCase):
             "representative_id": None,
             "assigned": [],
             "needs_confirmation": [],
-            "extras": 0,
             "generated": ["SIMPLIFIED", "ELABORATED"],
             "errors": [],
         },
@@ -1616,6 +1617,18 @@ class LearningResourceRelationshipTests(TestCase):
         # standalone generator once for the node.
         settle_group_mock.assert_called_once()
 
+        # A flagged PDF version is a candidate, not a fault: it is not served
+        # until confirmed, and it does not hold publishing back.
+        settle_group_mock.return_value["needs_confirmation"] = [{
+            "learning_object_id": material.learning_objects.get().id,
+        }]
+        flagged = run_topic_publish(
+            self.course, self.node, set_confirmed=lambda item: None
+        )
+        self.node.refresh_from_db()
+        self.assertTrue(self.node.published)
+        self.assertFalse(flagged["adaptive_variant_errors"])
+
     def test_course_outline_upload_rejects_non_pdf(self):
         client = authenticated_api_client()
         course = CourseGroup.objects.create(title="Science 7")
@@ -1630,7 +1643,7 @@ class LearningResourceRelationshipTests(TestCase):
 
 
 class ConfirmLearningObjectsTests(TestCase):
-    @patch("lessons.views.populate_missing_image_descriptions")
+    @patch("lessons.services.image_describer.populate_missing_image_descriptions")
     def test_confirmation_does_not_run_image_model_in_request(self, populate):
         client = authenticated_api_client()
         course = CourseGroup.objects.create(title="Science 7")

@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     "lessons",
     "question_generation",
     "course",
+    "mobile_course_package",
     "adaptive",
     "adaptive_config",
     "learning_path",
@@ -236,7 +237,9 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-repl
 #     moondream, qwen2-vl, llama3.2-vision …). Must be pulled: `ollama pull …`
 #   IMAGE_DESCRIPTION_ENABLED=False turns the feature off outright.
 # ---------------------------------------------------------------------------
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+# Every LLM process runs on Groq. The Ollama paths are kept, dormant, for a
+# return to local inference: set LLM_PROVIDER=ollama to use them.
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").strip().lower()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_ADDITIONAL_API_KEYS = tuple(
@@ -282,8 +285,11 @@ OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
 # Questions generated per learning object, per thinking order. Lower these
 # while iterating: each thinking order is one LLM call, and the count drives
 # how much that call has to write.
-QUESTION_COUNT_LOT = int(os.getenv("QUESTION_COUNT_LOT", "3"))
-QUESTION_COUNT_HOT = int(os.getenv("QUESTION_COUNT_HOT", "3"))
+# Questions asked for per tier on each run. Above the teacher's minimum of 3
+# per tier, so a run that loses a few (malformed, not grounded in the lesson,
+# or relabelled into the other tier) still usually reaches it.
+QUESTION_COUNT_LOT = int(os.getenv("QUESTION_COUNT_LOT", "5"))
+QUESTION_COUNT_HOT = int(os.getenv("QUESTION_COUNT_HOT", "5"))
 
 ADAPTIVE_VARIANT_GENERATION_ENABLED = os.getenv(
     "ADAPTIVE_VARIANT_GENERATION_ENABLED", "True"
@@ -369,12 +375,12 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
-        # The pipelines already name themselves in the message, so a prefix
-        # here would only repeat it.
-        "trace": {"format": "%(message)s"},
+        # A time on every line, and WARNING/ERROR up front. The pipelines
+        # name their own stage in the message; see config/console.py.
+        "trace": {"()": "config.console.ConsoleFormatter"},
     },
     "handlers": {
-        "console": {"class": "logging.StreamHandler"},
+        "console": {"class": "logging.StreamHandler", "formatter": "trace"},
         "trace": {"class": "logging.StreamHandler", "formatter": "trace"},
     },
     "loggers": {

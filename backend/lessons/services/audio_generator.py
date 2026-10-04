@@ -66,7 +66,7 @@ def _synthesize_text_to_mp3_with_edge(text: str, output_path: Path, timeout: int
             if attempt == attempts:
                 raise AudioGenerationError(f"Edge TTS failed: {exc}") from exc
             logger.warning(
-                "Edge TTS attempt %s of %s failed, retrying: %s", attempt, attempts, exc,
+                "[Publish] text-to-speech failed (attempt %s of %s), retrying: %s", attempt, attempts, exc,
             )
             # A partial file from a dropped stream would otherwise be taken
             # for a finished clip and ship as truncated narration.
@@ -259,7 +259,7 @@ def cached_audio(text, directory):
 
 
 def generate_version_audio(material):
-    """Prepare audio for the two active source/generated versions; omit Extras."""
+    """Prepare audio for the two active source/generated versions."""
     from course.models import LessonVariant
     generated = 0
     for row in LessonVariant.objects.filter(
@@ -284,7 +284,7 @@ def bundle_version_objects(material: LearningMaterial) -> list:
     represented -- they are not teaching steps of their own material's lesson
     -- so nothing else in the audio pipeline reaches them.
     """
-    from course.version_assignment import version_bundles
+    from course.version_assignment import served_version_bundles
 
     supplying = {}
     objects = []
@@ -296,10 +296,9 @@ def bundle_version_objects(material: LearningMaterial) -> list:
         if item.group_id not in supplying:
             supplying[item.group_id] = {
                 member.id
-                for role, bundle in version_bundles(item.group).items()
-                # Normal is the lesson itself and already has clips; an extra
-                # bundle is not one of the versions a student is offered.
-                if role not in ("NORMAL", "EXTRA")
+                for role, bundle in served_version_bundles(item.group).items()
+                # Standard is the lesson itself and already has clips.
+                if role != "STANDARD"
                 for member in bundle
             }
         if item.id in supplying[item.group_id]:

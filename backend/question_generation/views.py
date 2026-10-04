@@ -1,3 +1,4 @@
+import logging
 import threading
 
 from django.utils import timezone
@@ -11,6 +12,8 @@ from course.version_assignment import assign_group_versions
 
 from .models import GeneratedQuestion, GenerationEvent, GenerationRun, LearnerResponse
 from .serializers import QuestionSerializer
+
+logger = logging.getLogger(__name__)
 
 
 class GetQuestionView(APIView):
@@ -140,22 +143,22 @@ class QuestionStatsView(APIView):
 STALE_RUN_SECONDS = 300
 
 
-def _normal_question_source(node):
+def _standard_question_source(node):
     """Return the sole question source for a concept, or an actionable error."""
     if node.group_id is None:
         return node, ""
     state = assign_group_versions(node.group)
     if not state.get("classification_complete") or not state.get("original_selected"):
         return None, "Classify this concept's PDF variants before generating questions."
-    normal = node.group.learning_objects.filter(
+    standard = node.group.learning_objects.filter(
         pk=state["representative_id"],
     ).first()
-    if normal is None or not (normal.content or "").strip():
-        return None, "This concept has no usable Normal version."
-    return normal, ""
+    if standard is None or not (standard.content or "").strip():
+        return None, "This concept has no usable Standard version."
+    return standard, ""
 
 
-def _run_pipeline(run_id, material_id, node_ids=None, skip_complete=False):
+def _run_pipeline(run_id, material_id, node_ids=None, skip_complete=False, append=False):
     """Thread target: run the pipeline, streaming trace events to the DB."""
     from .services.pipeline import generate_questions_for_material
 
@@ -180,12 +183,14 @@ def _run_pipeline(run_id, material_id, node_ids=None, skip_complete=False):
             on_event=on_event,
             node_ids=node_ids,
             skip_complete=skip_complete or run.node_id is None,
+            append=append,
         )
         on_event("saved", f"Saved {len(questions)} questions to database",
                  {"count": len(questions)})
         GenerationRun.objects.filter(id=run_id).update(
             status="finished", finished_at=timezone.now())
     except Exception as e:  # noqa: BLE001 — surface anything to the trace
+        logger.exception("[Questions] run %s failed: %s: %s", run_id, type(e).__name__, e)
         on_event("error", f"{type(e).__name__}: {e}", None)
         GenerationRun.objects.filter(id=run_id).update(
             status="failed", finished_at=timezone.now())
@@ -224,6 +229,9 @@ class StartGenerationView(APIView):
         node = None
         requested_node_id = node_id if node_id is not None else request.data.get("node_id")
         skip_complete = request.data.get("skip_complete", requested_node_id is None) is True
+        # "Generate more": a new batch is added to the concept's questions
+        # instead of replacing the untouched ones.
+        append = request.data.get("append") is True
         if requested_node_id is not None:
             node = content_nodes.filter(id=requested_node_id).first()
             if node is None:
@@ -232,31 +240,31 @@ class StartGenerationView(APIView):
                               "(or it has no narration content)"},
                     status=status.HTTP_404_NOT_FOUND,
                 )
-            normal, normal_error = _normal_question_source(node)
-            if normal_error:
-                return Response({"error": normal_error}, status=status.HTTP_409_CONFLICT)
-            if normal.id != node.id:
+            standard, standard_error = _standard_question_source(node)
+            if standard_error:
+                return Response({"error": standard_error}, status=status.HTTP_409_CONFLICT)
+            if standard.id != node.id:
                 return Response(
-                    {"error": "Questions can only be generated from this concept's Normal version.",
-                     "normal_learning_object_id": normal.id},
+                    {"error": "Questions can only be generated from this concept's Standard version.",
+                     "standard_learning_object_id": standard.id},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         else:
-            normal_ids = []
+            standard_ids = []
             seen_groups = set()
             for candidate in content_nodes.select_related("group"):
                 scope_key = candidate.group_id or f"object:{candidate.id}"
                 if scope_key in seen_groups:
                     continue
                 seen_groups.add(scope_key)
-                normal, normal_error = _normal_question_source(candidate)
-                if normal_error:
-                    return Response({"error": normal_error}, status=status.HTTP_409_CONFLICT)
-                if normal.material_id == material.id:
-                    normal_ids.append(normal.id)
-            if not normal_ids:
+                standard, standard_error = _standard_question_source(candidate)
+                if standard_error:
+                    return Response({"error": standard_error}, status=status.HTTP_409_CONFLICT)
+                if standard.material_id == material.id:
+                    standard_ids.append(standard.id)
+            if not standard_ids:
                 return Response(
-                    {"error": "This material contains no Normal learning objects to generate from."},
+                    {"error": "This material contains no Standard learning objects to generate from."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -288,9 +296,10 @@ class StartGenerationView(APIView):
             args=(
                 run.id,
                 material.id,
-                [node.id] if node else normal_ids,
+                [node.id] if node else standard_ids,
                 skip_complete,
             ),
+            kwargs={"append": append},
             daemon=True,
         ).start()
         return Response(
