@@ -405,5 +405,8 @@ LOGGING = {
         "question_generation": {"handlers": ["trace"], "level": MAVIA_LOG_LEVEL, "propagate": False},
         "learning_path": {"handlers": ["trace"], "level": MAVIA_LOG_LEVEL, "propagate": False},
         "course": {"handlers": ["trace"], "level": MAVIA_LOG_LEVEL, "propagate": False},
+        # the mobile engine's computations, one line each: BKT, baseline,
+        # starting mastery, the ladder's reason and the command it sends
+        "adaptive": {"handlers": ["trace"], "level": MAVIA_LOG_LEVEL, "propagate": False},
     },
 }

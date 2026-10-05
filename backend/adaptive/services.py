@@ -8,6 +8,7 @@
 
 
 
+import logging
 import math
 from django.db import transaction
 from django.db.models import Avg, Count, Max, Q
@@ -19,6 +20,9 @@ from mobile_course_package.models import StudentResponse, TopicPackageProgress, 
 
 
 from .models import ConceptMastery, Decision, Enrollment, StudentBaseline
+
+# prints each computation to the server terminal: [BKT], [Baseline], [Start], [Decide], [Command]
+logger = logging.getLogger(__name__)
 
 ESCALATION = {"standard": "simplified", "simplified": "elaborated", "elaborated":None}
 PLAYS_AUDIO_FOR_ACTION = {"escalate_variant", "regress", "resume", "advance"}
@@ -117,10 +121,30 @@ def update_baseline(baseline, is_correct, first_answer_on_concept, weights):
         rate = shrink_for_confidence(population_ability(weights), baseline.first_attempts_correct_count, baseline.first_attempts_count, weights)
         estimated = (rate - weights.p_guess) / (1 - weights.p_slip - weights.p_guess)
         baseline.estimated_l0 = min(max(estimated, 0.01), .95)
+        logger.info(
+            "[Baseline] first try on a new concept: %d/%d first tries right -> rate %.3f -> L0 (%.3f - %.2f) / %.2f = %.3f (kept %.3f)  (student %s)",
+            baseline.first_attempts_correct_count, baseline.first_attempts_count, rate,
+            rate, weights.p_guess, 1 - weights.p_slip - weights.p_guess, estimated, baseline.estimated_l0,
+            baseline.student_id,
+        )
 
-    if not baseline.calibrated and margin_of_error(baseline.estimated_ability, baseline.total_responses_count) <= weights.calibration_margin:
+    margin = margin_of_error(baseline.estimated_ability, baseline.total_responses_count)
+    if baseline.calibrated:
+        status = "calibrated"
+    elif margin <= weights.calibration_margin:
         baseline.calibrated = True
         baseline.calibrated_at = timezone.now()
+        status = "CALIBRATED just now"
+    else:
+        status = f"still calibrating (needs <= {weights.calibration_margin:.2f})"
+    logger.info(
+        "[Baseline] %d/%d right (raw %.3f) -> ability (%.2f x %d + %d) / (%d + %d) = %.3f, margin +-%.3f -> %s  (student %s)",
+        baseline.total_correct_count, baseline.total_responses_count,
+        baseline.total_correct_count / baseline.total_responses_count,
+        population_ability(weights), weights.prior_weight, baseline.total_correct_count,
+        weights.prior_weight, baseline.total_responses_count, baseline.estimated_ability,
+        margin, status, baseline.student_id,
+    )
     baseline.save()
 
 
@@ -128,16 +152,27 @@ def starting_mastery(step, student, baseline):
     #if first time pa ma encounter ni student ang concept, it starts between the students baseline na weights and ila previous mastery (from previous concept)
     known = list( ConceptMastery.objects.filter(student=student, concept_id__in=step["prerequisites"]).values_list("mastery_score", flat=True))
     if not known:
+        logger.info(
+            "[Start] no prerequisite mastery yet -> starts at the student's L0 %.3f  (student %s, step %s, concept %s)",
+            baseline.estimated_l0, student.id, step["position"], step["concept_id"],
+        )
         return baseline.estimated_l0
-    return (baseline.estimated_l0 + sum(known) / len(known)) / 2
+    prerequisites_average = sum(known) / len(known)
+    start = (baseline.estimated_l0 + prerequisites_average) / 2
+    logger.info(
+        "[Start] (L0 %.3f + prerequisites' average %.3f of %d) / 2 -> starts at %.3f  (student %s, step %s, concept %s)",
+        baseline.estimated_l0, prerequisites_average, len(known), start, student.id, step["position"], step["concept_id"],
+    )
+    return start
 
 
 
 
-# ---------------------------------------------------------------------------
-# calibration-phase policy: the fixed ladder, identical for every student.
-# Mastery is NOT used here (shadow mode). This is what the RL agent replaces.
-# ---------------------------------------------------------------------------
+
+
+
+#calibrate to each student (polizies) and apply the BKT to each answer, then decide what to do next
+
 
 def step_at(steps, position):
     return next((s for s in steps if s["position"] == position), None)
@@ -155,9 +190,25 @@ def nearest_prerequisite(step, steps):
 
 
 def command(action, position, variant, question_id=None, return_to=None):
-    return {"action": action, "next_step_position": position, "next_variant": variant,
-            "next_question_id": question_id, "return_to_position": return_to,
-            "play_audio": action in PLAYS_AUDIO_FOR_ACTION}
+    result = {"action": action, "next_step_position": position, "next_variant": variant,
+              "next_question_id": question_id, "return_to_position": return_to,
+              "play_audio": action in PLAYS_AUDIO_FOR_ACTION}
+    if action == "complete":
+        logger.info("[Command] complete -> topic finished")
+    else:
+        if question_id:
+            asks = f"Q{question_id}"
+        elif action in ("advance", "regress", "resume"):
+            asks = "that step's first open question"  # filled in after, by apply_answer / continue
+        else:
+            asks = "nothing (listen, then continue)"
+        logger.info(
+            "[Command] %s -> step %s on %s, ask %s%s%s",
+            action, position, variant or "-", asks,
+            f", back to step {return_to} after" if return_to is not None else "",
+            ", plays audio" if result["play_audio"] else "",
+        )
+    return result
 
 
 def move_on(step, steps, return_to_position):
@@ -177,9 +228,13 @@ def decide(step, steps, variant, is_correct, question_id, question_format, open_
     # reserve_ids: the same, for the step's spare questions; they are only ever
     # a replacement for a missed True/False, never extra work. Both computed
     # AFTER this answer was recorded (see open_questions).
+    answered = f"Q{question_id} ({question_format}) on {variant}"
     if is_correct:
         if open_ids:
+            logger.info("[Decide] %s right -> %d question(s) still open in step %s, ask the next one",
+                        answered, len(open_ids), step["position"])
             return command("next_question", step["position"], variant, open_ids[0], return_to_position)
+        logger.info("[Decide] %s right -> nothing left to ask in step %s, move on", answered, step["position"])
         return move_on(step, steps, return_to_position)
 
     # NO immediate retry: a question is never re-asked until the concept has been
@@ -191,6 +246,9 @@ def decide(step, steps, variant, is_correct, question_id, question_format, open_
     if question_format == "TF":
         replacements = open_ids or reserve_ids
         ask_next = replacements[0] if replacements else None
+        logger.info("[Decide] %s wrong -> a missed True/False is spent; %d open, %d reserve -> %s",
+                    answered, len(open_ids), len(reserve_ids),
+                    f"after the re-teach ask Q{ask_next}" if ask_next else "nothing fair left to ask")
     else:
         ask_next = question_id
 
@@ -198,12 +256,22 @@ def decide(step, steps, variant, is_correct, question_id, question_format, open_
     if next_variant and next_variant in step["versions"]:
         # ask_next None: nothing fair is left to ask -- re-teach, then the phone
         # continues past the step once the explanation has been heard.
+        logger.info("[Decide] %s wrong -> re-teach: escalate %s to %s", answered, variant, next_variant)
         return command("escalate_variant", step["position"], next_variant, ask_next, return_to_position)
 
     prerequisite = nearest_prerequisite(step, steps)
     if prerequisite is not None and return_to_position is None and step["position"] not in regressed_positions:
+        logger.info("[Decide] %s wrong, every explanation tried -> regress to prerequisite step %s, then back to step %s",
+                    answered, prerequisite, step["position"])
         return command("regress", prerequisite, "standard", None, step["position"])
 
+    if prerequisite is None:
+        why = "no earlier prerequisite to review"
+    elif return_to_position is not None:
+        why = "already on a prerequisite detour"
+    else:
+        why = "this step already used its regress"
+    logger.info("[Decide] %s wrong, every explanation tried, %s -> move on", answered, why)
     return move_on(step, steps, return_to_position) # every option exhausted by the system: don't leave the student stranded--move them forward
 
 
@@ -267,6 +335,12 @@ def apply_answer(response, package, progress, course):
     before = concept.mastery_score
     prediction, concept.mastery_score = bkt_update(before, response.is_correct, guess, weights.p_slip, weights.p_learn, weights.mastery_ceiling)
     concept.save()
+    logger.info(
+        "[BKT] %s %s: predicted %.3f (G %.2f, S %.2f) -> knew it %.3f -> +learn T %.2f -> mastery %.3f -> %.3f  (student %s, step %s, Q%s)",
+        response.question_format, "right" if response.is_correct else "wrong", prediction, guess, weights.p_slip,
+        post_answer(before, response.is_correct, guess, weights.p_slip), weights.p_learn,
+        before, concept.mastery_score, response.student_id, step["position"], response.question_id,
+    )
 
     update_baseline(baseline, response.is_correct, first_answer_on_concept, weights)
 
