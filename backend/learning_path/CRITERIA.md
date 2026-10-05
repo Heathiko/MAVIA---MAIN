@@ -1,6 +1,7 @@
-# Prerequisite link criteria (v6.1)
+# Prerequisite link criteria (v6.2)
 
-**Status (2026-10-02):** v6.1 is the default (`rule="cleaner-edges"`); v6 stays selectable as
+**Status (2026-10-06):** v6.2 is the default (`rule="cleaner-edges"`): v6.1 plus part names
+(below). v6.1 was the default from 2026-10-02; v6 stays selectable as
 `rule="reference-order"`. Branch `learning-path-graph-screen` (not merged).
 v6.1 design: `docs/superpowers/specs/2026-10-02-learning-path-v6-1-edge-quality-design.md`;
 measurements: `docs/learning-path-v6-1-evaluation-2026-10-02.md` (final check on new topics 351/353/365).
@@ -38,11 +39,26 @@ The adaptive engine then walks the saved path and detours through the nearest pr
 
 | Evidence | Reads | Known failure |
 |---|---|---|
-| name | a concept's sentences containing all of the other's name stems | lessons refer to a concept by its parts ("anther", not "stamen"); sentence titles have no name |
+| name | a concept's sentences containing all of the other's name stems, or (v6.2) all stems of one of its parts' titles when both concepts share a PDF | lessons refer to a concept by its parts' contents ("anther", not "stamen"); sentence titles have no name; a one-word part title ("Example") matches ordinary words |
 | terms | a concept's passages using **at least two** terms the other owns (Dunning G² ≥ 3.84; v6.1, `MIN_SHARED_TERMS`) | an overview uses its children's terms; a link on one shared word is only a suggestion (`weak_terms`) |
 | heading | a concept under a heading whose stems contain the other's name | word matching; silent when headings are missing |
 | PDF order | positions in every PDF teaching both | a figure's position (extraction puts it first); a merged order across PDFs is a guess |
 | `parallel` | both under one heading naming neither | depends on section headings |
+
+**Part names (v6.2, 2026-10-06).** The extractor stores a term in its learning object's title and the
+explanation in its content, so "Pollination" is never written in Pollination's own text and a concept
+bundling Pollination, Fertilization, Seed formation and Fruit formation could not be named by them.
+Each member's title (numbering and "(Part n of m)" removed, at most 6 stems, not the concept's own
+name) is now also a name of the concept, but only towards concepts sharing a PDF with it: across
+PDFs the direction is the merged order's guess, and there "The Digestive System" (members Mouth,
+Stomach, ...) became the accepted prerequisite of every concept mentioning the stomach, the module's
+introduction among them. `records.name.parts` lists the part titles named; the reason reads
+"Everyday Examples names Pollination and Fertilization, parts of How Flowering Plants Reproduce."
+v6 and v7 do not read part names. Checked on 11 topics (live 98/115, backup 2026-10-04 2-27):
+3 links gained acceptance (How Flowering Plants Reproduce -> Everyday Examples, Comparing the Three
+States -> Summary, The Digestive System -> Helper organs of digestion), 1 accepted link resting on
+table-layout words ("columns", "labelled") became a suggestion, 7 topics unchanged. The rule was
+shaped after seeing those topics, so they are not a fair test of it.
 
 ## The verdict
 
