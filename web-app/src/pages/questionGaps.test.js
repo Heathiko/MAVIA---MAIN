@@ -1,30 +1,29 @@
 import { describe, expect, it } from "vitest";
 
-import { contentGaps, tierCounts } from "./TopicDetailPage";
+import { contentGaps, isShortOfQuestions } from "./TopicDetailPage";
 
-const question = (thinking_order, extra = {}) => ({ thinking_order, source_type: "generated", bloom_level: "x", ...extra });
-const concept = (questions) => ({
+// The server sends each concept its counts toward the minimum and the minimum
+// itself; the page only compares them.
+const concept = (counts, minimum = { LOT: 4, HOT: 2 }) => ({
   versions: { representative_id: 1, slots: { simplified: {}, elaborated: {} } },
-  questions,
+  question_counts: counts,
+  question_minimum: minimum,
 });
-// Exactly the minimum: 4 LOTS and 2 HOTS.
-const full = [...Array(4)].map(() => question("LOT")).concat([...Array(2)].map(() => question("HOT")));
 
 describe("question minimum per concept", () => {
-  it("counts LOTS and HOTS from every source", () => {
-    expect(tierCounts([question("LOT"), question("HOT", { source_type: "pdf" }), question("")])).toEqual({ LOT: 1, HOT: 1 });
-  });
-
-  it("is ready only when every concept has 4 LOTS and 2 HOTS", () => {
-    expect(contentGaps([concept(full)]).ready).toBe(true);
-    const short = contentGaps([concept(full), concept(full.slice(1))]);
+  it("is ready only when every concept meets the server's minimum", () => {
+    expect(contentGaps([concept({ LOT: 4, HOT: 2 })]).ready).toBe(true);
+    const short = contentGaps([concept({ LOT: 4, HOT: 2 }), concept({ LOT: 9, HOT: 1 })]);
     expect(short.shortQuestions).toBe(1);
     expect(short.ready).toBe(false);
   });
 
-  it("a create question does not count toward either tier", () => {
-    // One LOTS short, topped up with a "create" question that has no tier.
-    const withCreate = [...full.slice(1), question("", { bloom_level: "create" })];
-    expect(contentGaps([concept(withCreate)]).shortQuestions).toBe(1);
+  it("follows whatever minimum the server sets", () => {
+    expect(isShortOfQuestions(concept({ LOT: 1, HOT: 1 }, { LOT: 1, HOT: 1 }))).toBe(false);
+    expect(isShortOfQuestions(concept({ LOT: 5, HOT: 5 }, { LOT: 6, HOT: 0 }))).toBe(true);
+  });
+
+  it("names the minimum in its messages", () => {
+    expect(contentGaps([concept({ LOT: 0, HOT: 0 }, { LOT: 3, HOT: 1 })]).minimumText).toBe("3 LOTS and 1 HOTS");
   });
 });

@@ -547,16 +547,26 @@ export function keepVersionText(courseId, nodeId, variantId) {
   });
 }
 
-// `append` is "Generate more": a new batch is added to the concept's
-// questions instead of replacing the untouched ones.
-export function startQuestionGeneration(materialId, learningObjectId = null, { append = false } = {}) {
+// Regenerates: the concept's untouched questions are replaced.
+export function startQuestionGeneration(materialId, learningObjectId = null) {
   const path = learningObjectId
     ? `/generation/materials/${materialId}/nodes/${learningObjectId}/start/`
     : `/generation/materials/${materialId}/start/`;
   return request(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(append ? { append: true } : {}),
+    body: "{}",
+  });
+}
+
+// The Questions step's Generate button: one run for the whole topic. The
+// server tops up every concept short of its minimum, in rounds, adding to
+// the questions already there.
+export function startTopicQuestionGeneration(topicId) {
+  return request(`/generation/topics/${topicId}/start/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
   });
 }
 

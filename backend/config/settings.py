@@ -290,6 +290,12 @@ OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
 # or relabelled into the other tier) still usually reaches it.
 QUESTION_COUNT_LOT = int(os.getenv("QUESTION_COUNT_LOT", "5"))
 QUESTION_COUNT_HOT = int(os.getenv("QUESTION_COUNT_HOT", "5"))
+# What every concept needs before the teacher moves past the Questions step.
+# The page reads these from the API; nothing else holds a copy.
+QUESTION_MIN_LOT = int(os.getenv("QUESTION_MIN_LOT", "4"))
+QUESTION_MIN_HOT = int(os.getenv("QUESTION_MIN_HOT", "2"))
+# Rounds one "Generate" click runs, each one only for concepts still short.
+QUESTION_GENERATION_ROUNDS = int(os.getenv("QUESTION_GENERATION_ROUNDS", "3"))
 
 ADAPTIVE_VARIANT_GENERATION_ENABLED = os.getenv(
     "ADAPTIVE_VARIANT_GENERATION_ENABLED", "True"
@@ -342,13 +348,6 @@ QUESTION_VALIDATION_ENABLED = os.getenv(
 # Passages retrieved per draft. Three is enough to carry the one sentence a
 # question turns on plus its neighbours; more mostly dilutes the judge prompt.
 QUESTION_VALIDATION_TOP_K = int(os.getenv("QUESTION_VALIDATION_TOP_K", "3"))
-# Content words a draft may use that appear nowhere in the topic's materials.
-# Zero is the honest default for a lesson written for young learners: the
-# question should speak the lesson's own vocabulary. Raise it if a curriculum
-# legitimately expects outside terminology.
-QUESTION_VALIDATION_MAX_NOVEL_TERMS = int(
-    os.getenv("QUESTION_VALIDATION_MAX_NOVEL_TERMS", "0")
-)
 # Corrective passes after the first. Each one is a full set of LLM calls, so
 # this trades run time for bank completeness; the loop stops early once the
 # quota is met.

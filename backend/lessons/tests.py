@@ -69,6 +69,7 @@ from .services.instructional_content_classifier import (
     detect_instructional_document_role,
     extract_pdf_text_blocks,
 )
+from .test_question_pairing import WordVectorEncoder
 from .services.learning_resource_linker import (
     detected_question_payloads,
     ensure_learning_object_groups,
@@ -585,6 +586,10 @@ class LearningResourceRelationshipTests(TestCase):
         self.assertEqual(confirmed.status_code, status.HTTP_200_OK)
         self.assertEqual(len(after.data["learning_object_groups"]), 1)
 
+    @patch(
+        "lessons.services.learning_resource_linker._question_encoder",
+        new=lambda: WordVectorEncoder(),
+    )
     def test_teacher_can_add_a_manual_multiple_choice_question_to_a_topic(self):
         lesson = self._material("confirmed-lesson")
         LearningObject.objects.create(
@@ -745,17 +750,18 @@ class LearningResourceRelationshipTests(TestCase):
     @patch.dict(
         "os.environ",
         {
-            "QUESTION_PAIR_LEXICAL_WEIGHT": "0.1",
-            "QUESTION_PAIR_BLOCK_PROXIMITY_WEIGHT": "0.1",
-            "QUESTION_PAIR_SAME_PAGE_WEIGHT": "0.2",
+            "QUESTION_PAIR_AUTO_THRESHOLD": "0.7",
+            "QUESTION_PAIR_REVIEW_THRESHOLD": "0.9",
+            "QUESTION_PAIR_MINIMUM_MARGIN": "0.2",
         },
     )
-    def test_question_pairing_weights_are_configurable_and_normalized(self):
-        weights = question_pairing_debug_configuration()["weights"]
+    def test_question_pairing_thresholds_are_configurable(self):
+        thresholds = question_pairing_debug_configuration()["thresholds"]
 
-        self.assertEqual(weights["lexical_tfidf"], 0.25)
-        self.assertEqual(weights["source_block_proximity"], 0.25)
-        self.assertEqual(weights["same_page"], 0.5)
+        self.assertEqual(thresholds["auto_confirm"], 0.7)
+        # Review can never ask for more than confirming does.
+        self.assertEqual(thresholds["teacher_review"], 0.7)
+        self.assertEqual(thresholds["minimum_margin"], 0.2)
 
     def test_related_but_not_high_confidence_content_waits_for_review(self):
         first_material = self._material("standard")
@@ -1059,6 +1065,10 @@ class LearningResourceRelationshipTests(TestCase):
         suggestion = LearningObjectMatchSuggestion.objects.get(status="pending")
         self.assertEqual(suggestion.evidence["winner_margin"], 0.0)
 
+    @patch(
+        "lessons.services.learning_resource_linker._question_encoder",
+        new=lambda: WordVectorEncoder(),
+    )
     def test_detected_question_is_separate_and_paired_to_best_learning_object(self):
         material = self._material("questions")
         solid = LearningObject.objects.create(
@@ -1101,10 +1111,13 @@ class LearningResourceRelationshipTests(TestCase):
         question = Question.objects.get()
         link = QuestionLearningObjectLink.objects.get(question=question)
         self.assertEqual(link.learning_object, solid)
-        self.assertTrue(link.is_primary)
-        self.assertEqual(link.method, "layout_tfidf")
+        self.assertEqual(link.method, "sbert_concept")
         self.assertNotIn(question.prompt, solid.content)
 
+    @patch(
+        "lessons.services.learning_resource_linker._question_encoder",
+        new=lambda: WordVectorEncoder(),
+    )
     def test_question_only_pdf_pairs_against_learning_objects_in_its_topic(self):
         lesson_material = self._material("lesson")
         question_material = self._material("assessment")
@@ -1130,7 +1143,7 @@ class LearningResourceRelationshipTests(TestCase):
         link = QuestionLearningObjectLink.objects.get(question=question)
 
         self.assertEqual(link.learning_object, solid)
-        self.assertEqual(link.method, "topic_tfidf")
+        self.assertEqual(link.method, "sbert_concept")
         self.assertIn(
             link.review_status,
             {
@@ -1184,6 +1197,10 @@ class LearningResourceRelationshipTests(TestCase):
             "Q: What happens when the temperature becomes lower?",
         )
 
+    @patch(
+        "lessons.services.learning_resource_linker._question_encoder",
+        new=lambda: WordVectorEncoder(),
+    )
     def test_learning_resources_endpoint_exposes_groups_and_question_pairs(self):
         material = self._material("paired")
         learning_object = LearningObject.objects.create(
@@ -1224,6 +1241,10 @@ class LearningResourceRelationshipTests(TestCase):
             "QUESTION_PAIR_AUTO_THRESHOLD": "0.99",
             "QUESTION_PAIR_REVIEW_THRESHOLD": "0.00",
         },
+    )
+    @patch(
+        "lessons.services.learning_resource_linker._question_encoder",
+        new=lambda: WordVectorEncoder(),
     )
     def test_uncertain_question_waits_for_teacher_confirmation(self):
         material = self._material("question-review")

@@ -158,10 +158,8 @@ def _standard_question_source(node):
     return standard, ""
 
 
-def _run_pipeline(run_id, material_id, node_ids=None, skip_complete=False, append=False):
-    """Thread target: run the pipeline, streaming trace events to the DB."""
-    from .services.pipeline import generate_questions_for_material
-
+def _event_recorder(run_id):
+    """A trace callback that stores each event under ``run_id``, in order."""
     seq_counter = [0]
 
     def on_event(event_type, message, data):
@@ -173,6 +171,14 @@ def _run_pipeline(run_id, material_id, node_ids=None, skip_complete=False, appen
             message=message,
             data=data,
         )
+    return on_event
+
+
+def _run_pipeline(run_id, material_id, node_ids=None, skip_complete=False, append=False):
+    """Thread target: run the pipeline, streaming trace events to the DB."""
+    from .services.pipeline import generate_questions_for_material
+
+    on_event = _event_recorder(run_id)
 
     try:
         run = GenerationRun.objects.select_related("material").get(id=run_id)
@@ -194,6 +200,106 @@ def _run_pipeline(run_id, material_id, node_ids=None, skip_complete=False, appen
         on_event("error", f"{type(e).__name__}: {e}", None)
         GenerationRun.objects.filter(id=run_id).update(
             status="failed", finished_at=timezone.now())
+
+
+def _question_run_in_progress():
+    """A 409 response while another question run is live, else None.
+
+    One question run at a time; runs orphaned by a server restart are closed
+    here. Scoped to this kind deliberately: an extraction or publish run is
+    unrelated work, and refusing to generate questions because a PDF is still
+    being read would be a conflict the teacher cannot act on.
+    """
+    for run in GenerationRun.objects.filter(
+        status="running",
+        kind=GenerationRun.Kind.QUESTIONS,
+    ):
+        last_event = run.events.order_by("-seq").first()
+        last_activity = last_event.created_at if last_event else run.started_at
+        if (timezone.now() - last_activity).total_seconds() > STALE_RUN_SECONDS:
+            run.status = "failed"
+            run.finished_at = timezone.now()
+            run.save(update_fields=["status", "finished_at"])
+        else:
+            return Response(
+                {"error": "A generation run is already in progress", "run_id": run.id},
+                status=status.HTTP_409_CONFLICT,
+            )
+    return None
+
+
+def _run_topic_pipeline(run_id, node_ids):
+    """Thread target: fill a topic's concepts in rounds, tracing to the DB."""
+    from lessons.models import LearningObject
+    from .services.pipeline import generate_questions_for_topic
+
+    on_event = _event_recorder(run_id)
+    try:
+        run = GenerationRun.objects.select_related("outline_node").get(id=run_id)
+        by_id = LearningObject.objects.select_related("group", "material").in_bulk(node_ids)
+        result = generate_questions_for_topic(
+            run.outline_node, [by_id[pk] for pk in node_ids if pk in by_id], on_event=on_event,
+        )
+        on_event("saved", f"Saved {result['added']} questions to database", result)
+        GenerationRun.objects.filter(id=run_id).update(
+            status="finished", finished_at=timezone.now())
+    except Exception as e:  # noqa: BLE001 -- surface anything to the trace
+        logger.exception("[Questions] run %s failed: %s: %s", run_id, type(e).__name__, e)
+        on_event("error", f"{type(e).__name__}: {e}", None)
+        GenerationRun.objects.filter(id=run_id).update(
+            status="failed", finished_at=timezone.now())
+
+
+class StartTopicGenerationView(APIView):
+    """
+    POST /api/generation/topics/<outline_node_id>/start/
+
+    The Questions step's one Generate button: every concept of the topic
+    still short of its minimum LOTS and HOTS is topped up, in rounds, from
+    its Standard version. Concepts already at the minimum are left alone.
+    Runs in the background; poll the trace endpoint.
+    """
+    def post(self, request, outline_node_id):
+        from lessons.models import LearningObjectGroup, OutlineNode
+
+        outline_node = OutlineNode.objects.filter(pk=outline_node_id).first()
+        if outline_node is None:
+            return Response({"error": "Topic not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        node_ids, skipped = [], []
+        groups = LearningObjectGroup.objects.filter(outline_node=outline_node).order_by("id")
+        for group in groups:
+            member = group.learning_objects.filter(
+                material__generated_json__learning_objects_confirmed=True,
+            ).exclude(content="").order_by("material_id", "order", "id").first()
+            if member is None:
+                continue
+            standard, standard_error = _standard_question_source(member)
+            if standard_error:
+                skipped.append(f"{group.label}: {standard_error}")
+                continue
+            node_ids.append(standard.id)
+        if not node_ids:
+            return Response(
+                {"error": "This topic has no concept with a Standard version to generate from.",
+                 "skipped": skipped},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        busy = _question_run_in_progress()
+        if busy is not None:
+            return busy
+
+        run = GenerationRun.objects.create(
+            outline_node=outline_node, kind=GenerationRun.Kind.QUESTIONS,
+        )
+        threading.Thread(
+            target=_run_topic_pipeline, args=(run.id, node_ids), daemon=True,
+        ).start()
+        return Response(
+            {"run_id": run.id, "concept_count": len(node_ids), "skipped": skipped},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class StartGenerationView(APIView):
@@ -268,25 +374,9 @@ class StartGenerationView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # One question run at a time; unstick runs orphaned by a server restart.
-        # Scoped to this kind deliberately: an extraction or publish run is
-        # unrelated work, and refusing to generate questions because a PDF is
-        # still being read would be a conflict the teacher cannot act on.
-        for run in GenerationRun.objects.filter(
-            status="running",
-            kind=GenerationRun.Kind.QUESTIONS,
-        ):
-            last_event = run.events.order_by("-seq").first()
-            last_activity = last_event.created_at if last_event else run.started_at
-            if (timezone.now() - last_activity).total_seconds() > STALE_RUN_SECONDS:
-                run.status = "failed"
-                run.finished_at = timezone.now()
-                run.save(update_fields=["status", "finished_at"])
-            else:
-                return Response(
-                    {"error": "A generation run is already in progress", "run_id": run.id},
-                    status=status.HTTP_409_CONFLICT,
-                )
+        busy = _question_run_in_progress()
+        if busy is not None:
+            return busy
 
         run = GenerationRun.objects.create(
             material=material, node=node, kind=GenerationRun.Kind.QUESTIONS,
