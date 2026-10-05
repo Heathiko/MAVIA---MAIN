@@ -3,7 +3,7 @@ from lessons.models import OutlineNode
 from .models import StudentResponse, TopicPackage, TopicPackageProgress
 from adaptive.services import grade, decide_after_listening, apply_answer, first_open_question, open_questions
 from question_generation.models import GeneratedQuestion
-
+from django.db import transaction
 
 
 
@@ -138,7 +138,9 @@ def apply_command(progress, command):
     progress.save()
 
 
+
 #the answeringz to the questioningz na igrade og isavingz g????
+@transaction.atomic
 def submit_answer(student, topic, package, question_id, selected_answer):
     question = package.answer_key.get(str(question_id))
     if question is None:
