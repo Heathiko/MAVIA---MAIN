@@ -125,23 +125,6 @@ the reference and subsumption votes both read overviews backwards and outvoted c
 and headings. Spec `docs/superpowers/specs/2026-10-01-learning-path-v7-direction-votes-design.md`;
 outputs `docs/learning-path-v7-evaluation/`. Its final check (moves 5-9 on 341-348) is unspent.
 
-## Measuring
-
-```bash
-python manage.py evaluate_gold_paths --topics 62 79 152 340 357 --by-clue
-python manage.py evaluate_gold_paths --topics 62 79 152 340 357 --baseline order   # order-only baseline
-python manage.py evaluate_gold_paths --topics 340 --without terms                  # ablation
-python manage.py test learning_path.test_gold_paths
-```
-
-Headline numbers: **covered** (required links reached by accepted links, directly or through a
-chain) together with **accepted precision** and forbidden links accepted. The order-only baseline
-covers every forward link by construction, so it is compared on precision (spec §5).
-
-Development set: gold 62, 79, 152, plus 340 and 357 (AI-drafted keys). Test set: 341, 343, 347,
-348 (AI-drafted keys from `docs/learning-path-<id>-snapshot-2026-09-30.md`, drafted before any
-design work), scored once with the rules frozen. Never tune on the test set.
-
 ## History
 
 - v3 (three equal votes: temporal order, RefD key terms, foundationality):

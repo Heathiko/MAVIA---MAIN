@@ -1,7 +1,8 @@
 """Similarity cutoffs and clue agreement, learned once and stored for the whole group.
 
 Weights are not recomputed when a screen opens, so a new upload never quietly
-changes another topic's links. ``calibrate_learning_path`` writes the file.
+changes another topic's links. The stored file dates from 2026-09-30; its cutoffs
+only fill the recorded relatedness and meaning numbers, never a verdict.
 """
 
 import copy
