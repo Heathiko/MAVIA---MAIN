@@ -24,6 +24,7 @@ export type PlayerQuestion = {
   question_type: string;
   choices: string[];
   correct_answer: string;
+  audio_url: string;             // the question's recorded clip; "" when it has none
 };
 
 export type PlayerState = {
@@ -118,6 +119,7 @@ export function questionsFor(state: PlayerState): PlayerQuestion[] {
     question_type: q.format === "TF" ? "true_false" : "multiple_choice",
     choices: q.format === "TF" ? [] : choicesOf(q.choices),
     correct_answer: "",
+    audio_url: step.question_audio?.[String(q.id)] ?? "",
   }));
 }
 

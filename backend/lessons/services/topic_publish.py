@@ -19,6 +19,7 @@ from .audio_generator import (
     AudioGenerationError,
     generate_bundle_version_audio,
     generate_material_audio_playlist,
+    generate_question_audio,
     generate_version_audio,
 )
 from .image_describer import populate_missing_image_descriptions
@@ -289,6 +290,9 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
             # their own clips the alternate track would play silence.
             bundle_audio = generate_bundle_version_audio(material)
             result["generated_count"] += bundle_audio["generated_count"]
+            # The questions are read from their own clips too, in the same voice.
+            question_audio = generate_question_audio(material)
+            result["generated_count"] += question_audio["generated_count"]
             audio_generated += result["generated_count"]
             emit(
                 "audio_finished",

@@ -20,6 +20,7 @@ from course.version_assignment import assign_group_versions, served_version_bund
 from question_generation.models import GeneratedQuestion
 
 from ..models import ConceptPrerequisite, CourseConceptLink, LearningPathStep
+from lessons.services.audio_generator import question_audio_url
 from lessons.services.concept_bundles import bundles_for_group
 from lessons.services.concept_titles import display_titles
 
@@ -206,7 +207,7 @@ def _questions(parts, include_answers):
     # HOT. Drawn from every part of the telling: generation attaches questions
     # to whichever object it was reading, which is often not the first.
     by_order = {}
-    for question in GeneratedQuestion.objects.filter(node__in=parts, status="final").order_by("id"):
+    for question in GeneratedQuestion.objects.filter(node__in=parts, status="final").select_related("node__material").order_by("id"):
         order = question.thinking_order or "LOT"
         bucket = by_order.setdefault(order, [])
         if len(bucket) < QUESTIONS_PER_ORDER.get(order, 1):
@@ -223,6 +224,7 @@ def _questions(parts, include_answers):
                 "bloom_level": question.bloom_level,
                 "thinking_order": question.thinking_order,
                 "category": question.category,
+                "audio_url": question_audio_url(question),
             }
             if include_answers:
                 entry["correct_answer"] = question.correct_answer

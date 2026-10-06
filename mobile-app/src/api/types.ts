@@ -39,6 +39,9 @@ export type ApiPackageStep = {
   // Spare questions from the concept's bank. Only ever asked after a missed
   // True/False, which is never asked again (the other answer would be certain).
   reserve_questions?: ApiPackageQuestion[];
+  // Each question's recorded audio, by question id. A question with no clip
+  // is left out and read by the device voice instead.
+  question_audio?: Record<string, string>;
 };
 
 export type ApiProgress = {

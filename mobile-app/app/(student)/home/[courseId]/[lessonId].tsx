@@ -217,6 +217,12 @@ export default function LessonPlayerScreen() {
     };
   }, [guideBusy, phase, loading, step?.position, trackIndex, track?.audio_ready, track?.audio_url, load, speak, stopNarration, stopAudio, topicReplay]);
 
+  // A clip that fails to load hands on like a missing one: with no skip
+  // button, nothing else would move the student past it.
+  useEffect(() => {
+    if (phase === "audio" && player.error) finishTrackRef.current();
+  }, [phase, player.error]);
+
   // Belt and braces for the phases that have no audio effect of their own.
   useEffect(() => {
     if (phase === "audio") return;
@@ -345,6 +351,8 @@ export default function LessonPlayerScreen() {
     }
     if (repeatMenuRef.current === "closed") resumeAfterMenu.current = phase === "audio" && player.isPlaying;
     if (player.isPlaying) player.pause();
+    // The question's own clip belongs to QuestionCard; silenceAll reaches it.
+    if (phase === "questions") silenceAll();
     if (repeatTimer.current) clearTimeout(repeatTimer.current);
     repeatMenuRef.current = "asking";
     setRepeatMenu("asking");
@@ -575,17 +583,10 @@ export default function LessonPlayerScreen() {
           />
         </View>
 
-        {!waiting &&
-          (phase === "continue" ? (
-            <ActivityIndicator color={colors.brand600} style={{ marginTop: spacing.lg }} />
-          ) : (
-            <Button
-              label={hasQuestions ? "Skip to questions" : "Continue"}
-              variant="ghost"
-              onPress={finishListening}
-              style={{ marginTop: spacing.lg }}
-            />
-          ))}
+        {/* No skip button: the concept is always heard before its questions. */}
+        {!waiting && phase === "continue" && (
+          <ActivityIndicator color={colors.brand600} style={{ marginTop: spacing.lg }} />
+        )}
       </View>
     );
   }

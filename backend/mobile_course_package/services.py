@@ -3,6 +3,7 @@ from lessons.models import OutlineNode
 from .models import StudentResponse, TopicPackage, TopicPackageProgress
 from adaptive.services import grade, decide_after_listening, apply_answer, first_open_question, open_questions
 from question_generation.models import GeneratedQuestion
+from lessons.services.audio_generator import question_audio_url
 from django.db import transaction
 
 
@@ -39,6 +40,10 @@ def audio_for_topic_explanation_types(versions):  # each explanation type has it
     return result
 
 
+def audio_for_topic_questions(questions):  # each question of the step has its own audio to pull, by question id
+    return {str(question["id"]): question["audio_url"] for question in questions if question.get("audio_url")}
+
+
 
 def question_pool_for_student_view(question):
     accessible = ("id", "text", "format", "choices", "thinking_order")
@@ -54,7 +59,7 @@ def reserve_questions_for(concept_id, already_used):
     #a True/False is missed, so the re-teach is followed by a DIFFERENT question.
     spare = GeneratedQuestion.objects.filter(
         node__group_id=concept_id, status="final"
-    ).exclude(id__in=already_used).order_by("id")
+    ).exclude(id__in=already_used).select_related("node__material").order_by("id")
     return [
         {
             "id": q.id,
@@ -64,6 +69,7 @@ def reserve_questions_for(concept_id, already_used):
             "thinking_order": q.thinking_order,
             "correct_answer": q.correct_answer,
             "explanation": q.explanation,
+            "audio_url": question_audio_url(q),
         }
         for q in spare
     ]
@@ -103,6 +109,7 @@ def build_course_package(topic):
             "versions": audio_for_topic_explanation_types(step["versions"]),
             "questions": [question_pool_for_student_view(q) for q in step["questions"]],
             "reserve_questions": [question_pool_for_student_view(q) for q in reserve],
+            "question_audio": audio_for_topic_questions(step["questions"] + reserve),
         })
 
     package, _ = TopicPackage.objects.update_or_create(

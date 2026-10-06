@@ -244,6 +244,51 @@ def generate_material_audio_playlist(material: LearningMaterial, scope: str = "l
     }
 
 
+def question_spoken_text(question) -> str:
+    """The question as the phone reads it: the prompt, then each option by its letter."""
+    if question.question_format == "TF":
+        labels = ["True", "False"]
+    elif isinstance(question.choices, dict):
+        labels = [str(question.choices[key]) for key in sorted(question.choices)]
+    else:
+        labels = [str(choice) for choice in question.choices or []]
+    options = " ".join(f"{letter}. {label}." for letter, label in zip("ABCDEF", labels))
+    return f"{question.question_text} {options}".strip()
+
+
+def generate_question_audio(material: LearningMaterial) -> dict:
+    """One clip per final question of the material, stored with the text it reads.
+
+    Saved under ``generated_json["question_audio"]`` by question id. The text
+    is kept so an edited question is never served the old recording.
+    """
+    from question_generation.models import GeneratedQuestion
+
+    audio_dir = Path(settings.MEDIA_ROOT) / "audio_lessons" / f"material_{material.id}"
+    clips = {}
+    generated_count = 0
+    for question in GeneratedQuestion.objects.filter(node__material=material, status="final").order_by("id"):
+        text = question_spoken_text(question)
+        audio_path, created = cached_audio(text, audio_dir)
+        relative_path = audio_path.relative_to(settings.MEDIA_ROOT).as_posix()
+        clips[str(question.id)] = {"text": text, "audio_url": f"{settings.MEDIA_URL}{relative_path}"}
+        generated_count += int(created)
+
+    generated_json = material.generated_json or {}
+    generated_json["question_audio"] = clips
+    generated_json["question_audio_generated"] = True
+    material.generated_json = generated_json
+    material.save(update_fields=["generated_json"])
+    return {"generated_count": generated_count}
+
+
+def question_audio_url(question) -> str:
+    """The question's clip, or "" when it has none or was recorded from older text."""
+    clips = (question.node.material.generated_json or {}).get("question_audio") or {}
+    clip = clips.get(str(question.id)) or {}
+    return clip.get("audio_url", "") if clip.get("text") == question_spoken_text(question) else ""
+
+
 def cached_audio(text, directory):
     """Reuse audio only for the same narration and configured voice/provider."""
     provider = os.getenv("AUDIO_TTS_PROVIDER", "edge").strip().lower()

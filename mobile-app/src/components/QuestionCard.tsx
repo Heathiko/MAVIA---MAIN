@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useNarration } from "@/hooks/useNarration";
+import { useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { resolveMediaUrl } from "@/api/client";
 import { useBrailleKeypad } from "@/input/useBrailleKeypad";
 import { letterForTapCount, useTapCounter } from "@/input/tapAnswers";
 import { useScreenReaderEnabled } from "@/hooks/useScreenReaderEnabled";
@@ -18,6 +20,9 @@ export type Question = {
   question_type: "open_ended" | "true_false" | "multiple_choice" | string;
   choices: string[];
   correct_answer: string;
+  // The question and its options as a recorded clip, in the lesson's voice.
+  // "" (or absent): read by the device voice instead.
+  audio_url?: string;
 };
 
 export type SubmitResult = { is_correct: boolean; mastery: number; completed: boolean };
@@ -69,6 +74,18 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
   const [error, setError] = useState<string | null>(null);
   const narration = useNarration();
   const advancedRef = useRef(false);
+  // The question's own recording. Anything else the card says stops it first
+  // (say() below): expo-speech cannot stop an audio file.
+  const clip = useAudioPlayer(() => {
+    if (openEnded) advanceOnce();
+  });
+  // A clip that will not load is read by the device voice instead.
+  const clipFailedRef = useRef(false);
+
+  function say(text: string, options?: { onDone?: () => void }) {
+    clip.stop();
+    narration.speak(text, options);
+  }
   // The verdict has to wait for the read-back of the chosen answer to finish.
   // speak() stops whatever is talking, so a fast reply from the server would
   // otherwise cut "Answered A. Solid." off mid-word. These two track which of
@@ -91,7 +108,7 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
     if (!readBackDoneRef.current || verdictRef.current === null) return;
     const { text, advance } = verdictRef.current;
     verdictRef.current = null;
-    narration.speak(text, advance ? { onDone: advanceOnce } : undefined);
+    say(text, advance ? { onDone: advanceOnce } : undefined);
   }
 
   // "A. Solid. B. Liquid." -- the letter is the key they press, so it is
@@ -108,10 +125,30 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
     // Only the automatic first read carries the tip. Asking to hear the
     // question again means the question, not the instructions.
     const tip = withTip && !openEnded ? answeringTip.take() : "";
-    narration.speak(tip ? `${tip} ${body}` : body, {
+    if (question.audio_url && !clipFailedRef.current) {
+      const playClip = () => {
+        if (choosingRef.current) return;
+        clip.load(resolveMediaUrl(question.audio_url!), true);
+      };
+      // The tip is not part of the recording: say it, then play the question.
+      if (tip) say(tip, { onDone: playClip });
+      else {
+        narration.stop();
+        playClip();
+      }
+      return;
+    }
+    say(tip ? `${tip} ${body}` : body, {
       onDone: openEnded ? advanceOnce : undefined,
     });
   }
+
+  useEffect(() => {
+    if (!clip.error || clipFailedRef.current) return;
+    clipFailedRef.current = true;
+    if (!choosingRef.current) readQuestionAloud();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clip.error]);
 
   // Read the new question (and its choices) aloud as soon as it appears.
   // Open-ended questions have nothing to grade -- move on as soon as the
@@ -127,7 +164,10 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
     if (guideBusy || !answeringTip.ready) return;
     advancedRef.current = false;
     readQuestionAloud({ withTip: true });
-    return () => narration.stop();
+    return () => {
+      narration.stop();
+      clip.stop();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [question.id, answeringTip.ready, guideBusy]);
 
@@ -163,7 +203,7 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
     // Read the choice back immediately, before the network round trip: the
     // student needs to know which key registered without waiting on a server.
     const option = options.find((o) => o.key === key);
-    narration.speak(
+    say(
       option ? `Answered ${option.key.toUpperCase()}. ${option.label}.` : `Answered ${key}.`,
       {
         onDone: () => {
@@ -204,7 +244,7 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
         // Once per question: a held or repeated arrow should not become a loop.
         if (numLockWarnedRef.current) return;
         numLockWarnedRef.current = true;
-        narration.speak(
+        say(
           `Number lock is off. Press Num Lock, then answer with ${ANSWER_KEYS.a}, ${ANSWER_KEYS.b}, ${ANSWER_KEYS.c}, or ${ANSWER_KEYS.d}.`
         );
         return;
@@ -218,7 +258,7 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
       const option = options.find((o) => o.key === action.letter);
       if (!option) {
         // e.g. 5 (D) on a True/False question: say so rather than do nothing.
-        narration.speak(`There is no option ${action.letter.toUpperCase()}.`);
+        say(`There is no option ${action.letter.toUpperCase()}.`);
         return;
       }
       choose(option.key);
@@ -236,13 +276,13 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
     onTap: (count) => {
       if (inputPausedRef.current || choosingRef.current || answered || submitting) return;
       if (count > options.length) {
-        narration.speak(
+        say(
           options.length === 1 ? "There is only one option." : `There are only ${options.length} options.`
         );
         return;
       }
       // The running count, spoken as it lands, so it can be heard, not guessed.
-      narration.speak(options[count - 1].key.toUpperCase());
+      say(options[count - 1].key.toUpperCase());
     },
     onSettled: (count) => {
       if (inputPausedRef.current || choosingRef.current || answered || submitting) return;
@@ -253,18 +293,11 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
     },
   });
 
+  // The verdict is spoken only (speakVerdictWhenReady), never shown.
   const status = (
     <>
       {submitting && <ActivityIndicator color={colors.brand600} />}
       {error && <Text style={styles.error}>{error}</Text>}
-
-      {answered && (
-        <View style={styles.feedback}>
-          <Text style={result?.is_correct ? styles.correct : styles.wrong}>
-            {result?.is_correct ? "Correct" : "Not quite"}
-          </Text>
-        </View>
-      )}
     </>
   );
 
@@ -428,8 +461,5 @@ const styles = StyleSheet.create({
   },
   optionKeyText: { fontSize: 11, fontWeight: "800", color: colors.white },
   optionLabel: { flex: 1, fontSize: 14, fontWeight: "600", color: colors.ink },
-  feedback: { gap: spacing.xs },
-  correct: { fontSize: 14, fontWeight: "800", color: colors.success },
-  wrong: { fontSize: 14, fontWeight: "800", color: colors.danger },
   error: { fontSize: 12, fontWeight: "600", color: colors.danger },
 });

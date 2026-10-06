@@ -6,6 +6,7 @@ the ladder and the endpoints) without needing real course content.
 """
 
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.utils import timezone
@@ -15,9 +16,11 @@ from adaptive.models import ConceptMastery, Decision, Enrollment, StudentBaselin
 from adaptive.services import grade, margin_of_error
 from adaptive_config.models import AdaptiveConfig
 from lessons.models import CourseGroup, OutlineNode
+from lessons.services.audio_generator import question_audio_url, question_spoken_text
 from user.models import User
 
 from .models import StudentResponse, TopicPackage, TopicPackageProgress
+from .services import audio_for_topic_questions
 
 INTRO, SOLIDS, COMPARING = 101, 102, 103   # concept ids
 
@@ -287,3 +290,22 @@ class GradingTests(APITestCase):
         self.assertTrue(grade(tf, "true"))
         self.assertTrue(grade(tf, "a"))
         self.assertFalse(grade(tf, "false"))
+
+
+class QuestionAudioTests(APITestCase):
+    def question(self, text, generated_json):
+        material = SimpleNamespace(generated_json=generated_json)
+        return SimpleNamespace(id=7, question_text=text, question_format="MCQ",
+                               choices={"B": "Liquid", "A": "Solid"}, node=SimpleNamespace(material=material))
+
+    def test_clip_is_served_only_for_the_text_it_reads(self):
+        spoken = "Which keeps its shape? A. Solid. B. Liquid."
+        clips = {"question_audio": {"7": {"text": spoken, "audio_url": "/media/q7.mp3"}}}
+        self.assertEqual(question_spoken_text(self.question("Which keeps its shape?", clips)), spoken)
+        self.assertEqual(question_audio_url(self.question("Which keeps its shape?", clips)), "/media/q7.mp3")
+        # Edited after it was recorded: the device voice reads it instead.
+        self.assertEqual(question_audio_url(self.question("Which one keeps its shape?", clips)), "")
+
+    def test_step_lists_audio_by_question_id(self):
+        questions = [{"id": 1, "audio_url": "/media/1.mp3"}, {"id": 2, "audio_url": ""}]
+        self.assertEqual(audio_for_topic_questions(questions), {"1": "/media/1.mp3"})
