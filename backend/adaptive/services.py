@@ -220,11 +220,25 @@ def command(action, position, variant, question_id=None, return_to=None):
 
 def move_on(step, steps, return_to_position):
     if return_to_position is not None: #If ordered to return to previous concept position
-        return command("resume", return_to_position, "standard")
+        # Back from the detour: the step already had every reading before it, so none is
+        # replayed and none is used again -- it stays on its last one (a miss there has no
+        # fuller reading to climb to) and goes straight to its questions.
+        back = step_at(steps, return_to_position)
+        result = command("resume", return_to_position, last_reading(back) if back else "standard")
+        result["play_audio"] = False
+        return result
     position = next_position(steps, step["position"]) 
     if position is None: #if the position is empty then
         return command("complete", None, "")
     return command("advance", position, "standard")
+
+
+def last_reading(step):
+    #the fullest reading the step has: where the re-teach ladder ends
+    reading = "standard"
+    while next_reading(step, reading):
+        reading = next_reading(step, reading)
+    return reading
 
 
 def next_reading(step, variant):
@@ -325,13 +339,27 @@ def askable_questions(step, student, topic, package, reserve=False):
     return [q for q in open_questions(step, student, topic, package, reserve) if q not in used_up]
 
 
-def first_question_on_arrival(step, student, topic, package, resuming):
-    #the question waiting when the student moves to a step. Resuming the step that sent them
-    #on a detour, the question they ran out of readings on is asked again -- that is what the
-    #detour was for. Anywhere else a used-up question is skipped: its explanation was already
-    #spoken, so asking it again would test memory, not understanding.
+def fresh_reserve_question(step, student, topic):
+    #a spare question of the step this student has never answered -- so never heard reviewed either
+    answered = set(StudentResponse.objects.filter(student=student, topic=topic, concept_id=step["concept_id"])
+                   .values_list("question_id", flat=True))
+    return next((q["id"] for q in step.get("reserve_questions", []) if q["id"] not in answered), None)
+
+
+def first_question_on_arrival(step, student, topic, package, resuming=False, detour=False):
+    #the question waiting when the student moves to a step.
+    #  resuming the step that sent them on a detour: the question they ran out of readings on,
+    #    once more -- that is what the detour was for (no reading is replayed, see move_on).
+    #  arriving on a detour: a fresh reserve question of the prerequisite, never answered and so
+    #    never reviewed -- it measures the review honestly; its served questions were already asked.
+    #  anywhere else: the first question still worth asking; a used-up one is skipped, since its
+    #    answer was already read out in the review.
     if resuming:
         return first_open_question(step, student, topic, package)
+    if detour:
+        fresh = fresh_reserve_question(step, student, topic)
+        if fresh is not None:
+            return fresh
     askable = askable_questions(step, student, topic, package)
     return askable[0] if askable else None
 
@@ -358,11 +386,14 @@ def answer_text(question):
     return right
 
 
-def segment_review(step, student, topic, package):
+def segment_review(step, student, topic, package, detour_only=False):
     #the step's questions this student missed and never got right, each with its answer and
     #why. Heard once the segment is over -- never before, where it would give away a question
-    #still to come (the step's other questions share its facts).
+    #still to come (the step's other questions share its facts). Leaving a detour
+    #(detour_only) reviews only what was asked on the detour: the rest was reviewed already.
     answers = StudentResponse.objects.filter(student=student, topic=topic, concept_id=step["concept_id"])
+    if detour_only:
+        answers = answers.filter(decision__on_detour=True)
     missed = set(answers.filter(is_correct=False).values_list("question_id", flat=True))
     right = set(answers.filter(is_correct=True).values_list("question_id", flat=True))
     review = []
@@ -440,11 +471,8 @@ def apply_answer(response, package, progress, course):
     if result["action"] in ("advance", "regress", "resume"):
         target = step_at(package.steps, result["next_step_position"])
         result["next_question_id"] = first_question_on_arrival(target, response.student, response.topic, package,
-                                                               resuming=result["action"] == "resume")
-
-    # Leaving a finished segment: the student hears what they missed in it, and why.
-    if result["action"] in LEAVES_THE_SEGMENT:
-        result["review"] = segment_review(step, response.student, response.topic, package)
+                                                               resuming=result["action"] == "resume",
+                                                               detour=result["action"] == "regress")
 
     prerequisite_scores = list(ConceptMastery.objects.filter(student=response.student, concept_id__in=step["prerequisites"])
                                .values_list("mastery_score", flat=True))
@@ -470,6 +498,11 @@ def apply_answer(response, package, progress, course):
         step_already_regressed=step_already_regressed,
         action_probability=1.0,
     )
+    # Leaving a finished segment: the student hears what they missed in it, and why.
+    if result["action"] in LEAVES_THE_SEGMENT:
+        result["review"] = segment_review(step, response.student, response.topic, package,
+                                          detour_only=result["action"] == "resume")
+
     return result
 
 

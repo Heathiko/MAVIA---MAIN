@@ -188,7 +188,7 @@ def continue_after_listening(student, topic, package):
         return None
     command = decide_after_listening(step, package.steps, progress.return_to_position)
     if command["action"] in LEAVES_THE_SEGMENT:
-        command["review"] = segment_review(step, student, topic, package)
+        command["review"] = segment_review(step, student, topic, package, detour_only=command["action"] == "resume")
     # Tell the phone which question waits on the step it moves to (None: listen only),
     # exactly as an answer's command does.
     if command["next_step_position"] is not None:
