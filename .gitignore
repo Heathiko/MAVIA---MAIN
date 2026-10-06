@@ -97,3 +97,6 @@ docs/learning-path-calculations/
 
 # Database backups, kept locally only
 backend/db.sqlite3.*
+
+# Simulation run workbooks and their builder
+docs/simulation-*/
