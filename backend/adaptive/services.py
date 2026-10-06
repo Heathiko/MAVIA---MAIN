@@ -280,7 +280,11 @@ def decide(step, steps, variant, is_correct, question_id, question_format, open_
     else:
         ask_next = question_id
 
-    next_variant = next_reading(step, variant)
+    # On a detour the prerequisite gets one question and no re-teach: it was just heard,
+    # and the student is due back. A miss goes straight back; the answer is in the
+    # detour's review on the way.
+    on_detour = return_to_position is not None
+    next_variant = None if on_detour else next_reading(step, variant)
     if next_variant:
         # ask_next None: nothing fair is left to ask -- re-teach, then the phone
         # continues past the step once the explanation has been heard.
@@ -293,17 +297,17 @@ def decide(step, steps, variant, is_correct, question_id, question_format, open_
                     answered, prerequisite, step["position"])
         return command("regress", prerequisite, "standard", None, step["position"])
 
-    if prerequisite is None:
+    if on_detour:
+        why = "on a detour (one question, no re-teach)"
+    elif prerequisite is None:
         why = "no earlier prerequisite to review"
-    elif return_to_position is not None:
-        why = "already on a prerequisite detour"
     else:
         why = "this step already used its regress"
 
     # This question is done, but the step's OTHER questions still get asked: one
     # question missed at every reading doesn't show the whole concept is missed,
     # and the mastery score is only fair once the student had every question.
-    remaining = [q for q in open_ids if q != question_id] or (reserve_ids if question_format == "TF" else [])
+    remaining = [q for q in open_ids if q != question_id] or (reserve_ids if question_format == "TF" and not on_detour else [])
     if remaining:
         logger.info("[Decide] %s wrong, every explanation tried, %s -> ask the step's next question Q%s",
                     answered, why, remaining[0])
@@ -510,6 +514,35 @@ def apply_answer(response, package, progress, course):
 # teacher report (web): same response shape the Review page already reads
 # ---------------------------------------------------------------------------
 
+def concepts_needing_help(course):
+    #{student_id: [concept, ...]} -- where the rules ran out: the student missed a question at
+    #every reading, went on the detour, missed its fresh question (or it had none), and then
+    #missed the same question again on the way back. Rules cannot prove more than that, so
+    #the teacher is told. Read from the answers already saved; nothing extra is stored.
+    from lessons.models import LearningObjectGroup
+
+    flagged = {}
+    detours = (Decision.objects.filter(action="regress", response__topic__course=course)
+               .select_related("response", "response__topic").order_by("response_id"))
+    for d in detours:
+        sent = d.response
+        later = list(StudentResponse.objects.filter(student_id=sent.student_id, topic_id=sent.topic_id, id__gt=sent.id)
+                     .select_related("decision").order_by("id"))
+        back = next((r for r in later if r.question_id == sent.question_id), None)
+        if back is None or back.is_correct:
+            continue  # not asked again yet, or the detour worked
+        on_detour = [r for r in later if r.id < back.id and getattr(r, "decision", None) and r.decision.on_detour]
+        if any(r.is_correct for r in on_detour):
+            continue
+        flagged.setdefault(sent.student_id, {})[sent.concept_id] = {
+            "concept_id": sent.concept_id, "topic": sent.topic.title, "question_id": sent.question_id,
+        }
+    labels = dict(LearningObjectGroup.objects.filter(
+        id__in={c for per in flagged.values() for c in per}).values_list("id", "label"))
+    return {sid: [dict(item, concept=labels.get(cid, f"Concept {cid}")) for cid, item in per.items()]
+            for sid, per in flagged.items()}
+
+
 def course_progress_report(course):
     topics = list(OutlineNode.objects.filter(course=course, parent__isnull=False, published=True))
     topics_by_module = {}
@@ -541,6 +574,7 @@ def course_progress_report(course):
         .values("student").annotate(avg=Avg("mastery_score"))
     }
     baselines = {b.student_id: b for b in StudentBaseline.objects.filter(course=course)}
+    needs_help = concepts_needing_help(course)
 
     rows = []
     for enrollment in Enrollment.objects.filter(course=course).select_related("student"):
@@ -561,5 +595,6 @@ def course_progress_report(course):
             "completed": bool(topics) and {t.id for t in topics} <= done,
             "last_activity": max(activity) if activity else None,
             "baseline": baseline,  # the model object (or None); the view serializes it
+            "needs_help": needs_help.get(sid, []),  # concepts where the rules ran out: the teacher steps in
         })
     return {"course_id": course.id, "total_modules": total_modules, "content_ready": bool(topics), "rows": rows}

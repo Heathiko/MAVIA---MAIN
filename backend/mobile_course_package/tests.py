@@ -305,6 +305,33 @@ class MobilePackageFlowTests(APITestCase):
             self.assertEqual(back["review"], [])                 # nothing missed on the detour
             self.assertTrue(Decision.objects.order_by("id").last().on_detour)
 
+    def test_a_missed_detour_question_goes_straight_back(self, _path):
+        reserve = [{"id": 9, "text": "Spare?", "format": "MCQ", "choices": ["Right", "Wrong", "Nope", "No"],
+                    "thinking_order": "LOT", "correct_answer": "a", "explanation": "Spare."}]
+        with patch("mobile_course_package.services.reserve_questions_for",
+                   side_effect=lambda concept_id, used: reserve if concept_id == SOLIDS else []):
+            self.reach_solids()
+            self.answer(1, "a")
+            self.answer(2, "True")
+            for _ in range(3):
+                self.answer(3, "b")                              # -> detour to Solids, fresh Q9
+            back = self.answer(9, "b").data["next"]              # missed: no re-teach on a detour
+            self.assertEqual((back["action"], back["next_step_position"], back["next_question_id"]), ("resume", 3, 3))
+            self.assertEqual([item["question_id"] for item in back["review"]], [9])   # its answer, on the way back
+            # missed again on the way back: the rules ran out, so the teacher is told
+            self.assertEqual(self.answer(3, "b").data["next"]["action"], "complete")
+            self.client.force_authenticate(self.teacher)
+            row = self.client.get(f"/api/adaptive/courses/{self.course.id}/progress/").data["rows"][0]
+            self.assertEqual([item["concept_id"] for item in row["needs_help"]], [COMPARING])
+
+    def test_reopening_asks_the_question_the_engine_left_pending(self, _path):
+        self.reach_solids()
+        self.answer(1, "b")                                      # re-taught in simplified, Solids' last reading
+        nxt = self.answer(1, "b").data["next"]                   # used up, no prerequisite -> Q2 is asked next
+        self.assertEqual(nxt["next_question_id"], 2)
+        # the app is closed and opened again: the same question waits, not the used-up Q1
+        self.assertEqual(self.open_topic().data["next_question_id"], 2)
+
     def test_a_missed_true_false_falls_back_to_a_reserve_question(self, _path):
         reserve = [{"id": 9, "text": "Spare?", "format": "TF", "choices": None, "thinking_order": "LOT",
                     "correct_answer": "True", "explanation": "Spare."}]
