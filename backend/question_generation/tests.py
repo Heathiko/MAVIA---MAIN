@@ -337,7 +337,7 @@ class QuestionGenerationScopeTests(TestCase):
 
         self.assertFalse(GeneratedQuestion.objects.filter(id=old.id).exists())
 
-    def test_normal_regeneration_removes_question_banks_from_other_group_variants(self):
+    def test_standard_regeneration_removes_question_banks_from_other_group_variants(self):
         outline_node = OutlineNode.objects.create(
             course=self.course,
             title="Matter topic",
@@ -514,7 +514,7 @@ class StartGenerationViewScopeTests(TestCase):
 
     @patch("question_generation.views.assign_group_versions")
     @patch("question_generation.views.threading.Thread")
-    def test_grouped_non_normal_source_cannot_generate_questions(self, mock_thread, assignment):
+    def test_grouped_non_standard_source_cannot_generate_questions(self, mock_thread, assignment):
         outline_node = OutlineNode.objects.create(
             course=self.course,
             title="Matter topic",
@@ -540,13 +540,13 @@ class StartGenerationViewScopeTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data["normal_learning_object_id"], self.first_node.id)
-        self.assertIn("Normal version", response.data["error"])
+        self.assertEqual(response.data["standard_learning_object_id"], self.first_node.id)
+        self.assertIn("Standard version", response.data["error"])
         mock_thread.assert_not_called()
 
     @patch("question_generation.views.assign_group_versions")
     @patch("question_generation.views.threading.Thread")
-    def test_material_generation_scopes_a_group_to_its_normal_source(self, mock_thread, assignment):
+    def test_material_generation_scopes_a_group_to_its_standard_source(self, mock_thread, assignment):
         outline_node = OutlineNode.objects.create(
             course=self.course,
             title="Matter topic",

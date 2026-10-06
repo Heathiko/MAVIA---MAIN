@@ -280,9 +280,9 @@ class GroqRoutingTests(SimpleTestCase):
             }]}),
             {},
         )
-        normal = SimpleNamespace(id=1, title="Matter", content="Matter has mass.")
+        standard = SimpleNamespace(id=1, title="Matter", content="Matter has mass.")
         item = SimpleNamespace(id=2, title="Matter", content="Matter has mass.")
-        self.assertEqual(classify_group_versions([item], representative=normal)[2]["slot"], "SIMPLIFIED")
+        self.assertEqual(classify_group_versions([item], representative=standard)[2]["slot"], "SIMPLIFIED")
         post.assert_not_called()
 
     @override_settings(LLM_PROVIDER="groq", QUESTION_LLM_MODEL="openai/gpt-oss-20b")

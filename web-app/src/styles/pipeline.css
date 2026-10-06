@@ -3997,13 +3997,16 @@ button {
   max-height: none;
 }
 
+/* The way on sits under the step rail, not at the foot of the column, so it
+   stays put while the queue of cards below it scrolls. */
 .connection-review-layout.has-recommendations
   > .panel-aside
   > .review-step-actions-next {
   flex: 0 0 auto;
-  margin-top: auto;
-  padding-top: 0.75rem;
-  border-top: 1px solid #f0e3c4;
+  padding-top: 0;
+  padding-bottom: 0.75rem;
+  border-top: none;
+  border-bottom: 1px solid #f0e3c4;
 }
 
 .match-suggestion-heading {
@@ -4377,8 +4380,9 @@ button {
 
 .review-step-actions {
   display: flex;
-  padding-top: 0.72rem;
-  border-top: 1px solid #eadfca;
+  padding-top: 0;
+  padding-bottom: 0.72rem;
+  border-bottom: 1px solid #eadfca;
 }
 
 .review-step-actions-row {
@@ -4473,7 +4477,7 @@ button {
 }
 
 /* Colour carries the version, so the eye can find one without reading labels. */
-.publish-version.is-normal { border-color: var(--mv-muted); }
+.publish-version.is-standard { border-color: var(--mv-muted); }
 .publish-version.is-simplified { border-color: #2f9e8f; }
 .publish-version.is-elaborated { border-color: #7c6bd6; }
 
@@ -4487,7 +4491,7 @@ button {
 /* One block per version, each naming its source and listing the objects it is
    made of. Replaces the old "representative + Other variation" list, which
    printed a supplied version's wording twice and gave no way to tell a member
-   of the Normal bundle from a bundle supplying another version. */
+   of the Standard bundle from a bundle supplying another version. */
 .publish-version-list {
   display: grid;
   gap: 0.75rem;
@@ -4506,7 +4510,7 @@ button {
   padding: 0.75rem 0.85rem;
 }
 
-.publish-version-block.is-normal {
+.publish-version-block.is-standard {
   border-color: #29406b;
   background: #f5f8fd;
 }
@@ -5600,7 +5604,7 @@ button {
 }
 
 .version-slot-label.is-original,
-.version-slot-label.is-normal { background: #e6ecf7; color: #29406b; }
+.version-slot-label.is-standard { background: #e6ecf7; color: #29406b; }
 .version-slot-label.is-simplified { background: #e2f2e8; color: #1f5c39; }
 .version-slot-label.is-elaborated { background: #f4ecdc; color: #6a5326; }
 .version-slot-label.is-unassigned { background: #eceef1; color: #4d545f; }
@@ -6205,7 +6209,7 @@ button {
 }
 .question-learning-object-title > div { display: grid; gap: 0.15rem; }
 .question-learning-object-title small { color: #51708f; }
-/* Shown whole: it is the concept's Normal version, every object of it, and
+/* Shown whole: it is the concept's Standard version, every object of it, and
    cutting it at a fixed height hid all but the first one. */
 .question-learning-object-preview {
   color: #40556d;
@@ -6432,7 +6436,7 @@ button {
   }
 }
 
-/* A version written before its Normal text changed. Publishing waits on it,
+/* A version written before its Standard text changed. Publishing waits on it,
    so it is marked where the teacher is already looking. */
 .version-slot.is-stale {
   border-color: #f0c987;

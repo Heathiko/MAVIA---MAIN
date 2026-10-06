@@ -50,9 +50,18 @@ type Props = {
   // "repeat the question" voice command). Re-reads the question in place -- unlike remounting the
   // card, an answer already given is kept.
   repeatSignal?: number;
+  // Shown in place of the question's text and options. The question is still
+  // read aloud and answered the same ways (voice, keypad, tap counting on the
+  // whole card); it just isn't put on screen -- the lesson player passes its
+  // greyed-out player here so the screen stays the player throughout.
+  face?: React.ReactNode;
+  // True while the screen is asking something else (the repeat key's "the
+  // topic, or the question?"): A and B answer THAT, so the answer keys, taps
+  // and buttons here must not submit an answer to the question meanwhile.
+  inputPaused?: boolean;
 };
 
-export default function QuestionCard({ question, index, total, onSubmit, onNext, repeatSignal = 0 }: Props) {
+export default function QuestionCard({ question, index, total, onSubmit, onNext, repeatSignal = 0, face, inputPaused = false }: Props) {
   const options = useMemo(() => optionsFor(question), [question]);
   const [selected, setSelected] = useState<string | null>(null);
   const [result, setResult] = useState<SubmitResult | null>(null);
@@ -138,6 +147,9 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
   // before React re-renders, and the state flags would still read false for
   // the second one -- submitting the same question twice.
   const choosingRef = useRef(false);
+  const inputPausedRef = useRef(inputPaused);
+  // The guide being open pauses input too: its A / B / C / D are the guide's.
+  inputPausedRef.current = inputPaused || guideBusy;
 
   async function choose(key: string) {
     if (choosingRef.current || submitting || answered) return;
@@ -201,6 +213,7 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
       // that they work the same while a lesson plays as they do on a question.
       // Only an answer key means anything here.
       if (action.kind !== "answer") return;
+      if (inputPausedRef.current) return;
       if (choosingRef.current || answered || submitting) return;
       const option = options.find((o) => o.key === action.letter);
       if (!option) {
@@ -221,7 +234,7 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
   const tapMode = !openEnded && !screenReaderOn;
   const onQuestionTap = useTapCounter({
     onTap: (count) => {
-      if (choosingRef.current || answered || submitting) return;
+      if (inputPausedRef.current || choosingRef.current || answered || submitting) return;
       if (count > options.length) {
         narration.speak(
           options.length === 1 ? "There is only one option." : `There are only ${options.length} options.`
@@ -232,7 +245,7 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
       narration.speak(options[count - 1].key.toUpperCase());
     },
     onSettled: (count) => {
-      if (choosingRef.current || answered || submitting) return;
+      if (inputPausedRef.current || choosingRef.current || answered || submitting) return;
       const letter = letterForTapCount(count);
       const option = letter ? options.find((o) => o.key === letter) : undefined;
       // Too many taps was already announced; nothing is submitted.
@@ -240,7 +253,51 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
     },
   });
 
-  const content = (
+  const status = (
+    <>
+      {submitting && <ActivityIndicator color={colors.brand600} />}
+      {error && <Text style={styles.error}>{error}</Text>}
+
+      {answered && (
+        <View style={styles.feedback}>
+          <Text style={result?.is_correct ? styles.correct : styles.wrong}>
+            {result?.is_correct ? "Correct" : "Not quite"}
+          </Text>
+        </View>
+      )}
+    </>
+  );
+
+  // The face replaces the question on screen. Under a screen reader, where a
+  // tap only moves focus, compact letter buttons stay as a touch way to answer
+  // (each announced with its option); everyone else taps the face itself.
+  const faceContent = face ? (
+    <>
+      {face}
+      <Text style={[styles.counter, styles.faceCounter]}>
+        Question {index + 1} of {total} · waiting for your answer
+      </Text>
+      {!tapMode && !openEnded && (
+        <View style={styles.letterRow}>
+          {options.map((option) => (
+            <Pressable
+              key={option.key}
+              disabled={answered || submitting || inputPaused}
+              onPress={() => choose(option.key)}
+              accessibilityRole="button"
+              accessibilityLabel={`${option.key.toUpperCase()}. ${option.label}`}
+              style={[styles.letterButton, option.key === selected && styles.optionSelected]}
+            >
+              <Text style={styles.optionKeyText}>{option.key.toUpperCase()}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      {status}
+    </>
+  ) : null;
+
+  const content = faceContent ?? (
     <>
       <Text style={styles.counter}>
         Question {index + 1} of {total}
@@ -284,7 +341,7 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
             ) : (
               <Pressable
                 key={option.key}
-                disabled={answered || submitting}
+                disabled={answered || submitting || inputPaused}
                 onPress={() => choose(option.key)}
                 accessibilityRole="button"
                 style={rowStyle}
@@ -296,36 +353,41 @@ export default function QuestionCard({ question, index, total, onSubmit, onNext,
         </View>
       )}
 
-      {submitting && <ActivityIndicator color={colors.brand600} />}
-      {error && <Text style={styles.error}>{error}</Text>}
-
-      {answered && (
-        <View style={styles.feedback}>
-          <Text style={result?.is_correct ? styles.correct : styles.wrong}>
-            {result?.is_correct ? "Correct" : "Not quite"}
-          </Text>
-        </View>
-      )}
+      {status}
     </>
   );
 
   // In tap mode the whole card is the tap pad, stretched to fill the screen
   // below the concept header -- the back button stays outside it.
+  const cardStyle = face ? styles.faceCard : styles.card;
   return tapMode ? (
     <Pressable
-      style={[styles.card, styles.tapPad]}
+      style={[cardStyle, styles.tapPad]}
       onPress={onQuestionTap}
       accessibilityLabel="Tap once for A, twice for B, three times for C, four times for D."
     >
       {content}
     </Pressable>
   ) : (
-    <View style={styles.card}>{content}</View>
+    <View style={cardStyle}>{content}</View>
   );
 }
 
 const styles = StyleSheet.create({
   tapPad: { flexGrow: 1 },
+  faceCard: { gap: spacing.md, alignItems: "stretch" },
+  faceCounter: { textAlign: "center" },
+  letterRow: { flexDirection: "row", justifyContent: "center", gap: spacing.md },
+  letterButton: {
+    width: 48,
+    height: 48,
+    borderRadius: radii.pill,
+    borderWidth: 2,
+    borderColor: "transparent",
+    backgroundColor: colors.brand600,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   card: {
     backgroundColor: colors.surface,
     borderRadius: radii.md,

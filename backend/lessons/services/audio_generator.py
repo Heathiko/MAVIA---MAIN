@@ -297,8 +297,8 @@ def bundle_version_objects(material: LearningMaterial) -> list:
             supplying[item.group_id] = {
                 member.id
                 for role, bundle in served_version_bundles(item.group).items()
-                # Normal is the lesson itself and already has clips.
-                if role != "NORMAL"
+                # Standard is the lesson itself and already has clips.
+                if role != "STANDARD"
                 for member in bundle
             }
         if item.id in supplying[item.group_id]:

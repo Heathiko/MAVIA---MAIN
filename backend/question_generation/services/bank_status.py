@@ -1,7 +1,7 @@
 """Whether a concept's question bank still matches the concept's text.
 
 A concept's bank is written by the model from the whole concept -- every
-PDF's telling of it -- and filed under one object, the lead of its Normal
+PDF's telling of it -- and filed under one object, the lead of its Standard
 version. When the concept's text changes (an object edited, deleted, or
 another PDF's version joining or leaving), the bank may ask about text that
 is no longer there. It is then out of date: the teacher keeps it or
@@ -122,7 +122,7 @@ def _move_bank(source, target):
 
 
 def settle_bank_owner(group):
-    """File the concept's bank under its current Normal lead."""
+    """File the concept's bank under its current Standard lead."""
     from course.version_assignment import group_original_id
 
     if group is None:

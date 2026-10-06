@@ -1,6 +1,6 @@
 """Corrective-RAG validation gate for generated questions.
 
-Generation writes a draft bank from one concept's Normal text. That text is
+Generation writes a draft bank from one concept's Standard text. That text is
 already in the prompt, so this gate is not here to *supply* context -- it is
 here to check the model used the context it was given. Measured on the first
 published topic before this existed: 61 of 76 final questions used words that

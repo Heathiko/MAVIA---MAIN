@@ -452,7 +452,7 @@ function ObjectPairsPanel({
 
 // The three versions a learner is offered, in the order they are shown.
 export const VERSION_ROLES = [
-  { key: "normal", label: "Normal" },
+  { key: "standard", label: "Standard" },
   { key: "simplified", label: "Simplified" },
   { key: "elaborated", label: "Elaborated" },
 ];
@@ -738,11 +738,11 @@ function VersionSlotCard({
   onCancelEdit,
   onSave,
   onGenerate,
-  // Written from Normal text that has since changed. Publishing waits until the
+  // Written from Standard text that has since changed. Publishing waits until the
   // teacher keeps, edits or regenerates it.
   stale = false,
   // No generated version passed the quality check, so learners hear the
-  // Normal text at this level. Publishing is not held back; the teacher may
+  // Standard text at this level. Publishing is not held back; the teacher may
   // write an explanation of their own.
   fallback = false,
   fallbackCount = 0,
@@ -767,7 +767,7 @@ function VersionSlotCard({
         <div className="version-slot-stale" role="alert">
           <strong>Check this version</strong>
           <p>
-            The Normal text was changed after this was written, so it may no longer match.
+            The Standard text was changed after this was written, so it may no longer match.
             Publishing waits until you decide.
           </p>
           <div className="version-slot-actions">
@@ -785,15 +785,15 @@ function VersionSlotCard({
       {fallback && !stale && !isEditing && (
         <div className="version-slot-stale version-slot-fallback" role="status">
           <strong>{fallbackCount > 0 && fallbackCount < segmentCount
-            ? `${fallbackCount} of ${segmentCount} parts use the Normal text`
-            : "Using the Normal text for now"}</strong>
+            ? `${fallbackCount} of ${segmentCount} parts use the Standard text`
+            : "Using the Standard text for now"}</strong>
           <p>
             {slotKey === "simplified"
               ? "Some Simplified wording did not pass the quality check (easier to read, keeps every fact). "
               : "Some Elaborated wording did not pass the quality check (fuller, keeps every fact). "}
             {fallbackCount > 0 && fallbackCount < segmentCount
-              ? "Those parts use their Normal wording; the other parts use generated wording."
-              : "Learners at this level hear the Normal text."}
+              ? "Those parts use their Standard wording; the other parts use generated wording."
+              : "Learners at this level hear the Standard text."}
             {" You can write your own explanation instead."}
           </p>
           {!readOnly && (
@@ -856,7 +856,7 @@ function VersionSlotCard({
 }
 
 function VersionRoleSelect({ sourceId, currentSlot, busy, onAssign }) {
-  const roles = ["NORMAL", "SIMPLIFIED", "ELABORATED"]
+  const roles = ["STANDARD", "SIMPLIFIED", "ELABORATED"]
     .filter((slot) => slot !== currentSlot);
   return (
     <label className="version-role-select">
@@ -871,7 +871,7 @@ function VersionRoleSelect({ sourceId, currentSlot, busy, onAssign }) {
         <option value="">Select a role…</option>
         {roles.map((slot) => (
           <option value={slot} key={slot}>
-            {slot === "NORMAL" ? "Make Normal"
+            {slot === "STANDARD" ? "Make Standard"
               : `Move to ${slot === "SIMPLIFIED" ? "Simplified" : "Elaborated"}`}
           </option>
         ))}
@@ -903,7 +903,7 @@ function VersionReviewPanel({
     () => groups.filter((group) => group.versions?.representative_id),
     [groups],
   );
-  // Concepts holding a version written from Normal text that has since changed.
+  // Concepts holding a version written from Standard text that has since changed.
   // Publishing refuses these, so they are counted and reachable in one click
   // rather than left for the teacher to find by paging through every concept.
   const staleChunkIndexes = chunks
@@ -948,8 +948,8 @@ function VersionReviewPanel({
   const representative = chunk?.learning_objects?.find(
     (item) => Number(item.id) === Number(versions?.representative_id),
   );
-  const normalEntry = versions?.slots?.normal;
-  const originalMaterial = materialById.get(Number(normalEntry?.material ?? representative?.material));
+  const standardEntry = versions?.slots?.standard;
+  const originalMaterial = materialById.get(Number(standardEntry?.material ?? representative?.material));
 
   function materialTitleFor(entry) {
     if (!entry?.source_learning_object_id) return null;
@@ -974,7 +974,7 @@ function VersionReviewPanel({
               className="btn btn-secondary btn-small version-stale-jump"
               disabled={Boolean(busyAction)}
               onClick={goToNextStale}
-              title="Versions written before their Normal text was changed. Publishing waits until each is checked."
+              title="Versions written before their Standard text was changed. Publishing waits until each is checked."
             >
               {staleVersionCount} version{staleVersionCount === 1 ? "" : "s"} to check · Go to next
             </button>
@@ -1044,13 +1044,13 @@ function VersionReviewPanel({
           <p className="muted-text">
             {chunk.learning_objects.length} grouped PDF variant{chunk.learning_objects.length === 1 ? "" : "s"}
             {versions?.classification_complete === false
-              ? " — the first relevant PDF is Normal unless the teacher replaces it; supplementary PDFs await classification"
-              : " — the primary PDF is Normal; supplementary PDFs may supply Simplified or Elaborated"}.
+              ? " — the first relevant PDF is Standard unless the teacher replaces it; supplementary PDFs await classification"
+              : " — the primary PDF is Standard; supplementary PDFs may supply Simplified or Elaborated"}.
           </p>
 
-          {versions?.normal_replacement_needed && (
+          {versions?.standard_replacement_needed && (
             <div className="version-pending-decision">
-              <p><strong>The previous Normal PDF no longer supplies this concept.</strong> Choose a surviving PDF as the new baseline. MAVIA will not promote one automatically.</p>
+              <p><strong>The previous Standard PDF no longer supplies this concept.</strong> Choose a surviving PDF as the new baseline. MAVIA will not promote one automatically.</p>
               <div className="version-slot-actions">
                 {(chunk.bundles || []).filter((bundle) => bundle.learning_objects?.length).map((bundle) => {
                   const material = materialById.get(Number(bundle.material));
@@ -1060,16 +1060,16 @@ function VersionReviewPanel({
                       className="btn btn-primary btn-small"
                       key={bundle.material}
                       disabled={Boolean(busyAction)}
-                      onClick={() => onAssignSlot(bundle.learning_objects[0].id, "NORMAL")}
+                      onClick={() => onAssignSlot(bundle.learning_objects[0].id, "STANDARD")}
                     >
-                      Use {material?.filename || material?.title || `PDF ${bundle.material}`} as Normal
+                      Use {material?.filename || material?.title || `PDF ${bundle.material}`} as Standard
                     </button>
                   );
                 })}
               </div>
             </div>
           )}
-          {versions?.classification_complete === false && !versions?.normal_replacement_needed ? (
+          {versions?.classification_complete === false && !versions?.standard_replacement_needed ? (
             <div className="review-queue-empty">
               <strong>Existing PDF variants — not generated:</strong>
               <div className="version-slot-grid">
@@ -1121,14 +1121,14 @@ function VersionReviewPanel({
                 {(pending.review_issues || []).length > 0 && (
                   <p className="muted-text">
                     {pending.review_measures?.weakly_covered_sentences > 0
-                      ? `${pending.review_measures.weakly_covered_sentences} Normal sentence(s) may be missing or phrased very differently. `
+                      ? `${pending.review_measures.weakly_covered_sentences} Standard sentence(s) may be missing or phrased very differently. `
                       : "The automatic checks disagree with the AI label. "}
-                    Compare this PDF text with Normal before choosing a role.
+                    Compare this PDF text with Standard before choosing a role.
                   </p>
                 )}
                 <blockquote>{candidateText}</blockquote>
                 <div className="version-slot-actions">
-                  {["NORMAL", "SIMPLIFIED", "ELABORATED"].map((slot) => (
+                  {["STANDARD", "SIMPLIFIED", "ELABORATED"].map((slot) => (
                     <button
                       type="button"
                       key={slot}
@@ -1136,7 +1136,7 @@ function VersionReviewPanel({
                       disabled={Boolean(busyAction)}
                       onClick={() => onAssignSlot(pending.learning_object_id, slot)}
                     >
-                      {slot === "NORMAL" ? "Make Normal"
+                      {slot === "STANDARD" ? "Make Standard"
                         : slot === "SIMPLIFIED" ? "Use as Simplified" : "Use as Elaborated"}
                     </button>
                   ))}
@@ -1151,12 +1151,12 @@ function VersionReviewPanel({
           {versions?.classification_complete !== false && <div className="version-slot-grid">
             <VersionSlotCard
               slotKey="original"
-              heading={versions?.original_selected ? "Normal" : "Normal candidate"}
-              text={normalEntry?.text || representative?.content}
-              parts={normalEntry?.objects}
+              heading={versions?.original_selected ? "Standard" : "Standard candidate"}
+              text={standardEntry?.text || representative?.content}
+              parts={standardEntry?.objects}
               originLabel={versions?.original_selected
                 ? `Primary PDF: ${originalMaterial?.filename || originalMaterial?.title || "this PDF"}`
-                : "Choose a replacement Normal PDF before continuing"}
+                : "Choose a replacement Standard PDF before continuing"}
               readOnly
               busy={false}
             />
@@ -1246,7 +1246,7 @@ function VersionReviewPanel({
           type="button"
           className="btn btn-primary"
           disabled={Boolean(busyAction) || incompleteCount > 0}
-          title={incompleteCount > 0 ? "Give every concept a Normal, Simplified and Elaborated version first." : undefined}
+          title={incompleteCount > 0 ? "Give every concept a Standard, Simplified and Elaborated version first." : undefined}
           onClick={() => onReviewStepChange("questions")}
         >
           Next step: Question pairs
@@ -1304,10 +1304,10 @@ function QuestionGenerationTool({
       return [{
         ...representative,
         conceptLabel: group.display_title || group.label || representative.title || "Untitled concept",
-        // The concept's whole Normal text, every object of the Normal PDF, not
+        // The concept's whole Standard text, every object of the Standard PDF, not
         // just its first: that first object is only where the bank is filed.
-        content: group.versions?.slots?.normal?.text || representative.content,
-        normalParts: group.versions?.slots?.normal?.objects || [],
+        content: group.versions?.slots?.standard?.text || representative.content,
+        standardParts: group.versions?.slots?.standard?.objects || [],
         // Carried through so each concept can show what was generated from it.
         // Spreading the representative alone dropped these, which is why the
         // board could only ever say "generating" and never "here is the result".
@@ -1419,7 +1419,7 @@ function QuestionGenerationTool({
     onError("");
     onMessage(hasGenerated
       ? `Adding questions to the concepts still short of ${goal}.`
-      : "Generating questions from the Normal version of each concept.");
+      : "Generating questions from the Standard version of each concept.");
     let finishedConcepts = 0;
     try {
       const started = await startTopicQuestionGeneration(topicId);
@@ -1532,13 +1532,13 @@ function QuestionGenerationTool({
                     <div className="question-learning-object-title">
                       <div><strong>{item.conceptLabel}</strong></div>
                     </div>
-                    {(item.normalParts || []).length > 1
-                      ? <BundleParts parts={item.normalParts} className="question-learning-object-preview" />
+                    {(item.standardParts || []).length > 1
+                      ? <BundleParts parts={item.standardParts} className="question-learning-object-preview" />
                       : <FormattedLearningObjectContent content={item.content} className="question-learning-object-preview" />}
-                    <small>Normal source: {material?.filename || material?.title || `PDF ${item.material}`}</small>
+                    <small>Standard source: {material?.filename || material?.title || `PDF ${item.material}`}</small>
                   </div>
                   {!item.canGenerate && (
-                    <small className="muted-text">Waiting for its Normal version to be classified</small>
+                    <small className="muted-text">Waiting for its Standard version to be classified</small>
                   )}
                 </div>
                 {item.questionsOutOfDate && (
@@ -2142,7 +2142,7 @@ ${question.prompt}`,
                 {/* One block per version, each naming where it came from and
                     which objects it is made of. Every object appears exactly
                     once, under the role it actually plays -- the screen used
-                    to show the concept's lead with its own text as "Normal"
+                    to show the concept's lead with its own text as "Standard"
                     and every other object as "Other variation", which said
                     nothing about what those objects were for and printed a
                     supplied version's wording twice. */}
@@ -2162,7 +2162,7 @@ ${question.prompt}`,
                     const objects = slot.objects || [];
                     const material = materialById.get(Number(slot.material));
                     const from = slot.source === "generated"
-                      ? `Generated from the Normal version · ${objects.length} segment${objects.length === 1 ? "" : "s"}`
+                      ? `Generated from the Standard version · ${objects.length} segment${objects.length === 1 ? "" : "s"}`
                       : `${material?.filename || material?.title || `PDF ${slot.material}`} · ${objects.length} object${objects.length === 1 ? "" : "s"}`;
                     return (
                       <section className={`publish-version-block is-${key}`} key={key}>
@@ -2171,7 +2171,7 @@ ${question.prompt}`,
                           <small>{from}</small>
                           {slot.stale && (
                             <span className="publish-version-stale" role="status">
-                              Written before the Normal text changed
+                              Written before the Standard text changed
                             </span>
                           )}
                         </header>
@@ -2387,7 +2387,7 @@ function RegroupingReview({ preview, selectedIds, busy, onToggle, onCancel, onAp
                         )}
                         {impact.was_original && (
                           <li>
-                            This is the Normal version of “{proposal.current_group?.label}”. That concept
+                            This is the Standard version of “{proposal.current_group?.label}”. That concept
                             will need a new original, and its versions reviewed again.
                           </li>
                         )}
@@ -3047,7 +3047,7 @@ function LearningObjectConnections({
     onMessage("");
     try {
       setResources(await keepVersionText(courseId, topicId, variantId));
-      onMessage("Version kept. It is marked as checked against the current Normal text.");
+      onMessage("Version kept. It is marked as checked against the current Standard text.");
       return true;
     } catch (err) {
       onError(err.message);
@@ -3073,7 +3073,7 @@ function LearningObjectConnections({
         onError(result.errors[0].detail || "Version generation failed.");
         return false;
       }
-      onMessage(`Wrote a new ${label} version from the current Normal text.`);
+      onMessage(`Wrote a new ${label} version from the current Standard text.`);
       return true;
     } catch (err) {
       onError(err.message);
@@ -3798,7 +3798,7 @@ function LearningPathReviewPanel({
           const staleConcepts = seen.filter((event) => event.event_type === "versions_failed").length;
           onError(
             staleConcepts
-              ? `Not published. ${staleConcepts} concept${staleConcepts === 1 ? " has" : "s have"} a Simplified or Elaborated version to check — the Normal text changed after it was written. Open Content versions (step 2) to keep, edit or regenerate ${staleConcepts === 1 ? "it" : "them"}, then publish again.`
+              ? `Not published. ${staleConcepts} concept${staleConcepts === 1 ? " has" : "s have"} a Simplified or Elaborated version to check — the Standard text changed after it was written. Open Content versions (step 2) to keep, edit or regenerate ${staleConcepts === 1 ? "it" : "them"}, then publish again.`
               : "Not published. The problems are listed in the publish window — resolve them, then publish again.",
           );
         } else if (summary) {

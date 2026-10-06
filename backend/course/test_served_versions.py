@@ -60,4 +60,4 @@ class ServedVersionBundlesTests(TestCase):
 
         self.assertIn("ELABORATED", version_bundles(self.group))
         self.assertNotIn("ELABORATED", served_version_bundles(self.group))
-        self.assertIn("NORMAL", served_version_bundles(self.group))
+        self.assertIn("STANDARD", served_version_bundles(self.group))

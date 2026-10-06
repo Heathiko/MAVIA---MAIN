@@ -1,6 +1,6 @@
 """A concept's question bank follows the concept's text.
 
-The bank is written from the whole concept and filed under its Normal lead.
+The bank is written from the whole concept and filed under its Standard lead.
 When the concept's text changes it is out of date until the teacher keeps or
 regenerates it; deleting the object it is filed under re-files it rather
 than deleting it; and questions the teacher edited survive a regeneration.

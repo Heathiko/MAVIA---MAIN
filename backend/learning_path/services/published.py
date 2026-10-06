@@ -14,7 +14,7 @@ from collections import defaultdict
 
 from django.db import DatabaseError, transaction
 
-from course.models import bundle_segments, normal_bundle_for
+from course.models import bundle_segments, standard_bundle_for
 from course.services import _generated_versions, _version_from_segments
 from course.version_assignment import assign_group_versions, served_version_bundles
 from question_generation.models import GeneratedQuestion
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def _representative(group, members):
-    """The member whose text is the concept's Normal version."""
+    """The member whose text is the concept's Standard version."""
     try:
         representative_id = assign_group_versions(group).get("representative_id")
     except Exception:  # noqa: BLE001 -- a readable path beats a failed request
@@ -110,7 +110,7 @@ def _chunk_title(parts):
 
 
 def _legacy_audio(parts, segments):
-    """Fill Normal clips a playlist written before objects were named in it.
+    """Fill Standard clips a playlist written before objects were named in it.
 
     A playlist entry now names the object it speaks for, and that is how
     ``bundle_segments`` finds a clip. Materials processed before that have
@@ -161,21 +161,21 @@ def _slot(segments):
 
 
 def _versions(parts, group=None):
-    """Normal / simplified / elaborated for one telling of a concept.
+    """Standard / simplified / elaborated for one telling of a concept.
 
-    Normal is every object of the telling, joined. Simplified and Elaborated
+    Standard is every object of the telling, joined. Simplified and Elaborated
     are generated per object; a rung short of any object is left out rather
-    than half-served, so the player falls back to Normal instead. The helpers
+    than half-served, so the player falls back to Standard instead. The helpers
     are the lesson package's own, imported rather than copied, so that rule
     exists in one place.
 
-    ``group`` is passed only for the concept's Normal telling: a version
+    ``group`` is passed only for the concept's Standard telling: a version
     another PDF supplies is that PDF's own objects, and it outranks anything
     generated for the same role -- including wording generated before a
     teacher connected the two bundles, which outlives the regroup.
     """
     versions = {
-        "normal": _slot(_legacy_audio(parts, bundle_segments(parts))),
+        "standard": _slot(_legacy_audio(parts, bundle_segments(parts))),
         "simplified": None,
         "elaborated": None,
     }
@@ -186,43 +186,48 @@ def _versions(parts, group=None):
 
     if group is not None:
         for role, objects in served_version_bundles(group).items():
-            if role == "NORMAL":
+            if role == "STANDARD":
                 continue
             versions[role.lower()] = _slot(bundle_segments(objects))
 
     return versions
 
 
+#: Questions a step may carry, per thinking order, LOT first. Two lower-order
+#: and one higher-order: a learner who misses can be asked a *different*
+#: question about the same idea rather than the same one again, and one spare
+#: at the level most misses happen at is what makes that possible. Generation
+#: does not cap itself per thinking order, so this is the cap.
+QUESTIONS_PER_ORDER = {"LOT": 2, "HOT": 1}
+
+
 def _questions(parts, include_answers):
-    # One step, one assessment: the earliest-generated LOT question and the
-    # earliest-generated HOT question, LOT first -- never more than 2, even
-    # if question generation left extra final rows on this node (it isn't
-    # guaranteed to cap itself at one per thinking_order). Drawn from every
-    # part of the telling: generation attaches questions to whichever object
-    # it was reading, which is often not the first.
+    # Earliest-generated first, up to QUESTIONS_PER_ORDER of each, LOT before
+    # HOT. Drawn from every part of the telling: generation attaches questions
+    # to whichever object it was reading, which is often not the first.
     by_order = {}
     for question in GeneratedQuestion.objects.filter(node__in=parts, status="final").order_by("id"):
         order = question.thinking_order or "LOT"
-        by_order.setdefault(order, question)
+        bucket = by_order.setdefault(order, [])
+        if len(bucket) < QUESTIONS_PER_ORDER.get(order, 1):
+            bucket.append(question)
 
     questions = []
     for order in ("LOT", "HOT"):
-        question = by_order.get(order)
-        if question is None:
-            continue
-        entry = {
-            "id": question.id,
-            "text": question.question_text,
-            "format": question.question_format,
-            "choices": question.choices,
-            "bloom_level": question.bloom_level,
-            "thinking_order": question.thinking_order,
-            "category": question.category,
-        }
-        if include_answers:
-            entry["correct_answer"] = question.correct_answer
-            entry["explanation"] = question.explanation
-        questions.append(entry)
+        for question in by_order.get(order, []):
+            entry = {
+                "id": question.id,
+                "text": question.question_text,
+                "format": question.question_format,
+                "choices": question.choices,
+                "bloom_level": question.bloom_level,
+                "thinking_order": question.thinking_order,
+                "category": question.category,
+            }
+            if include_answers:
+                entry["correct_answer"] = question.correct_answer
+                entry["explanation"] = question.explanation
+            questions.append(entry)
     return questions
 
 
@@ -337,7 +342,7 @@ def get_published_path(node, *, include_answers=True):
         for member in members:
             sources.setdefault(member.material_id, member.material.title)
 
-        parts = _telling(representative, members, normal_bundle_for(representative))
+        parts = _telling(representative, members, standard_bundle_for(representative))
         bundles = bundles_for_group(group)
         # Independent alternates: other PDFs' own take on this concept, not
         # folded into another member's telling (`represented_by` marks that).

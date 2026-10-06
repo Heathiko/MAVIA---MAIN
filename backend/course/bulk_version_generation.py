@@ -40,7 +40,7 @@ def classify_all_source_versions(outline_node, on_event=None):
             )
         state = assign_group_versions(group, use_llm=True)
         needs_review_count += len(state["needs_confirmation"])
-        if state.get("normal_replacement_needed"):
+        if state.get("standard_replacement_needed"):
             needs_review_count += 1
         representative_id = state["representative_id"]
         if state.get("classification_error"):
@@ -54,7 +54,7 @@ def classify_all_source_versions(outline_node, on_event=None):
                 group_id=group.id,
                 errors=[error],
             )
-        elif is_connected and not state.get("normal_replacement_needed"):
+        elif is_connected and not state.get("standard_replacement_needed"):
             classified_groups += 1
             emit(
                 "version_classification_finished",

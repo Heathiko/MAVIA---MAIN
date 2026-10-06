@@ -12,7 +12,6 @@ exercised synchronously without a background thread or an HTTP round trip.
 from django.utils import timezone
 
 from course.models import LessonVariant
-from course.services import sync_course_outline
 from course.version_assignment import settle_group
 
 from ..models import LearningMaterial, LearningObject
@@ -51,8 +50,8 @@ def concepts_missing_a_version(node, materials):
       there is no ``LessonVariant`` row to look for, and demanding one would
       make every two-PDF topic unpublishable;
     * a role no bundle supplies must have been written, one row per object of
-      the Normal bundle, so the version a student hears covers all of it;
-    * only the Normal bundle's lead speaks for the concept. Every other object
+      the Standard bundle, so the version a student hears covers all of it;
+    * only the Standard bundle's lead speaks for the concept. Every other object
       either repeats it or belongs to a bundle that is already a version --
       including a bundle still awaiting the teacher's confirmation, which is
       simply not a version yet and must not hold publishing back.
@@ -84,34 +83,34 @@ def concepts_missing_a_version(node, materials):
         if candidate.group_id is None:
             if candidate.represented_by_id is not None:
                 continue
-            normal, supplied = [candidate], set()
+            standard, supplied = [candidate], set()
         else:
             if candidate.group_id not in bundles_by_group:
                 bundles_by_group[candidate.group_id] = served_version_bundles(candidate.group)
             bundles = bundles_by_group[candidate.group_id]
-            normal = bundles.get("NORMAL") or []
+            standard = bundles.get("STANDARD") or []
             supplied = {
                 role for role, objects in bundles.items()
                 if role in PRIMARY_SLOTS
                 and objects
                 and all(item.material_id in confirmed_ids for item in objects)
             }
-            if normal:
-                if normal[0].id != candidate.id:
+            if standard:
+                if standard[0].id != candidate.id:
                     continue
             elif candidate.represented_by_id is None:
                 # Nothing in the concept has text to teach; report it against
                 # whichever object is still standing for it.
-                normal = [candidate]
+                standard = [candidate]
             else:
                 continue
-        if not any((item.content or "").strip() for item in normal):
+        if not any((item.content or "").strip() for item in standard):
             missing.append(candidate.id)
             continue
         if any(
             (item.id, slot) not in filled
             for slot in set(PRIMARY_SLOTS) - supplied
-            for item in normal
+            for item in standard
         ):
             missing.append(candidate.id)
     return missing
@@ -183,10 +182,8 @@ def run_topic_publish(course, node, set_confirmed, on_event=None):
             generated=result["generated_count"],
         )
 
-    # LessonVariant requires the student-facing lesson package wrapper.
     # Assignment normally happened at review; this is a backstop for content
     # edited afterwards. Settled groups generate nothing.
-    sync_course_outline(course.id)
     groups = list(node.learning_object_groups.filter(learning_objects__material__in=materials).distinct())
     variant_generated = []
     variant_errors = []

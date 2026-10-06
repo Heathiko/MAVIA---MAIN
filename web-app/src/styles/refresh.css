@@ -389,13 +389,16 @@
   color: #aab4c4;
 }
 
-.mv-side a,
+/* Nav links only. The Add Course button is an <a> in this column too, but it
+   is a white pill rather than a link on the dark panel -- pale text on it is
+   white on white. It keeps the colour .mv-btn--light gives it. */
+.mv-side a:not(.mv-side__cta),
 .mv-side button {
   color: #dbe3ee;
   border-color: transparent;
 }
 
-.mv-side a:hover {
+.mv-side a:not(.mv-side__cta):hover {
   background: var(--mv-dark-soft);
   color: #ffffff;
 }
@@ -797,7 +800,7 @@ body {
   font-weight: 700;
 }
 
-/* A concept's Normal version, one numbered, titled entry per learning object.
+/* A concept's Standard version, one numbered, titled entry per learning object.
    Shared by the learning path card, Content versions and the Questions step. */
 .bundle-parts {
   display: grid;

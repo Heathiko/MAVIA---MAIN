@@ -279,7 +279,7 @@ class StartTopicGenerationTests(_ConceptTestCase):
 
     @patch("question_generation.views.assign_group_versions")
     @patch("question_generation.views.threading.Thread")
-    def test_one_run_covers_every_concept_with_a_normal_version(self, thread, assignment):
+    def test_one_run_covers_every_concept_with_a_standard_version(self, thread, assignment):
         def versions(group):
             if group.id == self.group.id:
                 return {"classification_complete": True, "original_selected": True,

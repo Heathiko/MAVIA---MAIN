@@ -122,7 +122,7 @@ def _get_classifier():
 def concept_name(node):
     """What a run is about: the concept, not the object its bank is filed under.
 
-    A concept's questions are written from every object of its Normal version
+    A concept's questions are written from every object of its Standard version
     and filed under the first one, so naming that object ("Shape") read as if
     only it had been used.
     """
@@ -193,18 +193,18 @@ def concept_source_text(node):
     """The text a concept's questions are written from: every telling of it.
 
     A concept holds one bundle per PDF, and the adaptive engine serves those
-    bundles as the Normal, Simplified and Elaborated versions of one concept.
+    bundles as the Standard, Simplified and Elaborated versions of one concept.
     A learner escalated to Elaborated hears another PDF's wording, so a bank
-    written from the Normal bundle alone asks about text that learner was
+    written from the Standard bundle alone asks about text that learner was
     never read.
 
     It also starves the higher-order half of the bank. A HOT question has to
-    combine two or more stated facts; measured on topic 276, the Normal
+    combine two or more stated facts; measured on topic 276, the Standard
     bundle for "Solid" is 32 words and often does not hold two, so the model
     supplied the second from its own knowledge. Every telling together is
     220 words of the same concept -- more facts, no change of subject.
     """
-    from course.version_assignment import bundle_roles, normal_material_id
+    from course.version_assignment import bundle_roles, standard_material_id
     from lessons.services.concept_bundles import (
         bundle_text,
         bundles_for_group,
@@ -224,25 +224,25 @@ def concept_source_text(node):
         for material_id, objects in bundles_for_group(group).items()
         if (kept := [item for item in objects if (item.content or "").strip()])
     }
-    normal_id = normal_material_id(group)
-    if not any(item.id == node.id for item in bundles.get(normal_id) or []):
+    standard_id = standard_material_id(group)
+    if not any(item.id == node.id for item in bundles.get(standard_id) or []):
         return node.content or ""
 
     roles = bundle_roles(group)
-    # The Normal telling leads, then the rest in upload order, so the model
+    # The Standard telling leads, then the rest in upload order, so the model
     # reads the concept the way the topic teaches it.
     rank = {
         material_id: index
         for index, material_id in enumerate(material_order(group.outline_node))
     }
     others = sorted(
-        (material_id for material_id in bundles if material_id != normal_id),
+        (material_id for material_id in bundles if material_id != standard_id),
         key=lambda material_id: (rank.get(material_id, len(rank)), material_id),
     )
 
     objects = []
-    for material_id in [normal_id, *others]:
-        if material_id != normal_id and material_id not in roles:
+    for material_id in [standard_id, *others]:
+        if material_id != standard_id and material_id not in roles:
             continue
         objects.extend(bundles.get(material_id) or [])
     return bundle_text(objects) or (node.content or "")
@@ -251,7 +251,7 @@ def concept_source_text(node):
 def _is_concept_source(node):
     """Whether ``node`` is the one object of its concept that generates.
 
-    A concept owns exactly one bank and it belongs to the Normal bundle's
+    A concept owns exactly one bank and it belongs to the Standard bundle's
     lead -- ``finalize_node_questions`` deletes every other bank in the group
     as soon as that lead finalizes. So an object from another PDF's telling
     is not merely redundant: its bank is already condemned when it is made.
@@ -260,19 +260,19 @@ def _is_concept_source(node):
 
     Two cases still generate from their own text, because no one else will
     speak for them: an object in no group at all, and one whose group has no
-    Normal bundle to own it.
+    Standard bundle to own it.
     """
     if node.group_id is None:
         return True
     from course.version_assignment import version_bundles
     from lessons.services.concept_bundles import bundle_lead
 
-    normal = version_bundles(node.group).get("NORMAL") or []
-    if not normal:
+    standard = version_bundles(node.group).get("STANDARD") or []
+    if not standard:
         return True
-    if not any(item.id == node.id for item in normal):
+    if not any(item.id == node.id for item in standard):
         return False
-    lead = bundle_lead(normal)
+    lead = bundle_lead(standard)
     return lead is not None and lead.id == node.id
 
 
@@ -616,7 +616,7 @@ def finalize_node_questions(node, classifier, on_event=None, stats=None, append=
             )
 
     with transaction.atomic():
-        # A concept owns one question bank, grounded in its Normal source.
+        # A concept owns one question bank, grounded in its Standard source.
         # When that bank is regenerated, remove older generated banks attached
         # to other source objects in the same group.
         # Questions the teacher edited are kept through a regeneration, next
@@ -855,7 +855,7 @@ def generate_questions_for_material(
     if len(nodes) != len(candidates):
         # Asking for one of these by id generates nothing at all, which used to
         # happen in silence. Its questions exist -- they are written from the
-        # whole Normal bundle and saved against that bundle's lead.
+        # whole Standard bundle and saved against that bundle's lead.
         logger.info(
             "[Questions] skipping %s learning object(s) taught through another object's "
             "concept bundle; their questions belong to that bundle's lead: %s",
@@ -1040,7 +1040,7 @@ def _prepare_generation(outline_node, on_event):
 def generate_questions_for_topic(outline_node, nodes, on_event=None, rounds=None):
     """Fill every concept of a topic to its minimum, in rounds.
 
-    ``nodes`` are the concepts' Normal leads, the objects their banks are
+    ``nodes`` are the concepts' Standard leads, the objects their banks are
     filed under. Each round tops up only the concepts still short, and only
     in the thinking orders they lack; a concept that fails is reported and
     left out of later rounds without stopping the others.

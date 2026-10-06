@@ -15,9 +15,8 @@ from user.permissions import IsTeacherOrAdmin
 
 from course.models import LessonVariant
 from course.bulk_version_generation import classify_all_source_versions
-from course.services import sync_course_outline
 from course.variant_generator import (
-    NORMAL_FALLBACK_GENERATOR,
+    STANDARD_FALLBACK_GENERATOR,
     _fingerprint as version_fingerprint,
     fill_missing_bundle_slots,
     fill_missing_slots,
@@ -379,10 +378,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             # the variant table only fills what was generated. Reading the table
             # alone left such a slot empty and the concept forever "incomplete".
             role_provenance = bundle_role_provenance(group)
-            normal_material = version_state.get("normal_material_id")
-            normal_objects = [
+            standard_material = version_state.get("standard_material_id")
+            standard_objects = [
                 item
-                for item in group_bundles.get(normal_material, [])
+                for item in group_bundles.get(standard_material, [])
                 if (item.content or "").strip()
             ]
 
@@ -391,7 +390,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
 
                 The review screen shows every object exactly once, under the
                 role it actually plays. Without this it had no way to tell a
-                member of the Normal bundle from a bundle supplying another
+                member of the Standard bundle from a bundle supplying another
                 version, and labelled both "Other variation".
                 """
                 return [
@@ -405,19 +404,19 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     for item in objects
                 ]
 
-            # Normal is a role like the others: the bundle the concept is
+            # Standard is a role like the others: the bundle the concept is
             # taught as. It used to be absent from the payload entirely, so the
             # screen fell back to the bundle's lead object and dropped the rest.
-            if normal_objects:
-                slot_rows["normal"] = {
+            if standard_objects:
+                slot_rows["standard"] = {
                     "id": None,
-                    "material": normal_material,
-                    "text": bundle_text(normal_objects),
+                    "material": standard_material,
+                    "text": bundle_text(standard_objects),
                     "origin": LessonVariant.Origin.SOURCE_PDF,
                     "source": "pdf",
-                    "assigned_by": role_provenance.get(normal_material, ""),
-                    "source_learning_object_id": normal_objects[0].id,
-                    "objects": object_rows(normal_objects),
+                    "assigned_by": role_provenance.get(standard_material, ""),
+                    "source_learning_object_id": standard_objects[0].id,
+                    "objects": object_rows(standard_objects),
                     "stale": False,
                 }
 
@@ -438,20 +437,20 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     "assigned_by": role_provenance.get(material_id, ""),
                     "source_learning_object_id": supplied[0].id,
                     "objects": object_rows(supplied),
-                    # Teacher text, never written from the Normal wording, so
+                    # Teacher text, never written from the Standard wording, so
                     # it cannot go stale the way a generated version does.
                     "stale": False,
                 }
                 slot_rows[role.lower()] = entry
 
-            if normal_objects:
-                # A generated version is written one object of the Normal
+            if standard_objects:
+                # A generated version is written one object of the Standard
                 # bundle at a time, so it is read back the same way. Reading
                 # only the lead's row showed one segment of four.
-                by_id = {item.id: item for item in normal_objects}
-                position = {item.id: index for index, item in enumerate(normal_objects)}
+                by_id = {item.id: item for item in standard_objects}
+                position = {item.id: index for index, item in enumerate(standard_objects)}
                 generated = defaultdict(list)
-                for row in LessonVariant.objects.filter(learning_object__in=normal_objects):
+                for row in LessonVariant.objects.filter(learning_object__in=standard_objects):
                     generated[row.variant].append(row)
                 for variant, rows in generated.items():
                     rows.sort(key=lambda row: position.get(row.learning_object_id, len(position)))
@@ -460,10 +459,10 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     # A version short of its bundle is reported missing rather
                     # than served: three quarters of a version reads as a whole
                     # one to a learner who cannot see the page.
-                    if len(rows) < len(normal_objects):
+                    if len(rows) < len(standard_objects):
                         continue
                     fallback_count = sum(
-                        row.generator_model == NORMAL_FALLBACK_GENERATOR
+                        row.generator_model == STANDARD_FALLBACK_GENERATOR
                         and row.assigned_by != LessonVariant.AssignedBy.TEACHER
                         for row in rows
                     )
@@ -482,7 +481,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                         # Each segment carries the wording that was *written*,
                         # not the object it was written from -- showing the
                         # source text under an Elaborated heading would be
-                        # printing the Normal version a second time.
+                        # printing the Standard version a second time.
                         "objects": [
                             {
                                 **object_rows([by_id[row.learning_object_id]])[0],
@@ -490,9 +489,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                             }
                             for row in rows
                         ],
-                        # A failed segment keeps its own Normal text. Other
+                        # A failed segment keeps its own Standard text. Other
                         # segments may have passed, so report how many fell
-                        # back instead of describing the entire slot as Normal.
+                        # back instead of describing the entire slot as Standard.
                         "fallback": fallback_count > 0,
                         "fallback_count": fallback_count,
                         "segment_count": len(rows),
@@ -517,7 +516,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                     "versions": {
                         "representative_id": version_state["representative_id"],
                         "original_selected": version_state.get("original_selected", False),
-                        "normal_replacement_needed": version_state.get("normal_replacement_needed", False),
+                        "standard_replacement_needed": version_state.get("standard_replacement_needed", False),
                         "classification_complete": version_state.get("classification_complete", True),
                         "slots": slot_rows,
                         "archived_unassigned": archived_unassigned,
@@ -533,7 +532,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
                             "material": material_id,
                             "role": version_state["bundle_roles"].get(
                                 material_id,
-                                "NORMAL" if material_id == version_state["normal_material_id"] else None,
+                                "STANDARD" if material_id == version_state["standard_material_id"] else None,
                             ),
                             "learning_objects": LearningObjectSerializer(
                                 objects, many=True, context={"request": request},
@@ -1730,7 +1729,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         replace_stale = bool(request.data.get("replace_stale"))
         target_slots = [requested_slot] if requested_slot else None
         if learning_object.group_id:
-            # A concept's Normal version can be several objects of one PDF -- a
+            # A concept's Standard version can be several objects of one PDF -- a
             # comparison section written as Shape, Volume, Particle arrangement
             # and Flow. The screen shows a slot as written only once every one
             # of them has a version, so generating for the representative alone
@@ -1843,7 +1842,7 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
         url_path=r"outline-nodes/(?P<node_id>[^/.]+)/versions/(?P<variant_id>[^/.]+)/keep",
     )
     def keep_version_text(self, request, pk=None, node_id=None, variant_id=None):
-        """Confirm an out-of-date version still matches the current Normal text.
+        """Confirm an out-of-date version still matches the current Standard text.
 
         The wording is left exactly as it is; only the record of which text it
         was checked against moves forward, which is what clears the publish
@@ -1930,9 +1929,9 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Outline node not found."}, status=status.HTTP_404_NOT_FOUND)
 
         slot = str(request.data.get("slot", "")).upper()
-        if slot not in ("NORMAL", "SIMPLIFIED", "ELABORATED"):
+        if slot not in ("STANDARD", "SIMPLIFIED", "ELABORATED"):
             return Response(
-                {"detail": "slot must be NORMAL, SIMPLIFIED or ELABORATED."},
+                {"detail": "slot must be STANDARD, SIMPLIFIED or ELABORATED."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1955,32 +1954,32 @@ class CourseGroupViewSet(viewsets.ModelViewSet):
 
         state = assign_group_versions(learning_object.group)
         representative_id = state["representative_id"]
-        if representative_id is None and slot != "NORMAL":
+        if representative_id is None and slot != "STANDARD":
             return Response(
-                {"detail": "Choose a replacement Normal PDF first."},
+                {"detail": "Choose a replacement Standard PDF first."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if slot == "NORMAL":
+        if slot == "STANDARD":
             try:
                 assign_source_as_representative(learning_object.group, learning_object)
             except ValueError as exc:
                 return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
             payload = self._learning_resources_payload(node, request)
             learning_object.group.refresh_from_db(fields=["version_selection"])
-            old_normal_needs_review = (
-                state["normal_material_id"] not in bundle_roles(learning_object.group)
+            old_standard_needs_review = (
+                state["standard_material_id"] not in bundle_roles(learning_object.group)
             )
             payload["version_assignment"] = {
                 "slot": slot,
                 "source_learning_object_id": learning_object.id,
-                "needs_review": representative_id if old_normal_needs_review else None,
+                "needs_review": representative_id if old_standard_needs_review else None,
             }
             return Response(payload)
 
         if representative_id == learning_object.id:
             return Response(
-                {"detail": "Choose another PDF source as Normal before moving this one."},
+                {"detail": "Choose another PDF source as Standard before moving this one."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

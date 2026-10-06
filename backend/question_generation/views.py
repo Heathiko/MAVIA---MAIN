@@ -143,19 +143,19 @@ class QuestionStatsView(APIView):
 STALE_RUN_SECONDS = 300
 
 
-def _normal_question_source(node):
+def _standard_question_source(node):
     """Return the sole question source for a concept, or an actionable error."""
     if node.group_id is None:
         return node, ""
     state = assign_group_versions(node.group)
     if not state.get("classification_complete") or not state.get("original_selected"):
         return None, "Classify this concept's PDF variants before generating questions."
-    normal = node.group.learning_objects.filter(
+    standard = node.group.learning_objects.filter(
         pk=state["representative_id"],
     ).first()
-    if normal is None or not (normal.content or "").strip():
-        return None, "This concept has no usable Normal version."
-    return normal, ""
+    if standard is None or not (standard.content or "").strip():
+        return None, "This concept has no usable Standard version."
+    return standard, ""
 
 
 def _event_recorder(run_id):
@@ -256,7 +256,7 @@ class StartTopicGenerationView(APIView):
 
     The Questions step's one Generate button: every concept of the topic
     still short of its minimum LOTS and HOTS is topped up, in rounds, from
-    its Normal version. Concepts already at the minimum are left alone.
+    its Standard version. Concepts already at the minimum are left alone.
     Runs in the background; poll the trace endpoint.
     """
     def post(self, request, outline_node_id):
@@ -274,14 +274,14 @@ class StartTopicGenerationView(APIView):
             ).exclude(content="").order_by("material_id", "order", "id").first()
             if member is None:
                 continue
-            normal, normal_error = _normal_question_source(member)
-            if normal_error:
-                skipped.append(f"{group.label}: {normal_error}")
+            standard, standard_error = _standard_question_source(member)
+            if standard_error:
+                skipped.append(f"{group.label}: {standard_error}")
                 continue
-            node_ids.append(normal.id)
+            node_ids.append(standard.id)
         if not node_ids:
             return Response(
-                {"error": "This topic has no concept with a Normal version to generate from.",
+                {"error": "This topic has no concept with a Standard version to generate from.",
                  "skipped": skipped},
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -346,31 +346,31 @@ class StartGenerationView(APIView):
                               "(or it has no narration content)"},
                     status=status.HTTP_404_NOT_FOUND,
                 )
-            normal, normal_error = _normal_question_source(node)
-            if normal_error:
-                return Response({"error": normal_error}, status=status.HTTP_409_CONFLICT)
-            if normal.id != node.id:
+            standard, standard_error = _standard_question_source(node)
+            if standard_error:
+                return Response({"error": standard_error}, status=status.HTTP_409_CONFLICT)
+            if standard.id != node.id:
                 return Response(
-                    {"error": "Questions can only be generated from this concept's Normal version.",
-                     "normal_learning_object_id": normal.id},
+                    {"error": "Questions can only be generated from this concept's Standard version.",
+                     "standard_learning_object_id": standard.id},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         else:
-            normal_ids = []
+            standard_ids = []
             seen_groups = set()
             for candidate in content_nodes.select_related("group"):
                 scope_key = candidate.group_id or f"object:{candidate.id}"
                 if scope_key in seen_groups:
                     continue
                 seen_groups.add(scope_key)
-                normal, normal_error = _normal_question_source(candidate)
-                if normal_error:
-                    return Response({"error": normal_error}, status=status.HTTP_409_CONFLICT)
-                if normal.material_id == material.id:
-                    normal_ids.append(normal.id)
-            if not normal_ids:
+                standard, standard_error = _standard_question_source(candidate)
+                if standard_error:
+                    return Response({"error": standard_error}, status=status.HTTP_409_CONFLICT)
+                if standard.material_id == material.id:
+                    standard_ids.append(standard.id)
+            if not standard_ids:
                 return Response(
-                    {"error": "This material contains no Normal learning objects to generate from."},
+                    {"error": "This material contains no Standard learning objects to generate from."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -386,7 +386,7 @@ class StartGenerationView(APIView):
             args=(
                 run.id,
                 material.id,
-                [node.id] if node else normal_ids,
+                [node.id] if node else standard_ids,
                 skip_complete,
             ),
             kwargs={"append": append},

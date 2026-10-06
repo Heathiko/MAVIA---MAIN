@@ -1,5 +1,5 @@
 // Shown after a successful publish: the path a learner will now walk, each
-// concept's Normal narration playable in teaching order, one player for each
+// concept's Standard narration playable in teaching order, one player for each
 // learning object the concept is taught as.
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -7,7 +7,7 @@ import { fetchPublishedPath } from "../api";
 import { publishedClips } from "./publishedAudio";
 import "./pathGraph.css";
 
-// One player per learning object of the concept's Normal version, each
+// One player per learning object of the concept's Standard version, each
 // labelled with the object it narrates, so every part can be played and
 // checked on its own.
 function ConceptPlayers({ parts, title, onPlay }) {
